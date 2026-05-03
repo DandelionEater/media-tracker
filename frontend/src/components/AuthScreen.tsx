@@ -1,0 +1,296 @@
+import { useState } from "react";
+
+type AuthScreenProps = {
+  onAuthenticated: (user: {
+    id: number;
+    username: string;
+    tutorial_dismissed: number;
+  }) => void | Promise<void>;
+};
+
+function LoadingSpinner() {
+  return (
+    <span className="relative flex h-5 w-5 items-center justify-center">
+      <span className="absolute h-5 w-5 rounded-full border-2 border-black/20" />
+      <span className="absolute h-5 w-5 rounded-full border-2 border-transparent border-t-black border-r-black animate-spin" />
+    </span>
+  );
+}
+
+export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const [aniListProfile, setAniListProfile] = useState<{
+    id: number;
+    username: string;
+  } | null>(null);
+  const [localUsername, setLocalUsername] = useState("");
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (busy) return;
+
+    const trimmedUsername = username.trim();
+
+    if (!trimmedUsername || !password) {
+      setMessage("Please enter both username and password.");
+      return;
+    }
+
+    setBusy(true);
+    setMessage("");
+
+    try {
+      const result =
+        mode === "login"
+          ? await window.api.login(trimmedUsername, password)
+          : await window.api.register(trimmedUsername, password);
+
+      if (!result.ok || !result.user) {
+        setMessage(result.message);
+        setPassword("");
+        return;
+      }
+
+      setMessage("");
+
+      await onAuthenticated({
+        id: result.user.id,
+        username: result.user.username,
+        tutorial_dismissed: result.user.tutorial_dismissed,
+      });
+    } catch {
+      setMessage("Something went wrong.");
+      setPassword("");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+
+    if (aniListProfile) {
+      await completeAniListSignup();
+      return;
+    }
+
+    await submit();
+  };
+
+  const startAniListLogin = async () => {
+    if (busy) return;
+
+    setBusy(true);
+    setMessage("Opening AniList in your browser...");
+
+    try {
+      const result = await window.api.startAniListLogin();
+
+      if (!result.ok) {
+        setMessage(result.message);
+        return;
+      }
+
+      if (result.needsProfile && result.anilist) {
+        setAniListProfile(result.anilist);
+        setLocalUsername(result.suggestedUsername || result.anilist.username);
+        setMessage("");
+        return;
+      }
+
+      if (!result.user) {
+        setMessage("AniList login finished, but no local account was returned.");
+        return;
+      }
+
+      await onAuthenticated({
+        id: result.user.id,
+        username: result.user.username,
+        tutorial_dismissed: result.user.tutorial_dismissed,
+      });
+    } catch {
+      setMessage("AniList login failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const completeAniListSignup = async () => {
+    if (busy) return;
+
+    const trimmedUsername = localUsername.trim();
+
+    if (!trimmedUsername) {
+      setMessage("Choose a local username.");
+      return;
+    }
+
+    setBusy(true);
+    setMessage("Creating your local account...");
+
+    try {
+      const result = await window.api.completeAniListLogin(trimmedUsername);
+
+      if (!result.ok || !result.user) {
+        setMessage(result.message);
+        return;
+      }
+
+      await onAuthenticated({
+        id: result.user.id,
+        username: result.user.username,
+        tutorial_dismissed: result.user.tutorial_dismissed,
+      });
+    } catch {
+      setMessage("Failed to finish AniList login.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex h-full items-center justify-center px-6">
+      <form
+        onSubmit={handleSubmit}
+        className="w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl backdrop-blur-md"
+      >
+        <p className="mb-2 text-sm uppercase tracking-[0.3em] text-white/35">
+          Media Tracker
+        </p>
+
+        <h1 className="text-3xl font-bold text-white">
+          {aniListProfile
+            ? "Create account"
+            : mode === "login"
+              ? "Welcome back"
+              : "Create account"}
+        </h1>
+
+        <p className="mt-3 text-sm text-white/55">
+          {aniListProfile
+            ? `Connected to AniList as ${aniListProfile.username}.`
+            : mode === "login"
+              ? "Log in to access your personal anime list."
+              : "Create your account to start building your anime tracker."}
+        </p>
+
+        {aniListProfile ? (
+          <div className="mt-6 space-y-4">
+            <input
+              type="text"
+              placeholder="Local username"
+              value={localUsername}
+              onChange={(e) => setLocalUsername(e.target.value)}
+              disabled={busy}
+              autoComplete="username"
+              className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none placeholder:text-white/30 focus:border-white/20 disabled:cursor-not-allowed disabled:opacity-70"
+            />
+          </div>
+        ) : (
+          <div className="mt-6 space-y-4">
+            <input
+              type="text"
+              placeholder="Username"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              disabled={busy}
+              autoComplete="username"
+              className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none placeholder:text-white/30 focus:border-white/20 disabled:cursor-not-allowed disabled:opacity-70"
+            />
+
+            <input
+              type="password"
+              placeholder="Password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={busy}
+              autoComplete={mode === "login" ? "current-password" : "new-password"}
+              className="w-full rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-white outline-none placeholder:text-white/30 focus:border-white/20 disabled:cursor-not-allowed disabled:opacity-70"
+            />
+          </div>
+        )}
+
+        {message && (
+          <p className="mt-4 text-sm text-white/70">{message}</p>
+        )}
+
+        <button
+          type="submit"
+          disabled={busy}
+          className="mt-6 flex w-full items-center justify-center gap-3 rounded-2xl bg-white px-4 py-3 font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-80"
+        >
+          {busy ? (
+            <>
+              <LoadingSpinner />
+              <span>
+                {aniListProfile
+                  ? "Creating account..."
+                  : mode === "login"
+                    ? "Logging in..."
+                    : "Creating account..."}
+              </span>
+            </>
+          ) : (
+            <span>
+              {aniListProfile
+                ? "Finish with AniList"
+                : mode === "login"
+                  ? "Log in"
+                  : "Create account"}
+            </span>
+          )}
+        </button>
+
+        {!aniListProfile && (
+          <>
+            <div className="my-5 flex items-center gap-3 text-xs uppercase tracking-[0.22em] text-white/25">
+              <span className="h-px flex-1 bg-white/10" />
+              <span>or</span>
+              <span className="h-px flex-1 bg-white/10" />
+            </div>
+
+            <button
+              type="button"
+              onClick={startAniListLogin}
+              disabled={busy}
+              className="flex w-full items-center justify-center rounded-2xl border border-[#2ea6ff]/35 bg-[#2ea6ff]/10 px-4 py-3 font-semibold text-[#bde7ff] transition hover:border-[#2ea6ff]/60 hover:bg-[#2ea6ff]/15 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              Continue with AniList
+            </button>
+
+            <button
+              type="button"
+              onClick={() =>
+                setMode((prev) => (prev === "login" ? "register" : "login"))
+              }
+              disabled={busy}
+              className="mt-4 w-full text-sm text-white/50 transition hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {mode === "login"
+                ? "Need an account? Register"
+                : "Already have an account? Log in"}
+            </button>
+          </>
+        )}
+
+        {aniListProfile && (
+          <button
+            type="button"
+            onClick={() => {
+              setAniListProfile(null);
+              setLocalUsername("");
+              setMessage("");
+            }}
+            disabled={busy}
+            className="mt-4 w-full text-sm text-white/50 transition hover:text-white/80 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Back to login
+          </button>
+        )}
+      </form>
+    </div>
+  );
+}

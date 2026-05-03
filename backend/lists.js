@@ -1,0 +1,563 @@
+const {
+  getSafeUserById,
+  getAnimeById,
+  getUserAnimeEntry,
+  getUserAnimeList,
+  addUserAnimeEntry,
+  updateUserAnimeEntry,
+  removeUserAnimeEntry,
+  clearUserAnimeList,
+  saveAnimeSummary,
+  getAniListAccountByUserId,
+  enqueueSyncJob,
+} = require('./db');
+const { mapAnimeForDb } = require('./animeMapper');
+const { buildAniListPayload, scheduleAutoSync } = require('./sync');
+
+const ALLOWED_STATUSES = ['planned', 'watching', 'completed', 'paused', 'dropped'];
+
+function sanitizeStatus(status) {
+  const value = String(status || '')
+    .trim()
+    .toLowerCase();
+  return ALLOWED_STATUSES.includes(value) ? value : 'planned';
+}
+
+function sanitizeProgress(progress) {
+  const value = Number(progress);
+
+  if (!Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+
+  return Math.floor(value);
+}
+
+function sanitizeRepeatCount(repeatCount) {
+  const value = Number(repeatCount);
+
+  if (!Number.isFinite(value) || value < 0) {
+    return 0;
+  }
+
+  return Math.floor(value);
+}
+
+function sanitizeScore(score) {
+  if (score === null || score === undefined || score === '') {
+    return null;
+  }
+
+  const value = Number(score);
+
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+
+  return value;
+}
+
+function sanitizeNotes(notes) {
+  const value = String(notes || '').trim();
+  return value.length ? value : null;
+}
+
+function sanitizeFavorite(isFavorite, fallback = false) {
+  if (isFavorite === undefined) {
+    return Boolean(fallback);
+  }
+
+  return Boolean(isFavorite);
+}
+
+function sanitizeDate(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const text = String(value).trim();
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return text;
+  }
+
+  const date = new Date(text);
+
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+
+  return date.toISOString().slice(0, 10);
+}
+
+function getTodayDate() {
+  return new Date().toISOString().slice(0, 10);
+}
+
+function buildDates(status, payload, existingEntry) {
+  const today = getTodayDate();
+  const hasExplicitCompletedAt = payload.completedAt !== undefined;
+
+  let startedAt =
+    payload.startedAt !== undefined
+      ? sanitizeDate(payload.startedAt)
+      : existingEntry?.started_at || null;
+  let completedAt =
+    payload.completedAt !== undefined
+      ? sanitizeDate(payload.completedAt)
+      : existingEntry?.completed_at || null;
+
+  if (status === 'watching' && !startedAt) {
+    startedAt = today;
+  }
+
+  if (status === 'completed') {
+    if (!startedAt) {
+      startedAt = today;
+    }
+    if (!completedAt) {
+      completedAt = today;
+    }
+  }
+
+  if (!['completed', 'dropped'].includes(status) && !hasExplicitCompletedAt) {
+    completedAt = null;
+  }
+
+  return { startedAt, completedAt };
+}
+
+function requireAuthenticatedUser(currentSession) {
+  if (!currentSession?.authenticated || !currentSession.user?.id) {
+    return { ok: false, message: 'You must be logged in.', user: null };
+  }
+
+  const user = getSafeUserById(currentSession.user.id);
+
+  if (!user) {
+    return { ok: false, message: 'User not found.', user: null };
+  }
+
+  return { ok: true, user };
+}
+
+function getMyAnimeList(currentSession) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message, entries: [] };
+  }
+
+  const entries = getUserAnimeList(auth.user.id).map((entry) => ({
+    ...entry,
+    genres: parseJsonArray(entry.genres),
+    recommendations: parseJsonArray(entry.recommendations),
+  }));
+  return { ok: true, entries };
+}
+
+function getMyAnimeEntry(currentSession, animeId) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message, entry: null };
+  }
+
+  const numericAnimeId = Number(animeId);
+  if (!Number.isInteger(numericAnimeId) || numericAnimeId <= 0) {
+    return { ok: false, message: 'Invalid anime id.', entry: null };
+  }
+
+  const entry = getUserAnimeEntry(auth.user.id, numericAnimeId);
+  return { ok: true, entry: entry || null };
+}
+
+function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message };
+  }
+
+  const numericAnimeId = Number(animeId);
+  if (!Number.isInteger(numericAnimeId) || numericAnimeId <= 0) {
+    return { ok: false, message: 'Invalid anime id.' };
+  }
+
+  const anime = getAnimeById(numericAnimeId);
+  if (!anime) {
+    return { ok: false, message: 'Anime is not cached yet. Open its details first.' };
+  }
+
+  const existingEntry = getUserAnimeEntry(auth.user.id, numericAnimeId);
+
+  const status = sanitizeStatus(payload.status);
+  const isFavorite = sanitizeFavorite(payload.isFavorite, existingEntry?.is_favorite);
+  const progress = sanitizeProgress(payload.progress);
+  const score = sanitizeScore(payload.score);
+  const notes = sanitizeNotes(payload.notes);
+  const repeatCount = sanitizeRepeatCount(
+    payload.repeatCount ?? existingEntry?.repeat_count ?? 0
+  );
+  const isRewatching =
+    payload.isRewatching === undefined
+      ? Boolean(existingEntry?.is_rewatching)
+      : Boolean(payload.isRewatching);
+  const { startedAt, completedAt } = buildDates(status, payload, existingEntry);
+
+  let savedEntry;
+
+  if (!existingEntry) {
+    addUserAnimeEntry({
+      userId: auth.user.id,
+      animeId: numericAnimeId,
+      status,
+      isFavorite,
+      repeatCount,
+      isRewatching,
+      progress,
+      score,
+      notes,
+      startedAt,
+      completedAt,
+    });
+  } else {
+    updateUserAnimeEntry({
+      userId: auth.user.id,
+      animeId: numericAnimeId,
+      status,
+      isFavorite,
+      repeatCount,
+      isRewatching,
+      progress,
+      score,
+      notes,
+      startedAt,
+      completedAt,
+    });
+  }
+
+  savedEntry = getUserAnimeEntry(auth.user.id, numericAnimeId);
+
+  queueAniListSyncIfNeeded(auth.user.id, existingEntry, savedEntry);
+
+  return {
+    ok: true,
+    message: existingEntry ? 'List entry updated.' : 'Anime added to your list.',
+    entry: savedEntry,
+  };
+}
+
+function queueAniListSyncIfNeeded(userId, existingEntry, savedEntry) {
+  if (!savedEntry || !getAniListAccountByUserId(userId)) {
+    return;
+  }
+
+  const fields = [
+    ['status', 'status'],
+    ['progress', 'progress'],
+    ['score', 'score'],
+    ['notes', 'notes'],
+    ['started_at', 'startedAt'],
+    ['completed_at', 'completedAt'],
+    ['repeat_count', 'repeatCount'],
+  ];
+
+  const changedFields = fields
+    .map(([dbField, label]) => ({
+      field: label,
+      from: existingEntry ? existingEntry[dbField] ?? null : null,
+      to: savedEntry[dbField] ?? null,
+    }))
+    .filter((change) => change.from !== change.to);
+
+  if (!changedFields.length) {
+    return;
+  }
+
+  enqueueSyncJob({
+    userId,
+    animeId: savedEntry.anime_id,
+    operation: 'upsert_anilist_entry',
+    payload: buildAniListPayload(savedEntry),
+    changedFields,
+  });
+  scheduleAutoSync(userId);
+}
+
+function removeMyAnimeEntry(currentSession, animeId) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message };
+  }
+
+  const numericAnimeId = Number(animeId);
+  if (!Number.isInteger(numericAnimeId) || numericAnimeId <= 0) {
+    return { ok: false, message: 'Invalid anime id.' };
+  }
+
+  const existingEntry = getUserAnimeEntry(auth.user.id, numericAnimeId);
+  if (!existingEntry) {
+    return { ok: false, message: 'Entry not found.' };
+  }
+
+  removeUserAnimeEntry(auth.user.id, numericAnimeId);
+
+  return { ok: true, message: 'Anime removed from your list.' };
+}
+
+function clearMyAnimeList(currentSession) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message };
+  }
+
+  const removedCount = clearUserAnimeList(auth.user.id);
+
+  return {
+    ok: true,
+    message:
+      removedCount > 0
+        ? `Cleared ${removedCount} entr${removedCount === 1 ? 'y' : 'ies'} from your list.`
+        : 'Your list was already empty.',
+    removedCount,
+  };
+}
+
+function sanitizeImportStatus(status) {
+  const value = String(status || '')
+    .trim()
+    .toUpperCase();
+
+  switch (value) {
+    case 'CURRENT':
+    case 'REPEATING':
+      return 'watching';
+    case 'PLANNING':
+      return 'planned';
+    case 'COMPLETED':
+      return 'completed';
+    case 'PAUSED':
+      return 'paused';
+    case 'DROPPED':
+      return 'dropped';
+    default:
+      return null;
+  }
+}
+
+function mapAniListDate(date) {
+  if (!date?.year) {
+    return null;
+  }
+
+  const month = String(date.month || 1).padStart(2, '0');
+  const day = String(date.day || 1).padStart(2, '0');
+  return `${date.year}-${month}-${day}`;
+}
+
+function parseJsonArray(value) {
+  if (!value) {
+    return [];
+  }
+
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function valuesDiffer(left, right) {
+  return (left ?? null) !== (right ?? null);
+}
+
+function entryDiffersFromAniList(existingEntry, nextEntry) {
+  if (!existingEntry) {
+    return true;
+  }
+
+  return (
+    valuesDiffer(existingEntry.status, nextEntry.status) ||
+    valuesDiffer(existingEntry.progress, nextEntry.progress) ||
+    valuesDiffer(existingEntry.score, nextEntry.score) ||
+    valuesDiffer(existingEntry.notes, nextEntry.notes) ||
+    valuesDiffer(existingEntry.started_at, nextEntry.startedAt) ||
+    valuesDiffer(existingEntry.completed_at, nextEntry.completedAt) ||
+    valuesDiffer(existingEntry.repeat_count, nextEntry.repeatCount) ||
+    Boolean(existingEntry.is_rewatching)
+  );
+}
+
+function importAniListEntries(currentSession, collection, sourceUsername, options = {}) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message };
+  }
+
+  const lists = Array.isArray(collection?.lists) ? collection.lists : [];
+  const allEntries = lists.flatMap((list) => list?.entries || []);
+  const selectedStatuses = Array.isArray(options.selectedStatuses)
+    ? options.selectedStatuses.map((status) => sanitizeStatus(status))
+    : [];
+  const selectedAnimeIds = Array.isArray(options.selectedAnimeIds)
+    ? options.selectedAnimeIds
+        .map((animeId) => Number(animeId))
+        .filter((animeId) => Number.isInteger(animeId) && animeId > 0)
+    : [];
+  const hasStatusFilter = selectedStatuses.length > 0;
+  const allowedStatuses = new Set(selectedStatuses);
+  const hasAnimeFilter = selectedAnimeIds.length > 0;
+  const allowedAnimeIds = new Set(selectedAnimeIds);
+
+  if (!allEntries.length) {
+    return {
+      ok: false,
+      message: `No anime list entries were found for ${sourceUsername}.`,
+    };
+  }
+
+  let imported = 0;
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  const changes = [];
+
+  for (const entry of allEntries) {
+    const media = entry?.media;
+    const animeId = Number(media?.id);
+    const status = sanitizeImportStatus(entry?.status);
+
+    if (!Number.isInteger(animeId) || animeId <= 0 || !status || !media) {
+      skipped += 1;
+      continue;
+    }
+
+    if (hasStatusFilter && !allowedStatuses.has(status)) {
+      skipped += 1;
+      continue;
+    }
+
+    if (hasAnimeFilter && !allowedAnimeIds.has(animeId)) {
+      skipped += 1;
+      continue;
+    }
+
+    saveAnimeSummary(mapAnimeForDb(media));
+
+    const progress = sanitizeProgress(entry.progress);
+    const score = sanitizeScore(entry.score);
+    const notes = sanitizeNotes(entry.notes);
+    const repeatCount = sanitizeRepeatCount(entry.repeat);
+    const startedAt = mapAniListDate(entry.startedAt);
+    const completedAt = mapAniListDate(entry.completedAt);
+    const existingEntry = getUserAnimeEntry(auth.user.id, animeId);
+    const nextEntry = {
+      status,
+      progress,
+      score,
+      notes,
+      repeatCount,
+      startedAt,
+      completedAt,
+    };
+
+    if (!existingEntry) {
+      addUserAnimeEntry({
+        userId: auth.user.id,
+        animeId,
+        status,
+        isFavorite: false,
+        repeatCount,
+        isRewatching: false,
+        progress,
+        score,
+        notes,
+        startedAt,
+        completedAt,
+      });
+      created += 1;
+      changes.push({
+        animeId,
+        animeTitle:
+          media.title?.userPreferred || media.title?.english || media.title?.romaji || `Anime #${animeId}`,
+        changedFields: [
+          { field: 'status', from: null, to: status },
+          { field: 'progress', from: null, to: progress },
+          { field: 'score', from: null, to: score },
+          { field: 'notes', from: null, to: notes },
+          { field: 'startedAt', from: null, to: startedAt },
+          { field: 'completedAt', from: null, to: completedAt },
+          { field: 'repeatCount', from: null, to: repeatCount },
+        ].filter((change) => change.to !== null && change.to !== undefined),
+      });
+    } else {
+      if (!entryDiffersFromAniList(existingEntry, nextEntry)) {
+        skipped += 1;
+        continue;
+      }
+
+      const changedFields = [
+        { field: 'status', from: existingEntry.status ?? null, to: status },
+        { field: 'progress', from: existingEntry.progress ?? null, to: progress },
+        { field: 'score', from: existingEntry.score ?? null, to: score },
+        { field: 'notes', from: existingEntry.notes ?? null, to: notes },
+        { field: 'startedAt', from: existingEntry.started_at ?? null, to: startedAt },
+        { field: 'completedAt', from: existingEntry.completed_at ?? null, to: completedAt },
+        { field: 'repeatCount', from: existingEntry.repeat_count ?? null, to: repeatCount },
+      ].filter((change) => change.from !== change.to);
+
+      updateUserAnimeEntry({
+        userId: auth.user.id,
+        animeId,
+        status,
+        isFavorite: Boolean(existingEntry.is_favorite),
+        repeatCount,
+        isRewatching: false,
+        progress,
+        score,
+        notes,
+        startedAt: startedAt ?? existingEntry.started_at ?? null,
+        completedAt: ['completed', 'dropped'].includes(status)
+          ? completedAt ?? existingEntry.completed_at ?? null
+          : null,
+      });
+      updated += 1;
+      changes.push({
+        animeId,
+        animeTitle:
+          media.title?.userPreferred || media.title?.english || media.title?.romaji || `Anime #${animeId}`,
+        changedFields,
+      });
+    }
+
+    imported += 1;
+  }
+
+  return {
+    ok: true,
+    message: `Imported ${imported} AniList entr${imported === 1 ? 'y' : 'ies'}.`,
+    summary: {
+      sourceUsername,
+      totalFound: allEntries.length,
+      selectedStatuses,
+      selectedAnimeIds,
+      imported,
+      created,
+      updated,
+      skipped,
+      changes,
+    },
+  };
+}
+
+module.exports = {
+  getMyAnimeList,
+  getMyAnimeEntry,
+  saveMyAnimeEntry,
+  removeMyAnimeEntry,
+  clearMyAnimeList,
+  importAniListEntries,
+};
