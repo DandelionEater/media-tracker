@@ -2,7 +2,20 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 
-const dbPath = process.env.DATABASE_PATH || path.join(__dirname, 'media.db');
+function getDefaultDbPath() {
+  if (process.versions.electron) {
+    try {
+      const { app } = require('electron');
+      return path.join(app.getPath('userData'), 'media.db');
+    } catch {
+      return path.join(__dirname, 'media.db');
+    }
+  }
+
+  return path.join(__dirname, 'media.db');
+}
+
+const dbPath = process.env.DATABASE_PATH || getDefaultDbPath();
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 

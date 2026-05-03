@@ -1,4 +1,4 @@
-const { BrowserWindow, globalShortcut } = require('electron');
+const { app, BrowserWindow, globalShortcut } = require('electron');
 const path = require('path');
 
 function createWindow() {
@@ -23,7 +23,11 @@ function createWindow() {
     },
   });
 
-  win.loadURL('http://localhost:5173');
+  if (app.isPackaged) {
+    win.loadFile(path.join(__dirname, 'frontend-dist', 'index.html'));
+  } else {
+    win.loadURL(process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173');
+  }
 
   // DevTools shortcut (CTRL+SHIFT+I)
   globalShortcut.register('CommandOrControl+Shift+I', () => {
