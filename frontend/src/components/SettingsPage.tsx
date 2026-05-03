@@ -638,7 +638,9 @@ export function SettingsPage({
       setOpenImportGroups({});
       setIsImportModalOpen(true);
 
-      const result = await window.api.previewAniListImport(trimmedUsername);
+      const result = (await window.api.previewAniListImport(
+        trimmedUsername
+      )) as ImportPreviewResponse;
 
       if (!result.ok || !result.preview) {
         setPreviewError(result.message || "Failed to preview AniList list.");
