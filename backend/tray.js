@@ -27,7 +27,7 @@ function setupTray(win) {
     },
   ]);
 
-  tray.setToolTip('Media Tracker');
+  tray.setToolTip('Seenary');
   tray.setContextMenu(contextMenu);
 
   // ✅ KEEP your existing behavior (LMB toggle)

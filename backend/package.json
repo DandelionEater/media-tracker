@@ -34,6 +34,8 @@
     },
     "files": [
       "desktop-main.js",
+      "tray.js",
+      "shortcuts.js",
       "icon.png"
     ],
     "extraMetadata": {

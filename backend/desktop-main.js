@@ -1,5 +1,7 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
+const { setupTray } = require('./tray');
+const { registerShortcuts } = require('./shortcuts');
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
 
@@ -33,11 +35,16 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  createWindow();
+  const win = createWindow();
+
+  setupTray(win);
+  registerShortcuts(win);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+      const nextWin = createWindow();
+      setupTray(nextWin);
+      registerShortcuts(nextWin);
     }
   });
 });
