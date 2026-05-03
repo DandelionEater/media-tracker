@@ -3,6 +3,7 @@ const crypto = require('crypto');
 
 const anilist = require('./anilist');
 const {
+  dbPath,
   saveAnime,
   saveAnimeSummary,
   getAppSetting,
@@ -663,7 +664,10 @@ const server = http.createServer(async (req, res) => {
   }
 
   if (req.method === 'GET' && req.url === '/health') {
-    sendJson(req, res, 200, { ok: true });
+    sendJson(req, res, 200, {
+      ok: true,
+      ...(process.env.SHOW_DB_PATH === 'true' ? { dbPath } : {}),
+    });
     return;
   }
 

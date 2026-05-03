@@ -1306,6 +1306,7 @@ function mapSyncQueueRow(row) {
 
 module.exports = {
   db,
+  dbPath,
   saveAnime,
   saveAnimeSummary,
   getAnimeById,
