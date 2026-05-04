@@ -1,5 +1,8 @@
 const http = require('http');
 const crypto = require('crypto');
+const fetch = require('node-fetch');
+const fs = require('fs');
+const path = require('path');
 
 const anilist = require('./anilist');
 const {
@@ -10,16 +13,29 @@ const {
   setAppSetting,
   getSafeUserById,
   getUserByNormalizedUsername,
+  getAniListAccountByAniListUserId,
   getAniListAccountByUserId,
+  deleteAniListAccountByUserId,
+  mergeUserIntoUser,
+  upsertAniListAccount,
   updateAniListAccountImportTime,
   updateTutorialDismissed,
   insertSyncHistory,
+  createWebSessionRecord,
+  getWebSessionByHash,
+  updateWebSessionExpiry,
+  deleteWebSession,
+  deleteExpiredWebSessions,
 } = require('./db');
 const { mapAnimeForDb } = require('./animeMapper');
 const {
   registerUser,
   loginUser,
+  createLinkedUser,
+  loginUserById,
   logoutUser,
+  normalizeUsername,
+  validateUsername,
 } = require('./auth');
 const {
   getMyAnimeList,
@@ -48,9 +64,22 @@ const ALLOWED_ORIGINS = new Set(
 ALLOWED_ORIGINS.add('http://localhost:5173');
 ALLOWED_ORIGINS.add('http://127.0.0.1:5173');
 
-const sessions = new Map();
 const SESSION_COOKIE = 'seenary_sid';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
+const SESSION_MAX_AGE_MS = SESSION_MAX_AGE_SECONDS * 1000;
+const ANILIST_CLIENT_ID = process.env.ANILIST_CLIENT_ID || '40156';
+const ANILIST_CLIENT_SECRET =
+  process.env.ANILIST_CLIENT_SECRET || 'V7N4za6ypyjv3k35wSboybL1WY2q6raJwx83oWns';
+const ANILIST_AUTHORIZE_URL = 'https://anilist.co/api/v2/oauth/authorize';
+const ANILIST_TOKEN_URL = 'https://anilist.co/api/v2/oauth/token';
+const DEFAULT_API_ORIGIN =
+  process.env.NODE_ENV === 'production' ? 'https://api.seenary.app' : `http://localhost:${PORT}`;
+const API_PUBLIC_ORIGIN = process.env.API_PUBLIC_ORIGIN || DEFAULT_API_ORIGIN;
+const ANILIST_REDIRECT_URI =
+  process.env.ANILIST_REDIRECT_URI || `${API_PUBLIC_ORIGIN}/auth/anilist/callback`;
+const ANILIST_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
+const DESKTOP_UPDATES_DIR =
+  process.env.DESKTOP_UPDATES_DIR || path.join(path.dirname(dbPath), 'desktop-updates');
 
 const DEFAULT_APP_SETTINGS = {
   themeAccent: 'cyan',
@@ -64,6 +93,9 @@ const DEFAULT_APP_SETTINGS = {
 const ALLOWED_THEME_ACCENTS = ['cyan', 'violet', 'rose', 'amber', 'emerald'];
 const ALLOWED_TITLE_LANGUAGES = ['userPreferred', 'english', 'romaji', 'native'];
 const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
+const pendingAniListFlows = new Map();
+const pendingAniListSignupByFlowId = new Map();
+const pendingAniListLinkConflictByUserId = new Map();
 
 function getAllowedOrigin(req) {
   const origin = req.headers.origin;
@@ -110,45 +142,260 @@ function buildCookie(name, value, options = {}) {
   return parts.join('; ');
 }
 
-function createWebSession(res, userId) {
-  const sessionId = crypto.randomBytes(32).toString('hex');
-  sessions.set(sessionId, {
-    userId: Number(userId),
+function hashSessionToken(sessionToken) {
+  return crypto.createHash('sha256').update(sessionToken).digest('hex');
+}
+
+function getWebOrigin(req) {
+  return getAllowedOrigin(req);
+}
+
+function cleanupAniListFlows(now = Date.now()) {
+  for (const [flowId, flow] of pendingAniListFlows) {
+    if (now - flow.createdAt > ANILIST_FLOW_TIMEOUT_MS) {
+      pendingAniListFlows.delete(flowId);
+    }
+  }
+
+  for (const [flowId, signup] of pendingAniListSignupByFlowId) {
+    if (now - signup.createdAt > ANILIST_FLOW_TIMEOUT_MS) {
+      pendingAniListSignupByFlowId.delete(flowId);
+    }
+  }
+
+  for (const [userId, conflict] of pendingAniListLinkConflictByUserId) {
+    if (now - conflict.createdAt > ANILIST_FLOW_TIMEOUT_MS) {
+      pendingAniListLinkConflictByUserId.delete(userId);
+    }
+  }
+}
+
+function createAniListFlow({ type, userId = null, returnTo }) {
+  cleanupAniListFlows();
+
+  const flowId = crypto.randomBytes(16).toString('hex');
+  const state = crypto.randomBytes(24).toString('hex');
+  const flow = {
+    id: flowId,
+    state,
+    type,
+    userId: userId == null ? null : Number(userId),
+    returnTo,
+    status: 'pending',
     createdAt: Date.now(),
+    result: null,
+    error: null,
+  };
+
+  pendingAniListFlows.set(flowId, flow);
+
+  const url = new URL(ANILIST_AUTHORIZE_URL);
+  url.searchParams.set('client_id', ANILIST_CLIENT_ID);
+  url.searchParams.set('redirect_uri', ANILIST_REDIRECT_URI);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('state', `${flowId}.${state}`);
+
+  return { flow, authUrl: url.toString() };
+}
+
+function sendAniListCallbackPage(res, title, body, returnTo) {
+  res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+  res.end(`
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <title>${title}</title>
+        <style>
+          body {
+            margin: 0;
+            min-height: 100vh;
+            display: grid;
+            place-items: center;
+            background: #10141f;
+            color: #eef6ff;
+            font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          }
+          main {
+            max-width: 420px;
+            padding: 32px;
+            text-align: center;
+          }
+          h1 {
+            margin: 0 0 12px;
+            font-size: 28px;
+          }
+          p {
+            margin: 0;
+            color: rgba(238, 246, 255, 0.72);
+            line-height: 1.55;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>${title}</h1>
+          <p>${body}</p>
+        </main>
+        <script>
+          if (window.opener) {
+            window.opener.postMessage({ type: 'seenary:anilist-oauth-complete' }, ${JSON.stringify(returnTo)});
+            window.setTimeout(() => window.close(), 700);
+          }
+        </script>
+      </body>
+    </html>
+  `);
+}
+
+async function exchangeAniListCodeForToken(code) {
+  const response = await fetch(ANILIST_TOKEN_URL, {
+    method: 'POST',
+    headers: {
+      Accept: 'application/json',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      grant_type: 'authorization_code',
+      client_id: ANILIST_CLIENT_ID,
+      client_secret: ANILIST_CLIENT_SECRET,
+      redirect_uri: ANILIST_REDIRECT_URI,
+      code,
+    }),
   });
-  res.setHeader('Set-Cookie', buildCookie(SESSION_COOKIE, sessionId));
+
+  const data = await response.json().catch(() => null);
+
+  if (!response.ok || !data?.access_token) {
+    throw new Error(data?.message || 'Failed to exchange AniList authorization code.');
+  }
+
+  return data.access_token;
+}
+
+function buildAniListAccountPayload(account) {
+  return {
+    anilistUserId: account.anilist_user_id,
+    anilistUsername: account.anilist_username,
+    originalAniListUsername: account.original_anilist_username,
+    lastImportAt: account.last_import_at,
+    updatedAt: account.updated_at,
+  };
+}
+
+function createWebSession(res, userId) {
+  const sessionToken = crypto.randomBytes(32).toString('hex');
+  createWebSessionRecord({
+    sessionHash: hashSessionToken(sessionToken),
+    userId: Number(userId),
+    expiresAt: Date.now() + SESSION_MAX_AGE_MS,
+  });
+  res.setHeader('Set-Cookie', buildCookie(SESSION_COOKIE, sessionToken));
 }
 
 function clearWebSession(req, res) {
-  const sessionId = parseCookies(req)[SESSION_COOKIE];
-  if (sessionId) {
-    sessions.delete(sessionId);
+  const sessionToken = parseCookies(req)[SESSION_COOKIE];
+  if (sessionToken) {
+    deleteWebSession(hashSessionToken(sessionToken));
   }
   res.setHeader('Set-Cookie', buildCookie(SESSION_COOKIE, '', { maxAge: 0 }));
 }
 
-function getCurrentSession(req) {
-  const sessionId = parseCookies(req)[SESSION_COOKIE];
-  const session = sessionId ? sessions.get(sessionId) : null;
+function getCurrentSession(req, res, options = {}) {
+  const shouldRefresh = options.refresh !== false;
+  const sessionToken = parseCookies(req)[SESSION_COOKIE];
+  const sessionHash = sessionToken ? hashSessionToken(sessionToken) : null;
+  const session = sessionHash ? getWebSessionByHash(sessionHash) : null;
 
-  if (!session?.userId) {
+  if (!session?.user_id) {
     return { authenticated: false, user: null };
   }
 
-  const user = getSafeUserById(session.userId);
+  if (Number(session.expires_at) <= Date.now()) {
+    deleteWebSession(sessionHash);
+    if (res) {
+      res.setHeader('Set-Cookie', buildCookie(SESSION_COOKIE, '', { maxAge: 0 }));
+    }
+    return { authenticated: false, user: null };
+  }
+
+  const user = getSafeUserById(session.user_id);
 
   if (!user) {
-    sessions.delete(sessionId);
+    deleteWebSession(sessionHash);
+    if (res) {
+      res.setHeader('Set-Cookie', buildCookie(SESSION_COOKIE, '', { maxAge: 0 }));
+    }
     return { authenticated: false, user: null };
   }
 
-  return { authenticated: true, user };
+  const expiresAt = shouldRefresh ? Date.now() + SESSION_MAX_AGE_MS : Number(session.expires_at);
+
+  if (shouldRefresh) {
+    updateWebSessionExpiry(sessionHash, expiresAt);
+  }
+
+  if (res && shouldRefresh) {
+    res.setHeader('Set-Cookie', buildCookie(SESSION_COOKIE, sessionToken));
+  }
+
+  return { authenticated: true, user, expiresAt };
 }
 
 function sendJson(req, res, status, payload) {
   setCorsHeaders(req, res);
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(payload));
+}
+
+function getContentType(filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+
+  switch (extension) {
+    case '.yml':
+    case '.yaml':
+      return 'text/yaml; charset=utf-8';
+    case '.exe':
+      return 'application/vnd.microsoft.portable-executable';
+    case '.blockmap':
+      return 'application/octet-stream';
+    default:
+      return 'application/octet-stream';
+  }
+}
+
+function sendDesktopUpdateFile(req, res) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
+  const relativePath = decodeURIComponent(
+    requestUrl.pathname.replace(/^\/desktop-updates\/?/, '')
+  );
+
+  if (!relativePath) {
+    sendJson(req, res, 404, { ok: false, message: 'Update file not found.' });
+    return;
+  }
+
+  const updatesRoot = path.resolve(DESKTOP_UPDATES_DIR);
+  const filePath = path.resolve(updatesRoot, relativePath);
+
+  if (!filePath.startsWith(`${updatesRoot}${path.sep}`)) {
+    sendJson(req, res, 403, { ok: false, message: 'Invalid update file path.' });
+    return;
+  }
+
+  fs.stat(filePath, (statError, stats) => {
+    if (statError || !stats.isFile()) {
+      sendJson(req, res, 404, { ok: false, message: 'Update file not found.' });
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': getContentType(filePath),
+      'Content-Length': stats.size,
+      'Cache-Control': relativePath === 'latest.yml' ? 'no-cache' : 'public, max-age=31536000',
+    });
+    fs.createReadStream(filePath).pipe(res);
+  });
 }
 
 function readJson(req) {
@@ -374,6 +621,191 @@ async function importAuthenticatedAniListList(accessToken, viewer, currentSessio
   return result;
 }
 
+async function finishAniListLogin({ accessToken, viewer, userId, res }) {
+  deleteAniListAccountByUserId(userId);
+
+  upsertAniListAccount({
+    userId,
+    anilistUserId: viewer.id,
+    anilistUsername: viewer.name,
+    originalAniListUsername: viewer.name,
+    accessToken,
+  });
+
+  const loginResult = loginUserById(userId);
+
+  if (!loginResult.ok) {
+    return loginResult;
+  }
+
+  if (res) {
+    createWebSession(res, userId);
+  }
+
+  let importResult;
+
+  try {
+    importResult = await importAuthenticatedAniListList(accessToken, viewer, {
+      authenticated: true,
+      user: loginResult.user,
+    });
+  } catch (error) {
+    console.error('AniList authenticated import error:', error);
+    importResult = {
+      ok: false,
+      message: error.message || 'Failed to import AniList list.',
+    };
+  }
+
+  return {
+    ok: true,
+    message: importResult.ok
+      ? 'Logged in with AniList and imported your list.'
+      : 'Logged in with AniList, but list import failed.',
+    user: loginResult.user,
+    import: importResult,
+  };
+}
+
+async function linkAniListToUser({ accessToken, viewer, userId }) {
+  deleteAniListAccountByUserId(userId);
+  upsertAniListAccount({
+    userId,
+    anilistUserId: viewer.id,
+    anilistUsername: viewer.name,
+    originalAniListUsername: viewer.name,
+    accessToken,
+  });
+
+  const user = getSafeUserById(userId);
+  const importResult = await importAuthenticatedAniListList(accessToken, viewer, {
+    authenticated: Boolean(user),
+    user,
+  }).catch((error) => {
+    console.error('AniList link import error:', error);
+    return {
+      ok: false,
+      message: error.message || 'Failed to import AniList list.',
+    };
+  });
+
+  const account = getAniListAccountByUserId(userId);
+
+  return {
+    ok: true,
+    linked: true,
+    message: importResult.ok
+      ? `Linked AniList account ${viewer.name} and imported your list.`
+      : `Linked AniList account ${viewer.name}, but list import failed.`,
+    account: account
+      ? buildAniListAccountPayload(account)
+      : {
+          anilistUserId: viewer.id,
+          anilistUsername: viewer.name,
+          originalAniListUsername: viewer.name,
+          lastImportAt: importResult.ok ? new Date().toISOString() : null,
+          updatedAt: new Date().toISOString(),
+        },
+    import: importResult,
+  };
+}
+
+async function handleAniListLoginCallback(flow, accessToken, viewer) {
+  if (!viewer?.id || !viewer?.name) {
+    return { ok: false, message: 'AniList did not return account details.' };
+  }
+
+  const linkedAccount = getAniListAccountByAniListUserId(viewer.id);
+
+  if (linkedAccount?.user_id) {
+    pendingAniListSignupByFlowId.delete(flow.id);
+    return await finishAniListLogin({
+      accessToken,
+      viewer,
+      userId: linkedAccount.user_id,
+    });
+  }
+
+  pendingAniListSignupByFlowId.set(flow.id, {
+    accessToken,
+    viewer,
+    createdAt: Date.now(),
+  });
+
+  return {
+    ok: true,
+    needsProfile: true,
+    message: 'AniList account verified. Choose your local display name.',
+    anilist: {
+      id: viewer.id,
+      username: viewer.name,
+    },
+    suggestedUsername: viewer.name,
+  };
+}
+
+async function handleAniListLinkCallback(flow, accessToken, viewer) {
+  if (!flow.userId) {
+    return { ok: false, linked: false, message: 'AniList link session expired. Try linking again.' };
+  }
+
+  const sessionUser = getSafeUserById(flow.userId);
+
+  if (!sessionUser) {
+    return { ok: false, linked: false, message: 'You must be logged in.', };
+  }
+
+  if (!viewer?.id || !viewer?.name) {
+    return { ok: false, linked: false, message: 'AniList did not return account details.' };
+  }
+
+  const existingLinkedAccount = getAniListAccountByAniListUserId(viewer.id);
+
+  if (
+    existingLinkedAccount?.user_id &&
+    Number(existingLinkedAccount.user_id) !== Number(flow.userId)
+  ) {
+    const existingUser = getSafeUserById(existingLinkedAccount.user_id);
+
+    pendingAniListLinkConflictByUserId.set(Number(flow.userId), {
+      accessToken,
+      viewer,
+      sourceUserId: Number(existingLinkedAccount.user_id),
+      targetUserId: Number(flow.userId),
+      createdAt: Date.now(),
+    });
+
+    return {
+      ok: true,
+      message: `AniList account ${viewer.name} is already linked to another local account.`,
+      linked: false,
+      needsConflictResolution: true,
+      conflict: {
+        anilistUserId: viewer.id,
+        anilistUsername: viewer.name,
+        sourceUser: existingUser
+          ? {
+              id: existingUser.id,
+              username: existingUser.username,
+            }
+          : null,
+        targetUser: {
+          id: sessionUser.id,
+          username: sessionUser.username,
+        },
+      },
+    };
+  }
+
+  pendingAniListLinkConflictByUserId.delete(Number(flow.userId));
+
+  return await linkAniListToUser({
+    accessToken,
+    viewer,
+    userId: flow.userId,
+  });
+}
+
 async function fetchAnimeDetailsFromAniList(id) {
   const media = await anilist.getAnimeDetails
     ? await anilist.getAnimeDetails(id)
@@ -383,7 +815,6 @@ async function fetchAnimeDetailsFromAniList(id) {
 }
 
 async function fetchAnimeDetailsFallback(id) {
-  const fetch = require('node-fetch');
   const query = `
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
@@ -499,7 +930,9 @@ async function fetchAnimeDetailsFallback(id) {
 }
 
 async function handleRpc(method, args, req, res) {
-  const currentSession = getCurrentSession(req);
+  const currentSession = getCurrentSession(req, res, {
+    refresh: method !== 'getSession',
+  });
 
   switch (method) {
     case 'searchAnime':
@@ -620,15 +1053,171 @@ async function handleRpc(method, args, req, res) {
       return removeMyAnimeEntry(currentSession, args[0]);
     case 'clearMyList':
       return clearMyAnimeList(currentSession);
-    case 'startAniListLogin':
-    case 'completeAniListLogin':
-    case 'linkAniListAccount':
-    case 'resolveAniListLinkConflict':
+    case 'startAniListLogin': {
+      const { flow, authUrl } = createAniListFlow({
+        type: 'login',
+        returnTo: getWebOrigin(req),
+      });
+
       return {
-        ok: false,
-        linked: false,
-        message: 'AniList OAuth linking is not available in the hosted web build yet.',
+        ok: true,
+        pendingOAuth: true,
+        flowId: flow.id,
+        authUrl,
+        message: 'Open AniList to continue.',
       };
+    }
+    case 'pollAniListLogin': {
+      cleanupAniListFlows();
+      const flowId = String(args[0] || '');
+      const flow = pendingAniListFlows.get(flowId);
+
+      if (!flow) {
+        return { ok: false, done: true, message: 'AniList login session expired. Try again.' };
+      }
+
+      if (flow.status === 'pending') {
+        return { ok: true, done: false, message: 'Waiting for AniList authorization.' };
+      }
+
+      pendingAniListFlows.delete(flowId);
+
+      if (flow.status === 'failed') {
+        return { ok: false, done: true, message: flow.error || 'AniList login failed.' };
+      }
+
+      if (flow.result?.user?.id) {
+        createWebSession(res, flow.result.user.id);
+      }
+
+      return { ...flow.result, done: true };
+    }
+    case 'completeAniListLogin': {
+      cleanupAniListFlows();
+      const username = String(args[0] || '').trim();
+      const flowId = String(args[1] || '');
+      const signup = pendingAniListSignupByFlowId.get(flowId);
+
+      if (!signup) {
+        return { ok: false, message: 'AniList login session expired. Try again.' };
+      }
+
+      const usernameError = validateUsername(username);
+
+      if (usernameError) {
+        return { ok: false, message: usernameError };
+      }
+
+      const usernameNormalized = normalizeUsername(username);
+
+      if (getUserByNormalizedUsername(usernameNormalized)) {
+        return { ok: false, message: 'Username is already taken.' };
+      }
+
+      const created = await createLinkedUser(username);
+
+      if (!created.ok || !created.user) {
+        return created;
+      }
+
+      pendingAniListSignupByFlowId.delete(flowId);
+
+      return await finishAniListLogin({
+        accessToken: signup.accessToken,
+        viewer: signup.viewer,
+        userId: created.user.id,
+        res,
+      });
+    }
+    case 'linkAniListAccount': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+
+      const { flow, authUrl } = createAniListFlow({
+        type: 'link',
+        userId: currentSession.user.id,
+        returnTo: getWebOrigin(req),
+      });
+
+      return {
+        ok: true,
+        pendingOAuth: true,
+        flowId: flow.id,
+        authUrl,
+        linked: false,
+        message: 'Open AniList to continue.',
+      };
+    }
+    case 'pollAniListLink': {
+      cleanupAniListFlows();
+
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, done: true, message: 'You must be logged in.', linked: false };
+      }
+
+      const flowId = String(args[0] || '');
+      const flow = pendingAniListFlows.get(flowId);
+
+      if (!flow || Number(flow.userId) !== Number(currentSession.user.id)) {
+        return { ok: false, done: true, message: 'AniList link session expired. Try linking again.', linked: false };
+      }
+
+      if (flow.status === 'pending') {
+        return { ok: true, done: false, linked: false, message: 'Waiting for AniList authorization.' };
+      }
+
+      pendingAniListFlows.delete(flowId);
+
+      if (flow.status === 'failed') {
+        return { ok: false, done: true, linked: false, message: flow.error || 'AniList link failed.' };
+      }
+
+      return { ...flow.result, done: true };
+    }
+    case 'resolveAniListLinkConflict': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+
+      cleanupAniListFlows();
+
+      const conflict = pendingAniListLinkConflictByUserId.get(Number(currentSession.user.id));
+
+      if (!conflict) {
+        return { ok: false, message: 'No AniList link conflict is waiting.', linked: false };
+      }
+
+      const action = String(args[0] || '').trim();
+
+      if (!['transfer', 'merge'].includes(action)) {
+        return { ok: false, message: 'Choose transfer or merge.', linked: false };
+      }
+
+      pendingAniListLinkConflictByUserId.delete(Number(currentSession.user.id));
+
+      let mergeSummary = null;
+
+      if (action === 'merge') {
+        mergeSummary = mergeUserIntoUser(conflict.sourceUserId, conflict.targetUserId);
+      }
+
+      const result = await linkAniListToUser({
+        accessToken: conflict.accessToken,
+        viewer: conflict.viewer,
+        userId: conflict.targetUserId,
+      });
+
+      return {
+        ...result,
+        message:
+          action === 'merge'
+            ? `${result.message} Merged ${mergeSummary?.movedEntries ?? 0} list entries from the old local account.`
+            : result.message,
+        resolution: action,
+        mergeSummary,
+      };
+    }
     case 'getAniListLinkStatus': {
       if (!currentSession.authenticated) {
         return { ok: false, message: 'You must be logged in.', linked: false };
@@ -655,6 +1244,77 @@ async function handleRpc(method, args, req, res) {
   }
 }
 
+async function handleAniListCallback(req, res) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
+  const stateValue = requestUrl.searchParams.get('state') || '';
+  const code = requestUrl.searchParams.get('code');
+  const error = requestUrl.searchParams.get('error');
+  const [flowId, returnedState] = stateValue.split('.');
+  const flow = flowId ? pendingAniListFlows.get(flowId) : null;
+  const returnTo = flow?.returnTo || DEFAULT_WEB_ORIGIN;
+
+  if (!flow || !returnedState || returnedState !== flow.state) {
+    sendAniListCallbackPage(
+      res,
+      'AniList login failed',
+      'The authorization response could not be verified. You can close this tab and try again.',
+      returnTo
+    );
+    return;
+  }
+
+  if (error) {
+    flow.status = 'failed';
+    flow.error = 'AniList authorization was cancelled.';
+    sendAniListCallbackPage(
+      res,
+      'AniList login cancelled',
+      'The authorization request was not completed. You can close this tab.',
+      returnTo
+    );
+    return;
+  }
+
+  if (!code) {
+    flow.status = 'failed';
+    flow.error = 'AniList did not return an authorization code.';
+    sendAniListCallbackPage(
+      res,
+      'AniList login failed',
+      'AniList did not return an authorization code. You can close this tab and try again.',
+      returnTo
+    );
+    return;
+  }
+
+  try {
+    const accessToken = await exchangeAniListCodeForToken(code);
+    const viewer = await anilist.getViewer(accessToken);
+    flow.result =
+      flow.type === 'link'
+        ? await handleAniListLinkCallback(flow, accessToken, viewer)
+        : await handleAniListLoginCallback(flow, accessToken, viewer);
+    flow.status = 'completed';
+
+    sendAniListCallbackPage(
+      res,
+      'AniList connected',
+      'You can close this tab and return to Seenary.',
+      returnTo
+    );
+  } catch (callbackError) {
+    console.error('AniList OAuth callback error:', callbackError);
+    flow.status = 'failed';
+    flow.error = callbackError.message || 'Failed to finish AniList authorization.';
+    sendAniListCallbackPage(
+      res,
+      'AniList login failed',
+      'Seenary could not finish the AniList authorization. You can close this tab and try again.',
+      returnTo
+    );
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     setCorsHeaders(req, res);
@@ -668,6 +1328,22 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       ...(process.env.SHOW_DB_PATH === 'true' ? { dbPath } : {}),
     });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/desktop-updates/')) {
+    sendDesktopUpdateFile(req, res);
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/auth/anilist/callback')) {
+    try {
+      await handleAniListCallback(req, res);
+    } catch (error) {
+      console.error('AniList callback route error:', error);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Failed to finish AniList authorization.');
+    }
     return;
   }
 
@@ -690,5 +1366,6 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, () => {
+  deleteExpiredWebSessions();
   console.log(`Seenary API listening on port ${PORT}`);
 });

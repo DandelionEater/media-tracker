@@ -1,6 +1,6 @@
 {
   "name": "seenary",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
@@ -17,6 +17,7 @@
   "dependencies": {
     "argon2": "^0.41.1",
     "better-sqlite3": "^12.8.0",
+    "electron-updater": "^6.8.3",
     "node-fetch": "^2.7.0"
   },
   "devDependencies": {
@@ -34,13 +35,22 @@
     },
     "files": [
       "desktop-main.js",
+      "updater.js",
       "tray.js",
       "shortcuts.js",
       "icon.png"
     ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://api.seenary.app/desktop-updates"
+      }
+    ],
     "extraMetadata": {
       "main": "desktop-main.js",
-      "dependencies": {}
+      "dependencies": {
+        "electron-updater": "^6.8.3"
+      }
     },
     "win": {
       "signAndEditExecutable": false,

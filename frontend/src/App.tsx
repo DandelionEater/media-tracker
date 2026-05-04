@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { ResultsGrid } from "./components/ResultsGrid";
 import { searchAnime } from "./services/anilist";
 import AnimeDetails from "./components/AnimeDetails";
@@ -65,12 +65,21 @@ type TrackedAnimeEntry = {
 
 type AppNotification = {
   id: number;
-  kind: "success" | "error";
+  kind: "success" | "error" | "warning";
   title: string;
   message: string;
   createdAt: string;
   read: boolean;
 };
+
+const SESSION_WARNING_THRESHOLDS = [
+  { key: "3d", label: "3 days", ms: 3 * 24 * 60 * 60 * 1000 },
+  { key: "1d", label: "1 day", ms: 24 * 60 * 60 * 1000 },
+  { key: "12h", label: "12 hours", ms: 12 * 60 * 60 * 1000 },
+  { key: "1h", label: "1 hour", ms: 60 * 60 * 1000 },
+];
+
+const SESSION_WARNING_POLL_MS = 15 * 60 * 1000;
 
 function App() {
   const [results, setResults] = useState<any[]>([]);
@@ -88,9 +97,10 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const sessionWarningKeysRef = useRef<Set<string>>(new Set());
 
   const showSyncToast = (
-    kind: "success" | "error",
+    kind: "success" | "error" | "warning",
     title: string,
     message: string
   ) => {
@@ -140,6 +150,7 @@ function App() {
           });
 
           setShowTutorial(!Boolean(session.user.tutorial_dismissed));
+          notifyIfSessionIsExpiring(session.expiresAt);
           await loadTrackedEntries();
         }
       } finally {
@@ -149,6 +160,39 @@ function App() {
 
     loadSession();
   }, []);
+
+  useEffect(() => {
+    if (!authUser) {
+      sessionWarningKeysRef.current.clear();
+      return;
+    }
+
+    const checkSessionExpiry = async () => {
+      try {
+        const session = await window.api.getSession();
+
+        if (!session.authenticated || !session.user) {
+          setAuthUser(null);
+          setShowTutorial(false);
+          setTrackedEntries([]);
+          showSyncToast(
+            "warning",
+            "Session expired",
+            "Your session has expired. Log in again to keep syncing your list."
+          );
+          return;
+        }
+
+        notifyIfSessionIsExpiring(session.expiresAt);
+      } catch (error) {
+        console.error("Failed to check session expiry:", error);
+      }
+    };
+
+    const intervalId = window.setInterval(checkSessionExpiry, SESSION_WARNING_POLL_MS);
+
+    return () => window.clearInterval(intervalId);
+  }, [authUser]);
 
   const loadTrackedEntries = async () => {
     try {
@@ -164,6 +208,35 @@ function App() {
       console.error("Failed to load tracked anime entries:", error);
       setTrackedEntries([]);
     }
+  };
+
+  const notifyIfSessionIsExpiring = (expiresAt?: number) => {
+    if (!expiresAt) {
+      return;
+    }
+
+    const remainingMs = expiresAt - Date.now();
+
+    if (remainingMs <= 0) {
+      return;
+    }
+
+    const nextWarning = [...SESSION_WARNING_THRESHOLDS].reverse().find(
+      (threshold) =>
+        remainingMs <= threshold.ms &&
+        !sessionWarningKeysRef.current.has(`${expiresAt}:${threshold.key}`)
+    );
+
+    if (!nextWarning) {
+      return;
+    }
+
+    sessionWarningKeysRef.current.add(`${expiresAt}:${nextWarning.key}`);
+    showSyncToast(
+      "warning",
+      "Session expiring soon",
+      `Your session expires in about ${nextWarning.label}. Use the app or log in again to keep background sync running.`
+    );
   };
 
   const handleUpdateSettings = async (nextSettings: Partial<AppSettings>) => {

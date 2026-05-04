@@ -87,7 +87,7 @@
 }
 
 .animate-sync-ring {
-  animation: sync-ring 850ms ease-out;
+  animation: sync-ring 850ms linear infinite;
 }
 
 .carousel-skeleton-shimmer {

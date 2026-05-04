@@ -9,6 +9,8 @@ const API_BASE_URL =
     ? "http://localhost:3000"
     : "https://api.seenary.app");
 
+let pendingAniListLoginFlowId: string | null = null;
+
 async function rpc(method: string, args: unknown[] = []) {
   const response = await fetch(`${API_BASE_URL}/rpc`, {
     method: "POST",
@@ -26,6 +28,76 @@ async function rpc(method: string, args: unknown[] = []) {
   }
 
   return payload;
+}
+
+function openPopup(url: string) {
+  const popup = window.open(url, "seenary-anilist-oauth", "width=560,height=720,popup=yes");
+
+  if (!popup) {
+    throw new Error("Allow popups so Seenary can open AniList authorization.");
+  }
+
+  popup.focus();
+  return popup;
+}
+
+async function waitForAniListFlow(method: string, flowId: string, popup: Window | null) {
+  const startedAt = Date.now();
+  const timeoutMs = 10 * 60 * 1000;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = await rpc(method, [flowId]);
+
+    if (result.done) {
+      return result;
+    }
+
+    if (popup?.closed) {
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+    } else {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+  }
+
+  throw new Error("AniList authorization timed out.");
+}
+
+async function startAniListLogin() {
+  const start = await rpc("startAniListLogin");
+
+  if (!start.pendingOAuth) {
+    return start;
+  }
+
+  const popup = openPopup(start.authUrl);
+  const result = await waitForAniListFlow("pollAniListLogin", start.flowId, popup);
+
+  if (result.needsProfile) {
+    pendingAniListLoginFlowId = start.flowId;
+  }
+
+  return result;
+}
+
+async function completeAniListLogin(username: string) {
+  const result = await rpc("completeAniListLogin", [username, pendingAniListLoginFlowId]);
+
+  if (result.ok) {
+    pendingAniListLoginFlowId = null;
+  }
+
+  return result;
+}
+
+async function linkAniListAccount() {
+  const start = await rpc("linkAniListAccount");
+
+  if (!start.pendingOAuth) {
+    return start;
+  }
+
+  const popup = openPopup(start.authUrl);
+  return await waitForAniListFlow("pollAniListLink", start.flowId, popup);
 }
 
 export function installApiClient() {
@@ -54,10 +126,10 @@ export function installApiClient() {
     cacheMinimalAnime: (media) => rpc("cacheMinimalAnime", [media]),
     register: (username, password) => rpc("register", [username, password]),
     login: (username, password) => rpc("login", [username, password]),
-    startAniListLogin: () => rpc("startAniListLogin"),
-    completeAniListLogin: (username) => rpc("completeAniListLogin", [username]),
+    startAniListLogin,
+    completeAniListLogin,
     getAniListLinkStatus: () => rpc("getAniListLinkStatus"),
-    linkAniListAccount: () => rpc("linkAniListAccount"),
+    linkAniListAccount,
     resolveAniListLinkConflict: (action) => rpc("resolveAniListLinkConflict", [action]),
     logout: () => rpc("logout"),
     getSession: () => rpc("getSession"),

@@ -2,7 +2,7 @@ import { CheckIcon, ExclamationTriangleIcon } from "@heroicons/react/24/outline"
 
 export type SyncToastState = {
   id: number;
-  kind: "success" | "error";
+  kind: "success" | "error" | "warning";
   title: string;
   message: string;
 } | null;
@@ -17,6 +17,7 @@ export function SyncToast({ toast }: SyncToastProps) {
   }
 
   const isSuccess = toast.kind === "success";
+  const isError = toast.kind === "error";
   const Icon = isSuccess ? CheckIcon : ExclamationTriangleIcon;
 
   return (
@@ -30,17 +31,29 @@ export function SyncToast({ toast }: SyncToastProps) {
         <div className="relative grid h-11 w-11 shrink-0 place-items-center">
           <span
             className={`absolute inset-0 rounded-full border-2 ${
-              isSuccess ? "border-emerald-300/25" : "border-amber-300/25"
+              isSuccess
+                ? "border-emerald-300/25"
+                : isError
+                  ? "border-rose-300/25"
+                  : "border-amber-300/25"
             }`}
           />
           <span
             className={`absolute inset-0 rounded-full border-2 border-transparent animate-sync-ring ${
-              isSuccess ? "border-t-emerald-300 border-r-emerald-300" : "border-t-amber-300 border-r-amber-300"
+              isSuccess
+                ? "border-t-emerald-300 border-r-emerald-300"
+                : isError
+                  ? "border-t-rose-300 border-r-rose-300"
+                  : "border-t-amber-300 border-r-amber-300"
             }`}
           />
           <span
             className={`grid h-7 w-7 place-items-center rounded-full ${
-              isSuccess ? "bg-emerald-300 text-black" : "bg-amber-300 text-black"
+              isSuccess
+                ? "bg-emerald-300 text-black"
+                : isError
+                  ? "bg-rose-300 text-black"
+                  : "bg-amber-300 text-black"
             }`}
           >
             <Icon className="h-4 w-4 stroke-[2.4]" />

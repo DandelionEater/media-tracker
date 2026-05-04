@@ -19,6 +19,7 @@ type AuthResponse = {
 type SessionResponse = {
   authenticated: boolean;
   user: AuthUser | null;
+  expiresAt?: number;
 };
 
 type AniListLinkedAccount = {

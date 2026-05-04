@@ -174,6 +174,19 @@ db.prepare(
 
 db.prepare(
   `
+  CREATE TABLE IF NOT EXISTS web_sessions (
+    session_hash TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`
+).run();
+
+db.prepare(
+  `
   CREATE TABLE IF NOT EXISTS anilist_accounts (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL UNIQUE,
@@ -588,6 +601,40 @@ const setAppSettingStmt = db.prepare(`
 const deleteAppSettingStmt = db.prepare(`
   DELETE FROM app_settings
   WHERE key = ?
+`);
+
+const insertWebSessionStmt = db.prepare(`
+  INSERT INTO web_sessions (
+    session_hash,
+    user_id,
+    expires_at,
+    created_at,
+    updated_at
+  ) VALUES (?, ?, ?, ?, ?)
+`);
+
+const getWebSessionStmt = db.prepare(`
+  SELECT *
+  FROM web_sessions
+  WHERE session_hash = ?
+`);
+
+const updateWebSessionExpiryStmt = db.prepare(`
+  UPDATE web_sessions
+  SET
+    expires_at = ?,
+    updated_at = ?
+  WHERE session_hash = ?
+`);
+
+const deleteWebSessionStmt = db.prepare(`
+  DELETE FROM web_sessions
+  WHERE session_hash = ?
+`);
+
+const deleteExpiredWebSessionsStmt = db.prepare(`
+  DELETE FROM web_sessions
+  WHERE expires_at <= ?
 `);
 
 const getAniListAccountByAniListUserIdStmt = db.prepare(`
@@ -1165,6 +1212,27 @@ function deleteAppSetting(key) {
   deleteAppSettingStmt.run(key);
 }
 
+function createWebSessionRecord({ sessionHash, userId, expiresAt }) {
+  const now = Date.now();
+  insertWebSessionStmt.run(sessionHash, userId, expiresAt, now, now);
+}
+
+function getWebSessionByHash(sessionHash) {
+  return getWebSessionStmt.get(sessionHash);
+}
+
+function updateWebSessionExpiry(sessionHash, expiresAt) {
+  updateWebSessionExpiryStmt.run(expiresAt, Date.now(), sessionHash);
+}
+
+function deleteWebSession(sessionHash) {
+  deleteWebSessionStmt.run(sessionHash);
+}
+
+function deleteExpiredWebSessions(now = Date.now()) {
+  deleteExpiredWebSessionsStmt.run(now);
+}
+
 function getAniListAccountByAniListUserId(anilistUserId) {
   return getAniListAccountByAniListUserIdStmt.get(anilistUserId);
 }
@@ -1338,6 +1406,11 @@ module.exports = {
   getAppSetting,
   setAppSetting,
   deleteAppSetting,
+  createWebSessionRecord,
+  getWebSessionByHash,
+  updateWebSessionExpiry,
+  deleteWebSession,
+  deleteExpiredWebSessions,
   getAniListAccountByAniListUserId,
   getAniListAccountByUserId,
   deleteAniListAccountByUserId,

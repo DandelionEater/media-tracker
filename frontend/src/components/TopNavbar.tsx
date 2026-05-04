@@ -14,7 +14,7 @@ import {
 
 type NotificationItem = {
   id: number;
-  kind: "success" | "error";
+  kind: "success" | "error" | "warning";
   title: string;
   message: string;
   createdAt: string;
