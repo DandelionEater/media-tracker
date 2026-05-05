@@ -399,8 +399,95 @@ function getDesktopUpdatesDebugInfo() {
     desktopUpdatesDirExists: Boolean(rootStats),
     desktopUpdatesDirIsDirectory: Boolean(rootStats?.isDirectory()),
     files,
+    candidates: findDesktopUpdateCandidates(),
     error,
   };
+}
+
+function getDirectorySummary(directoryPath) {
+  try {
+    const stats = fs.statSync(directoryPath);
+
+    if (!stats.isDirectory()) {
+      return { path: directoryPath, exists: true, isDirectory: false, entries: [] };
+    }
+
+    return {
+      path: directoryPath,
+      exists: true,
+      isDirectory: true,
+      entries: fs.readdirSync(directoryPath, { withFileTypes: true }).map((entry) => ({
+        name: entry.name,
+        type: entry.isDirectory() ? 'directory' : 'file',
+      })),
+    };
+  } catch (summaryError) {
+    return {
+      path: directoryPath,
+      exists: false,
+      isDirectory: false,
+      entries: [],
+      error: summaryError.message,
+    };
+  }
+}
+
+function findDesktopUpdateCandidates() {
+  const startPaths = Array.from(
+    new Set([
+      process.cwd(),
+      __dirname,
+      path.dirname(__dirname),
+      path.dirname(dbPath),
+      path.dirname(path.dirname(dbPath)),
+      path.join(process.cwd(), 'data'),
+      path.join(__dirname, 'data'),
+      path.join(path.dirname(__dirname), 'data'),
+    ])
+  );
+  const found = [];
+  const visited = new Set();
+  const maxDepth = 4;
+  const maxFound = 30;
+
+  function walk(directoryPath, depth) {
+    const resolvedPath = path.resolve(directoryPath);
+
+    if (visited.has(resolvedPath) || found.length >= maxFound) return;
+    visited.add(resolvedPath);
+
+    let entries;
+
+    try {
+      entries = fs.readdirSync(resolvedPath, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    const hasLatestYml = entries.some((entry) => entry.isFile() && entry.name === 'latest.yml');
+    const hasDesktopUpdatesDir = entries.some(
+      (entry) => entry.isDirectory() && entry.name === 'desktop-updates'
+    );
+
+    if (hasLatestYml || hasDesktopUpdatesDir || path.basename(resolvedPath) === 'desktop-updates') {
+      found.push(getDirectorySummary(resolvedPath));
+    }
+
+    if (depth >= maxDepth) return;
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (entry.name === 'node_modules' || entry.name === '.git') continue;
+      walk(path.join(resolvedPath, entry.name), depth + 1);
+      if (found.length >= maxFound) return;
+    }
+  }
+
+  for (const startPath of startPaths) {
+    walk(startPath, 0);
+  }
+
+  return found;
 }
 
 function sendDesktopUpdatesDebug(req, res) {
