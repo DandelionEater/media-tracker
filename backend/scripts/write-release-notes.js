@@ -4,7 +4,9 @@ const path = require('path');
 
 const packageJson = require('../package.json');
 
-const releaseDir = path.resolve(__dirname, '..', '..', 'release');
+const releaseDir = process.argv[2]
+  ? path.resolve(process.argv[2])
+  : path.resolve(__dirname, '..', '..', 'release', packageJson.version);
 const latestYmlPath = path.join(releaseDir, 'latest.yml');
 
 function runGit(args) {

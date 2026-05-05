@@ -8,7 +8,7 @@
     "desktop": "electron .",
     "build:frontend": "npm --prefix ../frontend run build",
     "pack": "npm run build:frontend && electron-builder --dir",
-    "dist": "npm run build:frontend && electron-builder --win nsis && node scripts/write-release-notes.js"
+    "dist": "node scripts/build-release.js"
   },
   "keywords": [],
   "author": "Dainius Genzuras",
