@@ -1,4 +1,4 @@
-const { app, dialog } = require('electron');
+const { app, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
 const DEFAULT_UPDATE_FEED_URL = 'https://api.seenary.app/desktop-updates';
@@ -7,7 +7,10 @@ const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
 let checkTimer = null;
 let isChecking = false;
 let isDownloading = false;
-let manualCheckWindow = null;
+let activeWindow = null;
+let latestUpdateInfo = null;
+let downloadedUpdateInfo = null;
+let handlersRegistered = false;
 
 function getUpdateFeedUrl() {
   return process.env.SEENARY_UPDATE_FEED_URL || DEFAULT_UPDATE_FEED_URL;
@@ -18,12 +21,14 @@ function setupAutoUpdates(win) {
     return;
   }
 
+  activeWindow = win;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.setFeedURL({
     provider: 'generic',
     url: getUpdateFeedUrl(),
   });
+  registerUpdaterIpc();
 
   autoUpdater.on('checking-for-update', () => {
     isChecking = true;
@@ -31,74 +36,36 @@ function setupAutoUpdates(win) {
 
   autoUpdater.on('update-not-available', () => {
     isChecking = false;
-
-    if (manualCheckWindow) {
-      dialog.showMessageBox(manualCheckWindow, {
-        type: 'info',
-        buttons: ['OK'],
-        title: 'Seenary is up to date',
-        message: 'You are already using the latest version of Seenary.',
-      });
-      manualCheckWindow = null;
-    }
   });
 
-  autoUpdater.on('update-available', async (info) => {
+  autoUpdater.on('update-available', (info) => {
     isChecking = false;
-    manualCheckWindow = null;
+    latestUpdateInfo = normalizeUpdateInfo(info);
 
     if (isDownloading) {
       return;
     }
 
-    const choice = await dialog.showMessageBox(win, {
-      type: 'info',
-      buttons: ['Download update', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Seenary update available',
-      message: `Seenary ${info.version} is available.`,
-      detail: 'Download it now? You can keep using Seenary while the update downloads.',
-    });
+    sendToRenderer('updater:update-available', latestUpdateInfo);
+  });
 
-    if (choice.response !== 0) {
-      return;
-    }
-
-    isDownloading = true;
-    autoUpdater.downloadUpdate().catch((error) => {
-      isDownloading = false;
-      console.error('Failed to download update:', error);
-      dialog.showErrorBox(
-        'Update download failed',
-        error.message || 'Seenary could not download the update.'
-      );
+  autoUpdater.on('download-progress', (progress) => {
+    sendToRenderer('updater:downloading', {
+      percent: Math.round(progress.percent || 0),
+      transferred: progress.transferred,
+      total: progress.total,
+      bytesPerSecond: progress.bytesPerSecond,
     });
   });
 
-  autoUpdater.on('update-downloaded', async (info) => {
+  autoUpdater.on('update-downloaded', (info) => {
     isDownloading = false;
-
-    const choice = await dialog.showMessageBox(win, {
-      type: 'info',
-      buttons: ['Restart and install', 'Later'],
-      defaultId: 0,
-      cancelId: 1,
-      title: 'Seenary update ready',
-      message: `Seenary ${info.version} is ready to install.`,
-      detail: 'Restart Seenary now to install the update?',
-    });
-
-    if (choice.response === 0) {
-      autoUpdater.quitAndInstall(false, true);
-    }
+    downloadedUpdateInfo = normalizeUpdateInfo(info);
+    sendToRenderer('updater:update-downloaded', downloadedUpdateInfo);
   });
 
   autoUpdater.on('error', (error) => {
-    isChecking = false;
-    isDownloading = false;
-    manualCheckWindow = null;
-    console.error('Auto update error:', error);
+    handleUpdateError(error);
   });
 
   checkForUpdates();
@@ -111,19 +78,96 @@ function checkForUpdates(win = null, options = {}) {
     return;
   }
 
-  manualCheckWindow = options.manual ? win : null;
+  activeWindow = win || activeWindow;
 
   autoUpdater.checkForUpdates().catch((error) => {
-    isChecking = false;
-    manualCheckWindow = null;
-    console.error('Failed to check for updates:', error);
+    handleUpdateError(error);
+  });
+}
 
-    if (options.manual && win) {
-      dialog.showErrorBox(
-        'Update check failed',
-        error.message || 'Seenary could not check for updates.'
-      );
+function registerUpdaterIpc() {
+  if (handlersRegistered) {
+    return;
+  }
+
+  handlersRegistered = true;
+
+  ipcMain.handle('updater:download', async () => {
+    if (!app.isPackaged || isDownloading) {
+      return { ok: false };
     }
+
+    isDownloading = true;
+    sendToRenderer('updater:downloading', { percent: 0 });
+
+    try {
+      await autoUpdater.downloadUpdate();
+      return { ok: true };
+    } catch (error) {
+      handleUpdateError(error);
+      return {
+        ok: false,
+        message: error.message || 'Seenary could not download the update.',
+      };
+    }
+  });
+
+  ipcMain.handle('updater:install', () => {
+    if (!app.isPackaged || !downloadedUpdateInfo) {
+      return { ok: false };
+    }
+
+    autoUpdater.quitAndInstall(false, true);
+    return { ok: true };
+  });
+
+  ipcMain.handle('updater:remind-later', () => {
+    return { ok: true };
+  });
+}
+
+function sendToRenderer(channel, payload) {
+  const target = activeWindow && !activeWindow.isDestroyed() ? activeWindow : null;
+
+  if (!target) {
+    return;
+  }
+
+  target.webContents.send(channel, payload);
+}
+
+function normalizeUpdateInfo(info = {}) {
+  return {
+    version: info.version || '',
+    releaseName: info.releaseName || `Seenary ${info.version || ''}`.trim(),
+    releaseNotes: normalizeReleaseNotes(info.releaseNotes),
+    releaseDate: info.releaseDate || null,
+  };
+}
+
+function normalizeReleaseNotes(releaseNotes) {
+  if (Array.isArray(releaseNotes)) {
+    return releaseNotes
+      .map((note) => {
+        if (typeof note === 'string') {
+          return note;
+        }
+
+        return note?.note || note?.text || '';
+      })
+      .filter(Boolean)
+      .join('\n');
+  }
+
+  return typeof releaseNotes === 'string' ? releaseNotes : '';
+}
+
+function handleUpdateError(error) {
+  isChecking = false;
+  isDownloading = false;
+  console.error('Auto update error:', error);
+  sendToRenderer('updater:error', {
+    message: error.message || 'Seenary could not check for updates.',
   });
 }
 

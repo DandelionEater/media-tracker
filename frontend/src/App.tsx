@@ -10,6 +10,7 @@ import { ListEntryModal } from "./components/ListEntryModal";
 import { SettingsPage, type AppSettings } from "./components/SettingsPage";
 import { getPreferredTitle } from "./utils/titlePreference";
 import { SyncToast, type SyncToastState } from "./components/SyncToast";
+import { UpdateModal } from "./components/UpdateModal";
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   themeAccent: "cyan",
@@ -72,6 +73,21 @@ type AppNotification = {
   read: boolean;
 };
 
+type DesktopUpdateInfo = {
+  version: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseDate?: string | null;
+};
+
+type DesktopUpdateState = {
+  visible: boolean;
+  status: "available" | "downloading" | "downloaded" | "error";
+  info: DesktopUpdateInfo | null;
+  progress: number;
+  errorMessage: string | null;
+};
+
 const SESSION_WARNING_THRESHOLDS = [
   { key: "3d", label: "3 days", ms: 3 * 24 * 60 * 60 * 1000 },
   { key: "1d", label: "1 day", ms: 24 * 60 * 60 * 1000 },
@@ -97,6 +113,13 @@ function App() {
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
+  const [desktopUpdate, setDesktopUpdate] = useState<DesktopUpdateState>({
+    visible: false,
+    status: "available",
+    info: null,
+    progress: 0,
+    errorMessage: null,
+  });
   const sessionWarningKeysRef = useRef<Set<string>>(new Set());
 
   const showSyncToast = (
@@ -159,6 +182,59 @@ function App() {
     };
 
     loadSession();
+  }, []);
+
+  useEffect(() => {
+    const updater = window.desktopUpdater;
+
+    if (!updater) {
+      return;
+    }
+
+    const removeAvailable = updater.onUpdateAvailable((info) => {
+      setDesktopUpdate({
+        visible: true,
+        status: "available",
+        info,
+        progress: 0,
+        errorMessage: null,
+      });
+    });
+
+    const removeDownloading = updater.onUpdateDownloading((progress) => {
+      setDesktopUpdate((current) => ({
+        ...current,
+        visible: true,
+        status: "downloading",
+        progress: Math.max(0, Math.min(100, progress.percent ?? current.progress)),
+      }));
+    });
+
+    const removeDownloaded = updater.onUpdateDownloaded((info) => {
+      setDesktopUpdate((current) => ({
+        visible: true,
+        status: "downloaded",
+        info: info || current.info,
+        progress: 100,
+        errorMessage: null,
+      }));
+    });
+
+    const removeError = updater.onUpdateError((error) => {
+      setDesktopUpdate((current) => ({
+        ...current,
+        visible: Boolean(current.info),
+        status: "error",
+        errorMessage: error.message || "Seenary could not finish the update.",
+      }));
+    });
+
+    return () => {
+      removeAvailable();
+      removeDownloading();
+      removeDownloaded();
+      removeError();
+    };
   }, []);
 
   useEffect(() => {
@@ -467,6 +543,30 @@ function App() {
     setPreviousView("home");
   };
 
+  const handleDownloadDesktopUpdate = async () => {
+    const result = await window.desktopUpdater?.downloadUpdate();
+
+    if (result && !result.ok) {
+      setDesktopUpdate((current) => ({
+        ...current,
+        status: "error",
+        errorMessage: result.message || "Seenary could not download the update.",
+      }));
+    }
+  };
+
+  const handleInstallDesktopUpdate = async () => {
+    await window.desktopUpdater?.installUpdate();
+  };
+
+  const handleRemindDesktopUpdateLater = async () => {
+    await window.desktopUpdater?.remindLater();
+    setDesktopUpdate((current) => ({
+      ...current,
+      visible: false,
+    }));
+  };
+
   const handleOpenAnimeDetails = (animeId: number) => {
     setDetailsReturnView(currentView);
     setSelectedAnimeId(animeId);
@@ -668,7 +768,19 @@ function App() {
                 }}
               />
             )}
+
           </>
+        )}
+        {desktopUpdate.visible && desktopUpdate.info && (
+          <UpdateModal
+            info={desktopUpdate.info}
+            status={desktopUpdate.status}
+            progress={desktopUpdate.progress}
+            errorMessage={desktopUpdate.errorMessage}
+            onDownload={handleDownloadDesktopUpdate}
+            onInstall={handleInstallDesktopUpdate}
+            onRemindLater={handleRemindDesktopUpdateLater}
+          />
         )}
       </div>
     </div>

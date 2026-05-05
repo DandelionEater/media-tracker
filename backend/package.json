@@ -1,6 +1,6 @@
 {
   "name": "seenary",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
@@ -8,7 +8,7 @@
     "desktop": "electron .",
     "build:frontend": "npm --prefix ../frontend run build",
     "pack": "npm run build:frontend && electron-builder --dir",
-    "dist": "npm run build:frontend && electron-builder --win nsis"
+    "dist": "npm run build:frontend && electron-builder --win nsis && node scripts/write-release-notes.js"
   },
   "keywords": [],
   "author": "Dainius Genzuras",
@@ -35,7 +35,9 @@
     },
     "files": [
       "desktop-main.js",
+      "desktop-preload.js",
       "updater.js",
+      "scripts/write-release-notes.js",
       "tray.js",
       "shortcuts.js",
       "icon.png"

@@ -19,6 +19,7 @@ function createWindow() {
     hasShadow: true,
     icon: path.join(__dirname, 'icon.png'),
     webPreferences: {
+      preload: path.join(__dirname, 'desktop-preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
     },

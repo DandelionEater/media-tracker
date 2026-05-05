@@ -364,6 +364,66 @@ function getContentType(filePath) {
   }
 }
 
+function getDesktopUpdatesDebugInfo() {
+  const updatesRoot = path.resolve(DESKTOP_UPDATES_DIR);
+  let rootStats = null;
+  let files = [];
+  let error = null;
+
+  try {
+    rootStats = fs.statSync(updatesRoot);
+
+    if (rootStats.isDirectory()) {
+      files = fs.readdirSync(updatesRoot, { withFileTypes: true }).map((entry) => {
+        const entryPath = path.join(updatesRoot, entry.name);
+        const stats = fs.statSync(entryPath);
+
+        return {
+          name: entry.name,
+          type: entry.isDirectory() ? 'directory' : 'file',
+          size: entry.isFile() ? stats.size : null,
+          modifiedAt: stats.mtime.toISOString(),
+        };
+      });
+    }
+  } catch (debugError) {
+    error = debugError.message;
+  }
+
+  return {
+    cwd: process.cwd(),
+    serverDir: __dirname,
+    dbPath,
+    desktopUpdatesDir: DESKTOP_UPDATES_DIR,
+    resolvedDesktopUpdatesDir: updatesRoot,
+    desktopUpdatesDirExists: Boolean(rootStats),
+    desktopUpdatesDirIsDirectory: Boolean(rootStats?.isDirectory()),
+    files,
+    error,
+  };
+}
+
+function sendDesktopUpdatesDebug(req, res) {
+  const debugToken = process.env.DESKTOP_UPDATES_DEBUG_TOKEN;
+
+  if (!debugToken) {
+    sendJson(req, res, 404, { ok: false, message: 'Not found.' });
+    return;
+  }
+
+  const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
+
+  if (requestUrl.searchParams.get('token') !== debugToken) {
+    sendJson(req, res, 403, { ok: false, message: 'Forbidden.' });
+    return;
+  }
+
+  sendJson(req, res, 200, {
+    ok: true,
+    ...getDesktopUpdatesDebugInfo(),
+  });
+}
+
 function sendDesktopUpdateFile(req, res) {
   const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
   const relativePath = decodeURIComponent(
@@ -1328,6 +1388,11 @@ const server = http.createServer(async (req, res) => {
       ok: true,
       ...(process.env.SHOW_DB_PATH === 'true' ? { dbPath } : {}),
     });
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/desktop-updates-debug')) {
+    sendDesktopUpdatesDebug(req, res);
     return;
   }
 

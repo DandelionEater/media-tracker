@@ -60,6 +60,13 @@ type SyncActivityItem = {
   }>;
 };
 
+type DesktopUpdateInfo = {
+  version: string;
+  releaseName?: string;
+  releaseNotes?: string;
+  releaseDate?: string | null;
+};
+
 declare global {
   interface Window {
     api: {
@@ -281,6 +288,22 @@ declare global {
         message: string;
         removedCount?: number;
       }>;
+    };
+    desktopUpdater?: {
+      onUpdateAvailable: (callback: (info: DesktopUpdateInfo) => void) => () => void;
+      onUpdateDownloading: (
+        callback: (progress: {
+          percent?: number;
+          transferred?: number;
+          total?: number;
+          bytesPerSecond?: number;
+        }) => void
+      ) => () => void;
+      onUpdateDownloaded: (callback: (info: DesktopUpdateInfo) => void) => () => void;
+      onUpdateError: (callback: (error: { message?: string }) => void) => () => void;
+      downloadUpdate: () => Promise<{ ok: boolean; message?: string }>;
+      installUpdate: () => Promise<{ ok: boolean; message?: string }>;
+      remindLater: () => Promise<{ ok: boolean }>;
     };
   }
 }
