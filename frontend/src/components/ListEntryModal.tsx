@@ -18,8 +18,8 @@ type ListEntryModalProps = {
   title?: string;
   totalEpisodes?: number | null;
   onClose: () => void;
-  onSaved: (entry: any) => void;
-  onRemoved: () => void;
+  onSaved: (entry: any, message?: string) => void;
+  onRemoved: (message?: string) => void;
 };
 
 const STATUS_OPTIONS = ["planned", "watching", "completed", "paused", "dropped"];
@@ -189,7 +189,7 @@ export function ListEntryModal({
       }
 
       setMessage(result.message);
-      onSaved(result.entry);
+      onSaved(result.entry, result.message);
       onClose();
     } catch (error) {
       console.error(error);
@@ -213,7 +213,7 @@ export function ListEntryModal({
         return;
       }
 
-      onRemoved();
+      onRemoved(result.message);
       onClose();
     } catch (error) {
       console.error(error);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
 import { ResultsGrid } from "./components/ResultsGrid";
 import { searchAnime } from "./services/anilist";
 import AnimeDetails from "./components/AnimeDetails";
@@ -157,6 +157,22 @@ function App() {
     setNotifications([]);
   };
 
+  const loadTrackedEntries = useCallback(async () => {
+    try {
+      const result = await window.api.getMyList();
+
+      if (!result.ok) {
+        setTrackedEntries([]);
+        return;
+      }
+
+      setTrackedEntries(result.entries || []);
+    } catch (error) {
+      console.error("Failed to load tracked anime entries:", error);
+      setTrackedEntries([]);
+    }
+  }, []);
+
   useEffect(() => {
     const loadSession = async () => {
       try {
@@ -182,7 +198,7 @@ function App() {
     };
 
     loadSession();
-  }, []);
+  }, [loadTrackedEntries]);
 
   useEffect(() => {
     const updater = window.desktopUpdater;
@@ -268,23 +284,29 @@ function App() {
     const intervalId = window.setInterval(checkSessionExpiry, SESSION_WARNING_POLL_MS);
 
     return () => window.clearInterval(intervalId);
-  }, [authUser]);
+  }, [authUser, loadTrackedEntries]);
 
-  const loadTrackedEntries = async () => {
-    try {
-      const result = await window.api.getMyList();
+  useEffect(() => {
+    if (!authUser) {
+      return;
+    }
 
-      if (!result.ok) {
-        setTrackedEntries([]);
+    const refreshLiveState = () => {
+      if (document.visibilityState === "hidden") {
         return;
       }
 
-      setTrackedEntries(result.entries || []);
-    } catch (error) {
-      console.error("Failed to load tracked anime entries:", error);
-      setTrackedEntries([]);
-    }
-  };
+      loadTrackedEntries();
+    };
+
+    window.addEventListener("focus", refreshLiveState);
+    document.addEventListener("visibilitychange", refreshLiveState);
+
+    return () => {
+      window.removeEventListener("focus", refreshLiveState);
+      document.removeEventListener("visibilitychange", refreshLiveState);
+    };
+  }, [authUser, loadTrackedEntries]);
 
   const notifyIfSessionIsExpiring = (expiresAt?: number) => {
     if (!expiresAt) {
@@ -321,11 +343,19 @@ function App() {
       setSettings(updatedSettings);
     } catch (error) {
       console.error("Failed to update settings:", error);
+      showSyncToast("error", "Settings update failed", "Failed to save your settings.");
     }
   };
 
   const handleResetSettings = async () => {
-    await handleUpdateSettings(DEFAULT_APP_SETTINGS);
+    try {
+      const updatedSettings = await window.api.updateSettings(DEFAULT_APP_SETTINGS);
+      setSettings(updatedSettings);
+      showSyncToast("success", "Settings reset", "Preferences were reset to defaults.");
+    } catch (error) {
+      console.error("Failed to reset settings:", error);
+      showSyncToast("error", "Settings reset failed", "Failed to reset your settings.");
+    }
   };
 
   const handleImportAniList = async (
@@ -693,11 +723,16 @@ function App() {
                 <AnimeDetails
                   animeId={selectedAnimeId}
                   onBack={handleBackFromDetails}
+                  onListChanged={loadTrackedEntries}
                   titleLanguage={settings.titleLanguage}
                 />
               ) : currentView === "list" ? (
                 <MyListPage
+                  entries={trackedEntries}
                   onSelectAnime={handleOpenAnimeDetails}
+                  onRefreshList={loadTrackedEntries}
+                  onListChanged={loadTrackedEntries}
+                  onNotify={showSyncToast}
                   titleLanguage={settings.titleLanguage}
                 />
               ) : currentView === "settings" ? (
@@ -758,13 +793,15 @@ function App() {
                 )}
                 totalEpisodes={editingListEntry.episodes ?? null}
                 onClose={() => setEditingListEntry(null)}
-                onSaved={async () => {
+                onSaved={async (_entry, message) => {
                   setEditingListEntry(null);
                   await loadTrackedEntries();
+                  showSyncToast("success", "List updated", message || "List entry updated.");
                 }}
-                onRemoved={async () => {
+                onRemoved={async (message) => {
                   setEditingListEntry(null);
                   await loadTrackedEntries();
+                  showSyncToast("success", "List updated", message || "Anime removed from your list.");
                 }}
               />
             )}

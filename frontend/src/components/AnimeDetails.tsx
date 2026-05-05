@@ -23,6 +23,7 @@ import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference"
 type AnimeDetailsProps = {
   animeId: number;
   onBack: () => void;
+  onListChanged?: () => void | Promise<void>;
   titleLanguage: TitleLanguage;
 };
 
@@ -54,6 +55,7 @@ const STATUS_LABELS: Record<ListEntry["status"], string> = {
 export default function AnimeDetails({
   animeId,
   onBack,
+  onListChanged,
   titleLanguage,
 }: AnimeDetailsProps) {
   const [anime, setAnime] = useState<any>(null);
@@ -130,6 +132,7 @@ export default function AnimeDetails({
       }
 
       setListEntry(result.entry ?? { status: "planned", progress: 0 });
+      await onListChanged?.();
       setListMessage(result.message);
     } catch (err) {
       console.error(err);
@@ -192,6 +195,7 @@ export default function AnimeDetails({
       }
 
       setListEntry(result.entry ?? null);
+      await onListChanged?.();
 
       if (!listEntry) {
         setListMessage("Anime added to your list and progress updated.");
@@ -233,6 +237,7 @@ export default function AnimeDetails({
       }
 
       setListEntry(result.entry ?? null);
+      await onListChanged?.();
       setListMessage(
         nextFavorite
           ? listEntry
@@ -621,10 +626,12 @@ export default function AnimeDetails({
         onClose={() => setIsEditorOpen(false)}
         onSaved={(updatedEntry) => {
           setListEntry(updatedEntry);
+          onListChanged?.();
           setListMessage("List entry updated.");
         }}
         onRemoved={() => {
           setListEntry(null);
+          onListChanged?.();
           setListMessage("Anime removed from your list.");
         }}
       />

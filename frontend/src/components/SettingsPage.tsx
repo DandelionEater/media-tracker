@@ -387,37 +387,7 @@ export function SettingsPage({
   useEffect(() => {
     let cancelled = false;
 
-    async function loadAniListLinkStatus() {
-      try {
-        const result = await window.api.getAniListLinkStatus();
-
-        if (cancelled) {
-          return;
-        }
-
-        setAniListLink((current) => ({
-          ...current,
-          loading: false,
-          linked: Boolean(result.ok && result.linked),
-          account: result.account ?? null,
-          conflict: null,
-          feedback: result.ok
-            ? current.feedback
-            : { kind: "error", message: result.message || "Failed to load AniList link status." },
-        }));
-      } catch {
-        if (!cancelled) {
-          setAniListLink((current) => ({
-            ...current,
-            loading: false,
-            conflict: null,
-            feedback: { kind: "error", message: "Failed to load AniList link status." },
-          }));
-        }
-      }
-    }
-
-    loadAniListLinkStatus();
+    loadAniListLinkStatus(undefined, () => cancelled);
 
     return () => {
       cancelled = true;
@@ -448,6 +418,39 @@ export function SettingsPage({
         loading: false,
         feedback: { kind: "error", message: "Failed to load sync status." },
       }));
+    }
+  }
+
+  async function loadAniListLinkStatus(
+    feedback?: { kind: "success" | "error"; message: string },
+    isCancelled = () => false
+  ) {
+    try {
+      const result = await window.api.getAniListLinkStatus();
+
+      if (isCancelled()) {
+        return;
+      }
+
+      setAniListLink((current) => ({
+        ...current,
+        loading: false,
+        linked: Boolean(result.ok && result.linked),
+        account: result.account ?? null,
+        conflict: null,
+        feedback: result.ok
+          ? feedback ?? current.feedback
+          : { kind: "error", message: result.message || "Failed to load AniList link status." },
+      }));
+    } catch {
+      if (!isCancelled()) {
+        setAniListLink((current) => ({
+          ...current,
+          loading: false,
+          conflict: null,
+          feedback: { kind: "error", message: "Failed to load AniList link status." },
+        }));
+      }
     }
   }
 
@@ -514,6 +517,10 @@ export function SettingsPage({
           message: result.message,
         },
       }));
+
+      if (isSyncActivityOpen) {
+        await loadSyncActivity(syncActivityTab);
+      }
     } finally {
       setIsPullingFromAniList(false);
     }
@@ -561,6 +568,12 @@ export function SettingsPage({
 
       const result = await onLinkAniListAccount();
 
+      if (result.ok && !result.needsConflictResolution) {
+        await loadAniListLinkStatus({ kind: "success", message: result.message });
+        await loadSyncStatus();
+        return;
+      }
+
       setAniListLink({
         loading: false,
         linked: Boolean(result.ok && result.linked),
@@ -594,13 +607,19 @@ export function SettingsPage({
 
       const result = await window.api.resolveAniListLinkConflict(action);
 
+      if (result.ok) {
+        await loadAniListLinkStatus({ kind: "success", message: result.message });
+        await loadSyncStatus();
+        return;
+      }
+
       setAniListLink({
         loading: false,
-        linked: Boolean(result.ok && result.linked),
+        linked: Boolean(result.linked),
         account: result.account ?? null,
-        conflict: result.ok ? null : aniListLink.conflict,
+        conflict: aniListLink.conflict,
         feedback: {
-          kind: result.ok ? "success" : "error",
+          kind: "error",
           message: result.message,
         },
       });

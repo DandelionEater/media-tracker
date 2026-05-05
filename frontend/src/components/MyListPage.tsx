@@ -34,7 +34,15 @@ type MyListEntry = {
 };
 
 type MyListPageProps = {
+  entries: MyListEntry[];
   onSelectAnime: (id: number) => void;
+  onRefreshList: () => void | Promise<void>;
+  onListChanged?: () => void | Promise<void>;
+  onNotify?: (
+    kind: "success" | "error" | "warning",
+    title: string,
+    message: string
+  ) => void;
   titleLanguage: TitleLanguage;
 };
 
@@ -151,41 +159,22 @@ function readStoredSortMode(): SortMode {
   }
 }
 
-export function MyListPage({ onSelectAnime, titleLanguage }: MyListPageProps) {
-  const [entries, setEntries] = useState<MyListEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+export function MyListPage({
+  entries,
+  onSelectAnime,
+  onRefreshList,
+  onListChanged,
+  onNotify,
+  titleLanguage,
+}: MyListPageProps) {
   const [editingEntry, setEditingEntry] = useState<MyListEntry | null>(null);
   const [listSearch, setListSearch] = useState("");
   const [openSections, setOpenSections] = useState(readStoredOpenSections);
   const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
 
-  async function loadList() {
-    try {
-      setLoading(true);
-      setError(null);
-
-      const result = await window.api.getMyList();
-
-      if (!result.ok) {
-        setError(result.message || "Failed to load your list.");
-        setEntries([]);
-        return;
-      }
-
-      setEntries(result.entries || []);
-    } catch (err) {
-      console.error(err);
-      setError("Failed to load your list.");
-      setEntries([]);
-    } finally {
-      setLoading(false);
-    }
-  }
-
   useEffect(() => {
-    loadList();
-  }, []);
+    onRefreshList();
+  }, [onRefreshList]);
 
   useEffect(() => {
     try {
@@ -254,24 +243,6 @@ export function MyListPage({ onSelectAnime, titleLanguage }: MyListPageProps) {
   }, [filteredEntries, sortMode, titleLanguage]);
 
   const visibleSections = groupedEntries.filter(({ items }) => items.length > 0);
-
-  if (loading) {
-    return (
-      <div className="flex h-full items-center justify-center text-white/75">
-        Loading your list...
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="flex h-full items-center justify-center px-6">
-        <div className="rounded-3xl border border-white/10 bg-white/5 px-6 py-5 text-center text-white/80 shadow-xl">
-          {error}
-        </div>
-      </div>
-    );
-  }
 
   if (!entries.length) {
     return (
@@ -522,13 +493,15 @@ export function MyListPage({ onSelectAnime, titleLanguage }: MyListPageProps) {
           )}
           totalEpisodes={editingEntry.episodes ?? null}
           onClose={() => setEditingEntry(null)}
-          onSaved={async () => {
+          onSaved={async (_entry, message) => {
             setEditingEntry(null);
-            await loadList();
+            await onListChanged?.();
+            onNotify?.("success", "List updated", message || "List entry updated.");
           }}
-          onRemoved={async () => {
+          onRemoved={async (message) => {
             setEditingEntry(null);
-            await loadList();
+            await onListChanged?.();
+            onNotify?.("success", "List updated", message || "Anime removed from your list.");
           }}
         />
       )}
