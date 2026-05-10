@@ -19,7 +19,8 @@ function LoadingSpinner() {
 
 export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const [mode, setMode] = useState<"login" | "register">("login");
-  const [aniListProfile, setAniListProfile] = useState<{
+  const [oauthProfile, setOauthProfile] = useState<{
+    provider: "AniList" | "MyAnimeList";
     id: number;
     username: string;
   } | null>(null);
@@ -72,8 +73,8 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
-    if (aniListProfile) {
-      await completeAniListSignup();
+    if (oauthProfile) {
+      await completeOauthSignup();
       return;
     }
 
@@ -95,7 +96,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
       }
 
       if (result.needsProfile && result.anilist) {
-        setAniListProfile(result.anilist);
+        setOauthProfile({ provider: "AniList", ...result.anilist });
         setLocalUsername(result.suggestedUsername || result.anilist.username);
         setMessage("");
         return;
@@ -118,7 +119,45 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     }
   };
 
-  const completeAniListSignup = async () => {
+  const startMalLogin = async () => {
+    if (busy) return;
+
+    setBusy(true);
+    setMessage("Opening MyAnimeList in your browser...");
+
+    try {
+      const result = await window.api.startMalLogin();
+
+      if (!result.ok) {
+        setMessage(result.message);
+        return;
+      }
+
+      if (result.needsProfile && result.mal) {
+        setOauthProfile({ provider: "MyAnimeList", ...result.mal });
+        setLocalUsername(result.suggestedUsername || result.mal.username);
+        setMessage("");
+        return;
+      }
+
+      if (!result.user) {
+        setMessage("MyAnimeList login finished, but no local account was returned.");
+        return;
+      }
+
+      await onAuthenticated({
+        id: result.user.id,
+        username: result.user.username,
+        tutorial_dismissed: result.user.tutorial_dismissed,
+      });
+    } catch {
+      setMessage("MyAnimeList login failed.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const completeOauthSignup = async () => {
     if (busy) return;
 
     const trimmedUsername = localUsername.trim();
@@ -132,7 +171,10 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
     setMessage("Creating your local account...");
 
     try {
-      const result = await window.api.completeAniListLogin(trimmedUsername);
+      const result =
+        oauthProfile?.provider === "MyAnimeList"
+          ? await window.api.completeMalLogin(trimmedUsername)
+          : await window.api.completeAniListLogin(trimmedUsername);
 
       if (!result.ok || !result.user) {
         setMessage(result.message);
@@ -145,7 +187,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         tutorial_dismissed: result.user.tutorial_dismissed,
       });
     } catch {
-      setMessage("Failed to finish AniList login.");
+      setMessage(`Failed to finish ${oauthProfile?.provider || "OAuth"} login.`);
     } finally {
       setBusy(false);
     }
@@ -162,7 +204,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         </p>
 
         <h1 className="text-3xl font-bold text-white">
-          {aniListProfile
+          {oauthProfile
             ? "Create account"
             : mode === "login"
               ? "Welcome back"
@@ -170,14 +212,14 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         </h1>
 
         <p className="mt-3 text-sm text-white/55">
-          {aniListProfile
-            ? `Connected to AniList as ${aniListProfile.username}.`
+          {oauthProfile
+            ? `Connected to ${oauthProfile.provider} as ${oauthProfile.username}.`
             : mode === "login"
               ? "Log in to access your personal anime list."
               : "Create your account to start building your anime tracker."}
         </p>
 
-        {aniListProfile ? (
+        {oauthProfile ? (
           <div className="mt-6 space-y-4">
             <input
               type="text"
@@ -226,7 +268,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             <>
               <LoadingSpinner />
               <span>
-                {aniListProfile
+                {oauthProfile
                   ? "Creating account..."
                   : mode === "login"
                     ? "Logging in..."
@@ -235,8 +277,8 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             </>
           ) : (
             <span>
-              {aniListProfile
-                ? "Finish with AniList"
+              {oauthProfile
+                ? `Finish with ${oauthProfile.provider}`
                 : mode === "login"
                   ? "Log in"
                   : "Create account"}
@@ -244,7 +286,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           )}
         </button>
 
-        {!aniListProfile && (
+        {!oauthProfile && (
           <>
             <div className="my-5 flex items-center gap-3 text-xs uppercase tracking-[0.22em] text-white/25">
               <span className="h-px flex-1 bg-white/10" />
@@ -263,6 +305,15 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
 
             <button
               type="button"
+              onClick={startMalLogin}
+              disabled={busy}
+              className="mt-3 flex w-full items-center justify-center rounded-2xl border border-[#2e51a2]/60 bg-[#2e51a2]/15 px-4 py-3 font-semibold text-[#d6e3ff] transition hover:border-[#2e51a2] hover:bg-[#2e51a2]/25 disabled:cursor-not-allowed disabled:opacity-70"
+            >
+              Continue with MyAnimeList
+            </button>
+
+            <button
+              type="button"
               onClick={() =>
                 setMode((prev) => (prev === "login" ? "register" : "login"))
               }
@@ -276,11 +327,11 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           </>
         )}
 
-        {aniListProfile && (
+        {oauthProfile && (
           <button
             type="button"
             onClick={() => {
-              setAniListProfile(null);
+              setOauthProfile(null);
               setLocalUsername("");
               setMessage("");
             }}

@@ -1,8 +1,13 @@
 const anilist = require('./anilist');
+const mal = require('./mal');
+const { resolveMalAnimeIdForAnime } = require('./malMapping');
+const { getFreshMalAccountByUserId, withFreshMalAccount } = require('./malTokens');
 const {
   getAppSetting,
   setAppSetting,
   getAniListAccountByUserId,
+  getMalAccountByUserId,
+  getAnimeExternalIdByAnimeId,
   getDueSyncQueueJobs,
   getSyncQueueItems,
   getSyncQueueCount,
@@ -12,7 +17,7 @@ const {
   insertSyncHistory,
 } = require('./db');
 
-const AUTO_SYNC_KEY_PREFIX = 'sync.anilist.autoEnabled.user.';
+const AUTO_SYNC_KEY_PREFIX = 'sync.autoEnabled.user.';
 const AUTO_SYNC_DELAY_MS = 15 * 1000;
 
 let autoSyncTimer = null;
@@ -61,6 +66,31 @@ function buildAniListPayload(entry) {
   };
 }
 
+function buildMalPayload(entry, malAnimeId) {
+  return {
+    malAnimeId: malAnimeId === null || malAnimeId === undefined ? null : Number(malAnimeId),
+    status: entry.status,
+    progress: entry.progress ?? 0,
+    score: entry.score ?? null,
+    notes: entry.notes ?? null,
+    started_at: entry.started_at ?? null,
+    completed_at: entry.completed_at ?? null,
+  };
+}
+
+function buildAniListDeletePayload(entry, anilistUserId) {
+  return {
+    mediaId: entry.anime_id,
+    userId: anilistUserId,
+  };
+}
+
+function buildMalDeletePayload(entry, malAnimeId) {
+  return {
+    malAnimeId: malAnimeId === null || malAnimeId === undefined ? null : Number(malAnimeId),
+  };
+}
+
 function cleanPayload(payload) {
   return {
     ...payload,
@@ -104,12 +134,13 @@ async function runSyncForUser(userId, options = {}) {
     };
   }
 
-  const linkedAccount = getAniListAccountByUserId(userId);
+  const linkedAniListAccount = getAniListAccountByUserId(userId);
+  const linkedMalAccount = await getFreshMalAccountByUserId(userId);
 
-  if (!linkedAccount?.access_token) {
+  if (!linkedAniListAccount?.access_token && !linkedMalAccount?.access_token) {
     return {
       ok: false,
-      message: 'Link an AniList account before syncing.',
+      message: 'Link an AniList or MyAnimeList account before syncing.',
       synced: 0,
       failed: 0,
       pending: getSyncQueueCount(userId),
@@ -125,22 +156,130 @@ async function runSyncForUser(userId, options = {}) {
 
     for (const job of jobs) {
       try {
-        if (job.operation !== 'upsert_anilist_entry') {
-          throw new Error(`Unsupported sync operation: ${job.operation}`);
+        if (job.operation === 'upsert_anilist_entry') {
+          if (!linkedAniListAccount?.access_token) {
+            throw new Error('Link an AniList account before syncing this entry.');
+          }
+
+          await anilist.saveMediaListEntry(
+            linkedAniListAccount.access_token,
+            cleanPayload(job.payload)
+          );
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            animeId: job.anime_id,
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Synced to AniList.',
+          });
+          synced += 1;
+          continue;
         }
 
-        await anilist.saveMediaListEntry(linkedAccount.access_token, cleanPayload(job.payload));
-        deleteSyncQueueJob(job.id);
-        insertSyncHistory({
-          userId,
-          animeId: job.anime_id,
-          animeTitle: job.animeTitle,
-          operation: job.operation,
-          changedFields: job.changedFields,
-          status: 'completed',
-          message: 'Synced to AniList.',
-        });
-        synced += 1;
+        if (job.operation === 'delete_anilist_entry') {
+          if (!linkedAniListAccount?.access_token || !linkedAniListAccount?.anilist_user_id) {
+            throw new Error('Link an AniList account before syncing this deletion.');
+          }
+
+          await anilist.deleteMediaListEntry(linkedAniListAccount.access_token, {
+            ...job.payload,
+            mediaId: job.anime_id,
+            userId: linkedAniListAccount.anilist_user_id,
+          });
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            animeId: job.anime_id,
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Deleted from AniList.',
+          });
+          synced += 1;
+          continue;
+        }
+
+        if (job.operation === 'upsert_mal_entry') {
+          if (!linkedMalAccount?.access_token) {
+            throw new Error('Link a MyAnimeList account before syncing this entry.');
+          }
+
+          let malAnimeId =
+            job.payload.malAnimeId ||
+            getAnimeExternalIdByAnimeId('mal', job.anime_id)?.external_id;
+
+          await withFreshMalAccount(userId, async (account) => {
+            if (!account?.access_token) {
+              throw new Error('Link a MyAnimeList account before syncing this entry.');
+            }
+
+            if (!malAnimeId) {
+              malAnimeId = await resolveMalAnimeIdForAnime(job.anime_id, account.access_token);
+            }
+
+            if (!malAnimeId) {
+              throw new Error('No MyAnimeList ID mapping exists for this anime.');
+            }
+
+            return await mal.saveAnimeListStatus(account.access_token, malAnimeId, job.payload);
+          });
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            animeId: job.anime_id,
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Synced to MyAnimeList.',
+          });
+          synced += 1;
+          continue;
+        }
+
+        if (job.operation === 'delete_mal_entry') {
+          if (!linkedMalAccount?.access_token) {
+            throw new Error('Link a MyAnimeList account before syncing this deletion.');
+          }
+
+          let malAnimeId =
+            job.payload.malAnimeId ||
+            getAnimeExternalIdByAnimeId('mal', job.anime_id)?.external_id;
+
+          await withFreshMalAccount(userId, async (account) => {
+            if (!account?.access_token) {
+              throw new Error('Link a MyAnimeList account before syncing this deletion.');
+            }
+
+            if (!malAnimeId) {
+              malAnimeId = await resolveMalAnimeIdForAnime(job.anime_id, account.access_token);
+            }
+
+            if (!malAnimeId) {
+              throw new Error('No MyAnimeList ID mapping exists for this anime.');
+            }
+
+            return await mal.deleteAnimeListStatus(account.access_token, malAnimeId);
+          });
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            animeId: job.anime_id,
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Deleted from MyAnimeList.',
+          });
+          synced += 1;
+          continue;
+        }
+
+        throw new Error(`Unsupported sync operation: ${job.operation}`);
       } catch (error) {
         const message = error.message || 'Failed to sync entry.';
         markSyncQueueJobFailed(job.id, message, getBackoffDate(job.attempts));
@@ -167,10 +306,10 @@ async function runSyncForUser(userId, options = {}) {
       pending,
       message:
         synced === 0 && failed === 0
-          ? 'No AniList changes are waiting.'
+          ? 'No sync changes are waiting.'
           : failed > 0
             ? `Synced ${synced}, ${failed} waiting to retry.`
-            : `Synced ${synced} change${synced === 1 ? '' : 's'} to AniList.`,
+            : `Synced ${synced} change${synced === 1 ? '' : 's'}.`,
     };
   } finally {
     runningUsers.delete(userId);
@@ -178,9 +317,17 @@ async function runSyncForUser(userId, options = {}) {
 }
 
 function getSyncStatus(userId) {
+  const linkedAniListAccount = getAniListAccountByUserId(userId);
+  const linkedMalAccount = getMalAccountByUserId(userId);
+  const provider = linkedAniListAccount ? 'anilist' : linkedMalAccount ? 'mal' : null;
+  const providerLabel =
+    provider === 'anilist' ? 'AniList' : provider === 'mal' ? 'MyAnimeList' : null;
+
   return {
     ok: true,
-    linked: Boolean(getAniListAccountByUserId(userId)),
+    linked: Boolean(provider),
+    provider,
+    providerLabel,
     autoSyncEnabled: getAutoSyncEnabled(userId),
     pendingCount: getSyncQueueCount(userId),
   };
@@ -197,6 +344,9 @@ function getSyncActivity(userId) {
 
 module.exports = {
   buildAniListPayload,
+  buildAniListDeletePayload,
+  buildMalPayload,
+  buildMalDeletePayload,
   scheduleAutoSync,
   runSyncForUser,
   getSyncStatus,

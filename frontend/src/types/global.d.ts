@@ -30,6 +30,14 @@ type AniListLinkedAccount = {
   updatedAt: string;
 };
 
+type MalLinkedAccount = {
+  malUserId: number;
+  malUsername: string;
+  originalMalUsername: string;
+  lastImportAt: string | null;
+  updatedAt: string;
+};
+
 type AppSettings = {
   themeAccent: "cyan" | "violet" | "rose" | "amber" | "emerald";
   titleLanguage: "userPreferred" | "english" | "romaji" | "native";
@@ -127,12 +135,70 @@ declare global {
           skipped: number;
         };
       }>;
+      previewMalImport: () => Promise<{
+        ok: boolean;
+        message?: string;
+        username?: string;
+        preview?: {
+          totalFound: number;
+          skipped?: number;
+          groups: Array<{
+            status: string;
+            items: Array<{
+              animeId: number;
+              status: string;
+              progress: number;
+              score: number | null;
+              notes: string | null;
+              title: {
+                romaji?: string | null;
+                english?: string | null;
+                native?: string | null;
+                userPreferred?: string | null;
+              };
+              coverImage?: {
+                large?: string | null;
+              };
+              episodes?: number | null;
+              format?: string | null;
+              season?: string | null;
+              seasonYear?: number | null;
+              source?: {
+                provider: "mal";
+                animeId: number;
+                title: string;
+              };
+            }>;
+          }>;
+        };
+      }>;
+      importMal: (
+        selectedStatuses?: string[],
+        selectedAnimeIds?: number[]
+      ) => Promise<{
+        ok: boolean;
+        message: string;
+        summary?: {
+          sourceUsername: string;
+          totalFound: number;
+          selectedStatuses: string[];
+          selectedAnimeIds: number[];
+          imported: number;
+          created: number;
+          updated: number;
+          skipped: number;
+          mapped?: number;
+          unmapped?: number;
+        };
+      }>;
       getSettings: () => Promise<AppSettings>;
       updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
       getSyncStatus: () => Promise<{
         ok: boolean;
         message?: string;
         linked?: boolean;
+        provider?: "anilist" | "mal" | null;
+        providerLabel?: string | null;
         autoSyncEnabled?: boolean;
         pendingCount?: number;
       }>;
@@ -140,6 +206,8 @@ declare global {
         ok: boolean;
         message?: string;
         linked?: boolean;
+        provider?: "anilist" | "mal" | null;
+        providerLabel?: string | null;
         autoSyncEnabled?: boolean;
         pendingCount?: number;
       }>;
@@ -162,6 +230,22 @@ declare global {
           created: number;
           updated: number;
           skipped: number;
+        };
+      }>;
+      pullFromMal: () => Promise<{
+        ok: boolean;
+        message: string;
+        summary?: {
+          sourceUsername: string;
+          totalFound: number;
+          selectedStatuses: string[];
+          selectedAnimeIds: number[];
+          imported: number;
+          created: number;
+          updated: number;
+          skipped: number;
+          mapped?: number;
+          unmapped?: number;
         };
       }>;
       getSyncActivity: () => Promise<{
@@ -192,6 +276,28 @@ declare global {
         }
       >;
       completeAniListLogin: (username: string) => Promise<
+        AuthResponse & {
+          import?: {
+            ok: boolean;
+            message: string;
+          };
+        }
+      >;
+      startMalLogin: () => Promise<
+        AuthResponse & {
+          needsProfile?: boolean;
+          mal?: {
+            id: number;
+            username: string;
+          };
+          suggestedUsername?: string;
+          import?: {
+            ok: boolean;
+            message: string;
+          };
+        }
+      >;
+      completeMalLogin: (username: string) => Promise<
         AuthResponse & {
           import?: {
             ok: boolean;
@@ -233,6 +339,41 @@ declare global {
         message: string;
         linked: boolean;
         account?: AniListLinkedAccount | null;
+        resolution?: "transfer" | "merge";
+        mergeSummary?: {
+          movedEntries: number;
+        } | null;
+      }>;
+      getMalLinkStatus: () => Promise<{
+        ok: boolean;
+        message?: string;
+        linked: boolean;
+        account?: MalLinkedAccount | null;
+      }>;
+      linkMalAccount: () => Promise<{
+        ok: boolean;
+        message: string;
+        linked: boolean;
+        account?: MalLinkedAccount | null;
+        needsConflictResolution?: boolean;
+        conflict?: {
+          malUserId: number;
+          malUsername: string;
+          sourceUser: {
+            id: number;
+            username: string;
+          } | null;
+          targetUser: {
+            id: number;
+            username: string;
+          };
+        };
+      }>;
+      resolveMalLinkConflict: (action: "transfer" | "merge") => Promise<{
+        ok: boolean;
+        message: string;
+        linked: boolean;
+        account?: MalLinkedAccount | null;
         resolution?: "transfer" | "merge";
         mergeSummary?: {
           movedEntries: number;

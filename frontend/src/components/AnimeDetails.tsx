@@ -23,6 +23,7 @@ import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference"
 type AnimeDetailsProps = {
   animeId: number;
   onBack: () => void;
+  onSelectAnime?: (animeId: number) => void;
   onListChanged?: () => void | Promise<void>;
   titleLanguage: TitleLanguage;
 };
@@ -55,6 +56,7 @@ const STATUS_LABELS: Record<ListEntry["status"], string> = {
 export default function AnimeDetails({
   animeId,
   onBack,
+  onSelectAnime,
   onListChanged,
   titleLanguage,
 }: AnimeDetailsProps) {
@@ -510,6 +512,7 @@ export default function AnimeDetails({
                   <MediaShelf
                     title="Related Anime"
                     icon={LinkIcon}
+                    onSelectAnime={onSelectAnime}
                     items={relationEdges.map((edge: any) => ({
                       label: formatEnum(edge.relationType || "Related"),
                       media: edge.node,
@@ -521,6 +524,7 @@ export default function AnimeDetails({
                   <MediaShelf
                     title="Recommendations"
                     icon={StarIcon}
+                    onSelectAnime={onSelectAnime}
                     items={recommendations
                       .filter((item: any) => item.mediaRecommendation)
                       .map((item: any) => ({
@@ -867,21 +871,29 @@ function MediaShelf({
   title,
   icon: Icon,
   items,
+  onSelectAnime,
 }: {
   title: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   items: Array<{ label: string; media: any }>;
+  onSelectAnime?: (animeId: number) => void;
 }) {
   return (
     <ContentSection title={title} icon={Icon}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {items.slice(0, 10).map(({ label, media }, index) => {
           const titleText = getMediaTitle(media);
+          const mediaId = Number(media?.id);
+          const canOpen = Number.isInteger(mediaId) && mediaId > 0 && Boolean(onSelectAnime);
 
           return (
-            <div
+            <button
+              type="button"
               key={`${media?.id ?? index}-${label}`}
-              className="flex min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3"
+              onClick={() => canOpen && onSelectAnime?.(mediaId)}
+              disabled={!canOpen}
+              className="group flex min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/[0.03]"
+              title={canOpen ? `Open ${titleText}` : titleText}
             >
               <div className="h-20 w-14 shrink-0 overflow-hidden rounded-xl bg-white/5">
                 {media?.coverImage?.large ? (
@@ -895,9 +907,11 @@ function MediaShelf({
                 )}
               </div>
               <div className="min-w-0 flex-1 py-1">
-                <p className="line-clamp-2 text-sm font-semibold leading-5 text-white/85">
-                  {titleText}
-                </p>
+                <div className="flex min-w-0 items-start gap-2">
+                  <p className="line-clamp-2 min-w-0 flex-1 text-sm font-semibold leading-5 text-white/85">
+                    {titleText}
+                  </p>
+                </div>
                 <p className="mt-2 truncate text-xs text-white/45">{label}</p>
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {media?.format && (
@@ -912,7 +926,7 @@ function MediaShelf({
                   )}
                 </div>
               </div>
-            </div>
+            </button>
           );
         })}
       </div>

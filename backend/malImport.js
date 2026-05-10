@@ -1,0 +1,270 @@
+const anilist = require('./anilist');
+const {
+  getAnimeExternalId,
+  upsertAnimeExternalId,
+} = require('./db');
+const { importAniListEntries } = require('./lists');
+
+const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
+
+function mapMalStatus(status) {
+  switch (status) {
+    case 'watching':
+      return 'CURRENT';
+    case 'completed':
+      return 'COMPLETED';
+    case 'on_hold':
+      return 'PAUSED';
+    case 'dropped':
+      return 'DROPPED';
+    case 'plan_to_watch':
+      return 'PLANNING';
+    default:
+      return null;
+  }
+}
+
+function mapMalDate(value) {
+  if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(String(value))) {
+    return null;
+  }
+
+  const [year, month, day] = String(value).split('-').map(Number);
+  return { year, month, day };
+}
+
+function normalizeTitle(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function getMalTitles(node) {
+  return [
+    node?.title,
+    node?.alternative_titles?.en,
+    node?.alternative_titles?.ja,
+    ...(node?.alternative_titles?.synonyms || []),
+  ]
+    .map((title) => String(title || '').trim())
+    .filter(Boolean);
+}
+
+function scoreAniListCandidate(candidate, titles, malNode) {
+  const normalizedTitles = new Set(titles.map(normalizeTitle));
+  const candidateTitles = [
+    candidate.title?.userPreferred,
+    candidate.title?.english,
+    candidate.title?.romaji,
+    candidate.title?.native,
+  ].map(normalizeTitle);
+  let score = 0;
+
+  if (candidateTitles.some((title) => normalizedTitles.has(title))) {
+    score += 100;
+  }
+
+  if (malNode?.num_episodes && candidate.episodes === malNode.num_episodes) {
+    score += 15;
+  }
+
+  const malYear = malNode?.start_date ? Number(String(malNode.start_date).slice(0, 4)) : null;
+  if (malYear && candidate.seasonYear === malYear) {
+    score += 10;
+  }
+
+  return score;
+}
+
+async function resolveAniListMediaForMalNode(malNode, cache) {
+  const titles = getMalTitles(malNode);
+  const mapped = getAnimeExternalId('mal', malNode?.id);
+
+  for (const title of titles) {
+    const key = normalizeTitle(title);
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+
+    const results = await anilist.searchAnime(title, { hideAdultContent: false }).catch(() => []);
+    const mappedCandidate = mapped?.anime_id
+      ? results.find((candidate) => Number(candidate.id) === Number(mapped.anime_id))
+      : null;
+    const scored = results
+      .map((candidate) => ({
+        candidate,
+        score: scoreAniListCandidate(candidate, titles, malNode),
+      }))
+      .sort((left, right) => right.score - left.score);
+    const best = mappedCandidate || (scored[0]?.score >= 80 ? scored[0].candidate : null);
+
+    if (best) {
+      cache.set(key, best);
+      return best;
+    }
+  }
+
+  return null;
+}
+
+async function buildAniListCollectionFromMalList(malList) {
+  const cache = new Map();
+  const listsByStatus = new Map(IMPORT_STATUS_ORDER.map((status) => [status, []]));
+  let mapped = 0;
+  let skipped = 0;
+  let skippedMissingStatus = 0;
+  let skippedNoMatch = 0;
+
+  for (const item of malList?.data || []) {
+    const node = item?.node;
+    const listStatus = item?.list_status || node?.my_list_status || {};
+    const status = mapMalStatus(listStatus.status);
+
+    if (!node?.id || !status) {
+      skipped += 1;
+      skippedMissingStatus += 1;
+      continue;
+    }
+
+    const media = await resolveAniListMediaForMalNode(node, cache);
+
+    if (!media?.id) {
+      skipped += 1;
+      skippedNoMatch += 1;
+      continue;
+    }
+
+    upsertAnimeExternalId({
+      provider: 'mal',
+      externalId: node.id,
+      animeId: media.id,
+    });
+
+    const localStatus =
+      status === 'CURRENT'
+        ? 'watching'
+        : status === 'PLANNING'
+          ? 'planned'
+          : status === 'COMPLETED'
+            ? 'completed'
+            : status === 'PAUSED'
+              ? 'paused'
+              : 'dropped';
+
+    listsByStatus.get(localStatus)?.push({
+      status,
+      progress: listStatus.num_episodes_watched ?? 0,
+      score: listStatus.score ?? null,
+      notes: listStatus.comments ?? null,
+      repeat: listStatus.num_times_rewatched ?? 0,
+      startedAt: mapMalDate(listStatus.start_date),
+      completedAt: mapMalDate(listStatus.finish_date),
+      media,
+      malAnimeId: node.id,
+      malTitle: node.title,
+    });
+    mapped += 1;
+  }
+
+  return {
+    collection: {
+      lists: IMPORT_STATUS_ORDER.map((status) => ({
+        name: status,
+        entries: listsByStatus.get(status) || [],
+      })),
+    },
+    mapped,
+    skipped,
+    skippedMissingStatus,
+    skippedNoMatch,
+    sourceUsername: malList?.userName || '@me',
+  };
+}
+
+function buildMalImportPreview(mappedList) {
+  const grouped = Object.fromEntries(IMPORT_STATUS_ORDER.map((status) => [status, []]));
+
+  for (const list of mappedList.collection.lists) {
+    const localStatus = list.name;
+
+    for (const entry of list.entries || []) {
+      grouped[localStatus].push({
+        animeId: entry.media.id,
+        status: localStatus,
+        progress: entry.progress ?? 0,
+        score: entry.score ?? null,
+        notes: entry.notes ?? null,
+        title: {
+          romaji: entry.media.title?.romaji ?? null,
+          english: entry.media.title?.english ?? null,
+          native: entry.media.title?.native ?? null,
+          userPreferred:
+            entry.media.title?.userPreferred ??
+            entry.media.title?.english ??
+            entry.media.title?.romaji ??
+            entry.malTitle ??
+            null,
+        },
+        coverImage: { large: entry.media.coverImage?.large ?? null },
+        episodes: entry.media.episodes ?? null,
+        format: entry.media.format ?? null,
+        season: entry.media.season ?? null,
+        seasonYear: entry.media.seasonYear ?? null,
+        source: {
+          provider: 'mal',
+          animeId: entry.malAnimeId,
+          title: entry.malTitle,
+        },
+      });
+    }
+  }
+
+  return {
+    totalFound: mappedList.mapped,
+    skipped: mappedList.skipped,
+    skippedMissingStatus: mappedList.skippedMissingStatus,
+    skippedNoMatch: mappedList.skippedNoMatch,
+    groups: IMPORT_STATUS_ORDER.map((status) => ({
+      status,
+      items: grouped[status],
+    })),
+  };
+}
+
+async function previewMalImport(malList) {
+  const mappedList = await buildAniListCollectionFromMalList(malList);
+  return {
+    username: mappedList.sourceUsername,
+    preview: buildMalImportPreview(mappedList),
+  };
+}
+
+async function importMalEntries(currentSession, malList, options = {}) {
+  const mappedList = await buildAniListCollectionFromMalList(malList);
+  const result = importAniListEntries(currentSession, mappedList.collection, mappedList.sourceUsername, {
+    selectedStatuses: options.selectedStatuses,
+    selectedAnimeIds: options.selectedAnimeIds,
+  });
+
+  if (result.summary) {
+    result.summary.sourceProvider = 'MyAnimeList';
+    result.summary.skipped += mappedList.skipped;
+    result.summary.mapped = mappedList.mapped;
+    result.summary.unmapped = mappedList.skipped;
+  }
+
+  return {
+    ...result,
+    message: result.ok
+      ? `Imported ${result.summary?.imported ?? 0} MyAnimeList entr${
+          result.summary?.imported === 1 ? 'y' : 'ies'
+        }. ${mappedList.skipped} entr${mappedList.skipped === 1 ? 'y was' : 'ies were'} skipped because no AniList match was found.`
+      : result.message,
+  };
+}
+
+module.exports = {
+  previewMalImport,
+  importMalEntries,
+};

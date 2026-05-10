@@ -1,3 +1,5 @@
+require('./env');
+
 const http = require('http');
 const crypto = require('crypto');
 const fetch = require('node-fetch');
@@ -5,6 +7,9 @@ const fs = require('fs');
 const path = require('path');
 
 const anilist = require('./anilist');
+const mal = require('./mal');
+const { previewMalImport, importMalEntries } = require('./malImport');
+const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
   dbPath,
   saveAnime,
@@ -16,9 +21,14 @@ const {
   getAniListAccountByAniListUserId,
   getAniListAccountByUserId,
   deleteAniListAccountByUserId,
+  getMalAccountByMalUserId,
+  getMalAccountByUserId,
+  deleteMalAccountByUserId,
   mergeUserIntoUser,
   upsertAniListAccount,
   updateAniListAccountImportTime,
+  upsertMalAccount,
+  updateMalAccountImportTime,
   updateTutorialDismissed,
   insertSyncHistory,
   createWebSessionRecord,
@@ -77,6 +87,8 @@ const DEFAULT_API_ORIGIN =
 const API_PUBLIC_ORIGIN = process.env.API_PUBLIC_ORIGIN || DEFAULT_API_ORIGIN;
 const ANILIST_REDIRECT_URI =
   process.env.ANILIST_REDIRECT_URI || `${API_PUBLIC_ORIGIN}/auth/anilist/callback`;
+const MAL_AUTHORIZE_URL = 'https://myanimelist.net/v1/oauth2/authorize';
+const MAL_REDIRECT_URI = process.env.MAL_REDIRECT_URI || `${API_PUBLIC_ORIGIN}/auth/mal/callback`;
 const ANILIST_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
 const DESKTOP_UPDATES_DIR =
   process.env.DESKTOP_UPDATES_DIR || path.join(path.dirname(dbPath), 'desktop-updates');
@@ -96,6 +108,9 @@ const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'drop
 const pendingAniListFlows = new Map();
 const pendingAniListSignupByFlowId = new Map();
 const pendingAniListLinkConflictByUserId = new Map();
+const pendingMalFlows = new Map();
+const pendingMalSignupByFlowId = new Map();
+const pendingMalLinkConflictByUserId = new Map();
 
 function getAllowedOrigin(req) {
   const origin = req.headers.origin;
@@ -170,6 +185,30 @@ function cleanupAniListFlows(now = Date.now()) {
   }
 }
 
+function cleanupMalFlows(now = Date.now()) {
+  for (const [flowId, flow] of pendingMalFlows) {
+    if (now - flow.createdAt > ANILIST_FLOW_TIMEOUT_MS) {
+      pendingMalFlows.delete(flowId);
+    }
+  }
+
+  for (const [flowId, signup] of pendingMalSignupByFlowId) {
+    if (now - signup.createdAt > ANILIST_FLOW_TIMEOUT_MS) {
+      pendingMalSignupByFlowId.delete(flowId);
+    }
+  }
+
+  for (const [userId, conflict] of pendingMalLinkConflictByUserId) {
+    if (now - conflict.createdAt > ANILIST_FLOW_TIMEOUT_MS) {
+      pendingMalLinkConflictByUserId.delete(userId);
+    }
+  }
+}
+
+function createCodeVerifier() {
+  return crypto.randomBytes(48).toString('base64url');
+}
+
 function createAniListFlow({ type, userId = null, returnTo }) {
   cleanupAniListFlows();
 
@@ -194,6 +233,37 @@ function createAniListFlow({ type, userId = null, returnTo }) {
   url.searchParams.set('redirect_uri', ANILIST_REDIRECT_URI);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('state', `${flowId}.${state}`);
+
+  return { flow, authUrl: url.toString() };
+}
+
+function createMalFlow({ type, userId = null, returnTo }) {
+  cleanupMalFlows();
+
+  const flowId = crypto.randomBytes(16).toString('hex');
+  const state = crypto.randomBytes(24).toString('hex');
+  const codeVerifier = createCodeVerifier();
+  const flow = {
+    id: flowId,
+    state,
+    codeVerifier,
+    type,
+    userId: userId == null ? null : Number(userId),
+    returnTo,
+    status: 'pending',
+    createdAt: Date.now(),
+    result: null,
+    error: null,
+  };
+
+  pendingMalFlows.set(flowId, flow);
+
+  const url = new URL(MAL_AUTHORIZE_URL);
+  url.searchParams.set('response_type', 'code');
+  url.searchParams.set('client_id', mal.requireClientId());
+  url.searchParams.set('redirect_uri', MAL_REDIRECT_URI);
+  url.searchParams.set('state', `${flowId}.${state}`);
+  url.searchParams.set('code_challenge', codeVerifier);
 
   return { flow, authUrl: url.toString() };
 }
@@ -278,6 +348,16 @@ function buildAniListAccountPayload(account) {
     anilistUserId: account.anilist_user_id,
     anilistUsername: account.anilist_username,
     originalAniListUsername: account.original_anilist_username,
+    lastImportAt: account.last_import_at,
+    updatedAt: account.updated_at,
+  };
+}
+
+function buildMalAccountPayload(account) {
+  return {
+    malUserId: account.mal_user_id,
+    malUsername: account.mal_username,
+    originalMalUsername: account.original_mal_username,
     lastImportAt: account.last_import_at,
     updatedAt: account.updated_at,
   };
@@ -770,6 +850,7 @@ async function importAuthenticatedAniListList(accessToken, viewer, currentSessio
 
 async function finishAniListLogin({ accessToken, viewer, userId, res }) {
   deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
 
   upsertAniListAccount({
     userId,
@@ -816,6 +897,7 @@ async function finishAniListLogin({ accessToken, viewer, userId, res }) {
 
 async function linkAniListToUser({ accessToken, viewer, userId }) {
   deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
   upsertAniListAccount({
     userId,
     anilistUserId: viewer.id,
@@ -948,6 +1030,169 @@ async function handleAniListLinkCallback(flow, accessToken, viewer) {
 
   return await linkAniListToUser({
     accessToken,
+    viewer,
+    userId: flow.userId,
+  });
+}
+
+async function finishMalLogin({ tokenData, viewer, userId, res }) {
+  deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
+
+  upsertMalAccount({
+    userId,
+    malUserId: viewer.id,
+    malUsername: viewer.name,
+    originalMalUsername: viewer.name,
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token,
+    tokenExpiresAt: getMalTokenExpiry(tokenData),
+  });
+
+  const loginResult = loginUserById(userId);
+
+  if (!loginResult.ok) {
+    return loginResult;
+  }
+
+  if (res) {
+    createWebSession(res, userId);
+  }
+
+  return {
+    ok: true,
+    message: 'Logged in with MyAnimeList.',
+    user: loginResult.user,
+    import: {
+      ok: true,
+      message: 'MyAnimeList import preview will be available in the sync step.',
+    },
+  };
+}
+
+async function linkMalToUser({ tokenData, viewer, userId }) {
+  deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
+
+  upsertMalAccount({
+    userId,
+    malUserId: viewer.id,
+    malUsername: viewer.name,
+    originalMalUsername: viewer.name,
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token,
+    tokenExpiresAt: getMalTokenExpiry(tokenData),
+  });
+
+  const account = getMalAccountByUserId(userId);
+
+  return {
+    ok: true,
+    linked: true,
+    message: `Linked MyAnimeList account ${viewer.name}.`,
+    account: account
+      ? buildMalAccountPayload(account)
+      : {
+          malUserId: viewer.id,
+          malUsername: viewer.name,
+          originalMalUsername: viewer.name,
+          lastImportAt: null,
+          updatedAt: new Date().toISOString(),
+        },
+  };
+}
+
+async function handleMalLoginCallback(flow, tokenData, viewer) {
+  if (!viewer?.id || !viewer?.name) {
+    return { ok: false, message: 'MyAnimeList did not return account details.' };
+  }
+
+  const linkedAccount = getMalAccountByMalUserId(viewer.id);
+
+  if (linkedAccount?.user_id) {
+    pendingMalSignupByFlowId.delete(flow.id);
+    return await finishMalLogin({
+      tokenData,
+      viewer,
+      userId: linkedAccount.user_id,
+    });
+  }
+
+  pendingMalSignupByFlowId.set(flow.id, {
+    tokenData,
+    viewer,
+    createdAt: Date.now(),
+  });
+
+  return {
+    ok: true,
+    needsProfile: true,
+    message: 'MyAnimeList account verified. Choose your local display name.',
+    mal: {
+      id: viewer.id,
+      username: viewer.name,
+    },
+    suggestedUsername: viewer.name,
+  };
+}
+
+async function handleMalLinkCallback(flow, tokenData, viewer) {
+  if (!flow.userId) {
+    return { ok: false, linked: false, message: 'MyAnimeList link session expired. Try linking again.' };
+  }
+
+  const sessionUser = getSafeUserById(flow.userId);
+
+  if (!sessionUser) {
+    return { ok: false, linked: false, message: 'You must be logged in.' };
+  }
+
+  if (!viewer?.id || !viewer?.name) {
+    return { ok: false, linked: false, message: 'MyAnimeList did not return account details.' };
+  }
+
+  const existingLinkedAccount = getMalAccountByMalUserId(viewer.id);
+
+  if (
+    existingLinkedAccount?.user_id &&
+    Number(existingLinkedAccount.user_id) !== Number(flow.userId)
+  ) {
+    const existingUser = getSafeUserById(existingLinkedAccount.user_id);
+
+    pendingMalLinkConflictByUserId.set(Number(flow.userId), {
+      tokenData,
+      viewer,
+      sourceUserId: Number(existingLinkedAccount.user_id),
+      targetUserId: Number(flow.userId),
+      createdAt: Date.now(),
+    });
+
+    return {
+      ok: true,
+      message: `MyAnimeList account ${viewer.name} is already linked to another local account.`,
+      linked: false,
+      needsConflictResolution: true,
+      conflict: {
+        malUserId: viewer.id,
+        malUsername: viewer.name,
+        sourceUser: existingUser
+          ? {
+              id: existingUser.id,
+              username: existingUser.username,
+            }
+          : null,
+        targetUser: {
+          id: sessionUser.id,
+          username: sessionUser.username,
+        },
+      },
+    };
+  }
+
+  pendingMalLinkConflictByUserId.delete(Number(flow.userId));
+
+  return await linkMalToUser({
+    tokenData,
     viewer,
     userId: flow.userId,
   });
@@ -1112,6 +1357,51 @@ async function handleRpc(method, args, req, res) {
         selectedAnimeIds: args[2],
       });
     }
+    case 'previewMalImport': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+
+      const malList = await withFreshMalAccount(currentSession.user.id, async (linkedAccount) => {
+        if (!linkedAccount?.access_token) {
+          throw new Error('Link a MyAnimeList account before importing.');
+        }
+
+        return await mal.getViewerAnimeList(linkedAccount.access_token);
+      });
+      const result = await previewMalImport(malList);
+      return {
+        ok: true,
+        message: `Found ${result.preview.totalFound} MyAnimeList entries.`,
+        username: result.username,
+        preview: result.preview,
+      };
+    }
+    case 'importMal': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+
+      let linkedAccount = null;
+      const malList = await withFreshMalAccount(currentSession.user.id, async (account) => {
+        if (!account?.access_token) {
+          throw new Error('Link a MyAnimeList account before importing.');
+        }
+
+        linkedAccount = account;
+        return await mal.getViewerAnimeList(account.access_token);
+      });
+      const result = await importMalEntries(currentSession, malList, {
+        selectedStatuses: args[0],
+        selectedAnimeIds: args[1],
+      });
+
+      if (result.ok) {
+        updateMalAccountImportTime(linkedAccount.mal_user_id);
+      }
+
+      return result;
+    }
     case 'getSettings':
       return getAppPreferences();
     case 'updateSettings':
@@ -1154,6 +1444,42 @@ async function handleRpc(method, args, req, res) {
             changedFields: change.changedFields,
             status: 'completed',
             message: 'Updated local entry from AniList.',
+          });
+        }
+      }
+
+      return result;
+    }
+    case 'pullFromMal': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+
+      let linkedAccount = null;
+      const malList = await withFreshMalAccount(currentSession.user.id, async (account) => {
+        if (!account?.access_token) {
+          throw new Error('Link a MyAnimeList account before updating from MyAnimeList.');
+        }
+
+        linkedAccount = account;
+        return await mal.getViewerAnimeList(account.access_token);
+      });
+      const result = await importMalEntries(currentSession, malList, {
+        selectedStatuses: IMPORT_STATUS_ORDER,
+        selectedAnimeIds: [],
+      });
+
+      if (result.ok) {
+        updateMalAccountImportTime(linkedAccount.mal_user_id);
+        for (const change of result.summary?.changes || []) {
+          insertSyncHistory({
+            userId: currentSession.user.id,
+            animeId: change.animeId,
+            animeTitle: change.animeTitle,
+            operation: 'pull_from_mal',
+            changedFields: change.changedFields,
+            status: 'completed',
+            message: 'Updated local entry from MyAnimeList.',
           });
         }
       }
@@ -1276,6 +1602,82 @@ async function handleRpc(method, args, req, res) {
         res,
       });
     }
+    case 'startMalLogin': {
+      const { flow, authUrl } = createMalFlow({
+        type: 'login',
+        returnTo: getWebOrigin(req),
+      });
+
+      return {
+        ok: true,
+        pendingOAuth: true,
+        flowId: flow.id,
+        authUrl,
+        message: 'Open MyAnimeList to continue.',
+      };
+    }
+    case 'pollMalLogin': {
+      cleanupMalFlows();
+      const flowId = String(args[0] || '');
+      const flow = pendingMalFlows.get(flowId);
+
+      if (!flow) {
+        return { ok: false, done: true, message: 'MyAnimeList login session expired. Try again.' };
+      }
+
+      if (flow.status === 'pending') {
+        return { ok: true, done: false, message: 'Waiting for MyAnimeList authorization.' };
+      }
+
+      pendingMalFlows.delete(flowId);
+
+      if (flow.status === 'failed') {
+        return { ok: false, done: true, message: flow.error || 'MyAnimeList login failed.' };
+      }
+
+      if (flow.result?.user?.id) {
+        createWebSession(res, flow.result.user.id);
+      }
+
+      return { ...flow.result, done: true };
+    }
+    case 'completeMalLogin': {
+      cleanupMalFlows();
+      const username = String(args[0] || '').trim();
+      const flowId = String(args[1] || '');
+      const signup = pendingMalSignupByFlowId.get(flowId);
+
+      if (!signup) {
+        return { ok: false, message: 'MyAnimeList login session expired. Try again.' };
+      }
+
+      const usernameError = validateUsername(username);
+
+      if (usernameError) {
+        return { ok: false, message: usernameError };
+      }
+
+      const usernameNormalized = normalizeUsername(username);
+
+      if (getUserByNormalizedUsername(usernameNormalized)) {
+        return { ok: false, message: 'Username is already taken.' };
+      }
+
+      const created = await createLinkedUser(username);
+
+      if (!created.ok || !created.user) {
+        return created;
+      }
+
+      pendingMalSignupByFlowId.delete(flowId);
+
+      return await finishMalLogin({
+        tokenData: signup.tokenData,
+        viewer: signup.viewer,
+        userId: created.user.id,
+        res,
+      });
+    }
     case 'linkAniListAccount': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
         return { ok: false, message: 'You must be logged in.', linked: false };
@@ -1295,6 +1697,52 @@ async function handleRpc(method, args, req, res) {
         linked: false,
         message: 'Open AniList to continue.',
       };
+    }
+    case 'linkMalAccount': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+
+      const { flow, authUrl } = createMalFlow({
+        type: 'link',
+        userId: currentSession.user.id,
+        returnTo: getWebOrigin(req),
+      });
+
+      return {
+        ok: true,
+        pendingOAuth: true,
+        flowId: flow.id,
+        authUrl,
+        linked: false,
+        message: 'Open MyAnimeList to continue.',
+      };
+    }
+    case 'pollMalLink': {
+      cleanupMalFlows();
+
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, done: true, message: 'You must be logged in.', linked: false };
+      }
+
+      const flowId = String(args[0] || '');
+      const flow = pendingMalFlows.get(flowId);
+
+      if (!flow || Number(flow.userId) !== Number(currentSession.user.id)) {
+        return { ok: false, done: true, message: 'MyAnimeList link session expired. Try linking again.', linked: false };
+      }
+
+      if (flow.status === 'pending') {
+        return { ok: true, done: false, linked: false, message: 'Waiting for MyAnimeList authorization.' };
+      }
+
+      pendingMalFlows.delete(flowId);
+
+      if (flow.status === 'failed') {
+        return { ok: false, done: true, linked: false, message: flow.error || 'MyAnimeList link failed.' };
+      }
+
+      return { ...flow.result, done: true };
     }
     case 'pollAniListLink': {
       cleanupAniListFlows();
@@ -1365,6 +1813,49 @@ async function handleRpc(method, args, req, res) {
         mergeSummary,
       };
     }
+    case 'resolveMalLinkConflict': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+
+      cleanupMalFlows();
+
+      const conflict = pendingMalLinkConflictByUserId.get(Number(currentSession.user.id));
+
+      if (!conflict) {
+        return { ok: false, message: 'No MyAnimeList link conflict is waiting.', linked: false };
+      }
+
+      const action = String(args[0] || '').trim();
+
+      if (!['transfer', 'merge'].includes(action)) {
+        return { ok: false, message: 'Choose transfer or merge.', linked: false };
+      }
+
+      pendingMalLinkConflictByUserId.delete(Number(currentSession.user.id));
+
+      let mergeSummary = null;
+
+      if (action === 'merge') {
+        mergeSummary = mergeUserIntoUser(conflict.sourceUserId, conflict.targetUserId);
+      }
+
+      const result = await linkMalToUser({
+        tokenData: conflict.tokenData,
+        viewer: conflict.viewer,
+        userId: conflict.targetUserId,
+      });
+
+      return {
+        ...result,
+        message:
+          action === 'merge'
+            ? `${result.message} Merged ${mergeSummary?.movedEntries ?? 0} list entries from the old local account.`
+            : result.message,
+        resolution: action,
+        mergeSummary,
+      };
+    }
     case 'getAniListLinkStatus': {
       if (!currentSession.authenticated) {
         return { ok: false, message: 'You must be logged in.', linked: false };
@@ -1384,6 +1875,19 @@ async function handleRpc(method, args, req, res) {
               updatedAt: linkedAccount.updated_at,
             }
           : null,
+      };
+    }
+    case 'getMalLinkStatus': {
+      if (!currentSession.authenticated) {
+        return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+
+      const linkedAccount = getMalAccountByUserId(currentSession.user.id);
+
+      return {
+        ok: true,
+        linked: Boolean(linkedAccount),
+        account: linkedAccount ? buildMalAccountPayload(linkedAccount) : null,
       };
     }
     default:
@@ -1462,6 +1966,81 @@ async function handleAniListCallback(req, res) {
   }
 }
 
+async function handleMalCallback(req, res) {
+  const requestUrl = new URL(req.url, `http://${req.headers.host || `localhost:${PORT}`}`);
+  const stateValue = requestUrl.searchParams.get('state') || '';
+  const code = requestUrl.searchParams.get('code');
+  const error = requestUrl.searchParams.get('error');
+  const [flowId, returnedState] = stateValue.split('.');
+  const flow = flowId ? pendingMalFlows.get(flowId) : null;
+  const returnTo = flow?.returnTo || DEFAULT_WEB_ORIGIN;
+
+  if (!flow || !returnedState || returnedState !== flow.state) {
+    sendAniListCallbackPage(
+      res,
+      'MyAnimeList login failed',
+      'The authorization response could not be verified. You can close this tab and try again.',
+      returnTo
+    );
+    return;
+  }
+
+  if (error) {
+    flow.status = 'failed';
+    flow.error = 'MyAnimeList authorization was cancelled.';
+    sendAniListCallbackPage(
+      res,
+      'MyAnimeList login cancelled',
+      'The authorization request was not completed. You can close this tab.',
+      returnTo
+    );
+    return;
+  }
+
+  if (!code) {
+    flow.status = 'failed';
+    flow.error = 'MyAnimeList did not return an authorization code.';
+    sendAniListCallbackPage(
+      res,
+      'MyAnimeList login failed',
+      'MyAnimeList did not return an authorization code. You can close this tab and try again.',
+      returnTo
+    );
+    return;
+  }
+
+  try {
+    const tokenData = await mal.exchangeCodeForToken({
+      code,
+      codeVerifier: flow.codeVerifier,
+      redirectUri: MAL_REDIRECT_URI,
+    });
+    const viewer = await mal.getViewer(tokenData.access_token);
+    flow.result =
+      flow.type === 'link'
+        ? await handleMalLinkCallback(flow, tokenData, viewer)
+        : await handleMalLoginCallback(flow, tokenData, viewer);
+    flow.status = 'completed';
+
+    sendAniListCallbackPage(
+      res,
+      'MyAnimeList connected',
+      'You can close this tab and return to Seenary.',
+      returnTo
+    );
+  } catch (callbackError) {
+    console.error('MyAnimeList OAuth callback error:', callbackError);
+    flow.status = 'failed';
+    flow.error = callbackError.message || 'Failed to finish MyAnimeList authorization.';
+    sendAniListCallbackPage(
+      res,
+      'MyAnimeList login failed',
+      'Seenary could not finish the MyAnimeList authorization. You can close this tab and try again.',
+      returnTo
+    );
+  }
+}
+
 const server = http.createServer(async (req, res) => {
   if (req.method === 'OPTIONS') {
     setCorsHeaders(req, res);
@@ -1495,6 +2074,17 @@ const server = http.createServer(async (req, res) => {
       console.error('AniList callback route error:', error);
       res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
       res.end('Failed to finish AniList authorization.');
+    }
+    return;
+  }
+
+  if (req.method === 'GET' && req.url.startsWith('/auth/mal/callback')) {
+    try {
+      await handleMalCallback(req, res);
+    } catch (error) {
+      console.error('MyAnimeList callback route error:', error);
+      res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('Failed to finish MyAnimeList authorization.');
     }
     return;
   }

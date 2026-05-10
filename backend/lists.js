@@ -9,10 +9,20 @@ const {
   clearUserAnimeList,
   saveAnimeSummary,
   getAniListAccountByUserId,
+  getMalAccountByUserId,
+  getAnimeExternalIdByAnimeId,
   enqueueSyncJob,
+  getSyncQueueJob,
+  deleteSyncQueueJobByEntry,
 } = require('./db');
 const { mapAnimeForDb } = require('./animeMapper');
-const { buildAniListPayload, scheduleAutoSync } = require('./sync');
+const {
+  buildAniListPayload,
+  buildAniListDeletePayload,
+  buildMalPayload,
+  buildMalDeletePayload,
+  scheduleAutoSync,
+} = require('./sync');
 
 const ALLOWED_STATUSES = ['planned', 'watching', 'completed', 'paused', 'dropped'];
 
@@ -236,7 +246,7 @@ function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
 
   savedEntry = getUserAnimeEntry(auth.user.id, numericAnimeId);
 
-  queueAniListSyncIfNeeded(auth.user.id, existingEntry, savedEntry);
+  queueSyncIfNeeded(auth.user.id, existingEntry, savedEntry);
 
   return {
     ok: true,
@@ -245,11 +255,7 @@ function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
   };
 }
 
-function queueAniListSyncIfNeeded(userId, existingEntry, savedEntry) {
-  if (!savedEntry || !getAniListAccountByUserId(userId)) {
-    return;
-  }
-
+function getChangedFields(existingEntry, savedEntry) {
   const fields = [
     ['status', 'status'],
     ['progress', 'progress'],
@@ -260,26 +266,128 @@ function queueAniListSyncIfNeeded(userId, existingEntry, savedEntry) {
     ['repeat_count', 'repeatCount'],
   ];
 
-  const changedFields = fields
+  return fields
     .map(([dbField, label]) => ({
       field: label,
       from: existingEntry ? existingEntry[dbField] ?? null : null,
       to: savedEntry[dbField] ?? null,
     }))
     .filter((change) => change.from !== change.to);
+}
+
+function queueSyncIfNeeded(userId, existingEntry, savedEntry) {
+  if (!savedEntry) {
+    return;
+  }
+
+  const changedFields = getChangedFields(existingEntry, savedEntry);
 
   if (!changedFields.length) {
     return;
   }
 
-  enqueueSyncJob({
-    userId,
-    animeId: savedEntry.anime_id,
-    operation: 'upsert_anilist_entry',
-    payload: buildAniListPayload(savedEntry),
-    changedFields,
-  });
-  scheduleAutoSync(userId);
+  if (getAniListAccountByUserId(userId)) {
+    deleteSyncQueueJobByEntry(userId, savedEntry.anime_id, 'delete_anilist_entry');
+    enqueueSyncJob({
+      userId,
+      animeId: savedEntry.anime_id,
+      operation: 'upsert_anilist_entry',
+      payload: buildAniListPayload(savedEntry),
+      changedFields,
+    });
+    scheduleAutoSync(userId);
+    return;
+  }
+
+  if (getMalAccountByUserId(userId)) {
+    deleteSyncQueueJobByEntry(userId, savedEntry.anime_id, 'delete_mal_entry');
+    const malMapping = getAnimeExternalIdByAnimeId('mal', savedEntry.anime_id);
+
+    if (!malMapping?.external_id) {
+      enqueueSyncJob({
+        userId,
+        animeId: savedEntry.anime_id,
+        operation: 'upsert_mal_entry',
+        payload: buildMalPayload(savedEntry, null),
+        changedFields,
+      });
+      scheduleAutoSync(userId);
+      return;
+    }
+
+    enqueueSyncJob({
+      userId,
+      animeId: savedEntry.anime_id,
+      operation: 'upsert_mal_entry',
+      payload: buildMalPayload(savedEntry, malMapping.external_id),
+      changedFields,
+    });
+    scheduleAutoSync(userId);
+  }
+}
+
+function getDeleteChangedFields(existingEntry) {
+  return [
+    { field: 'entry', from: 'present', to: null },
+    { field: 'status', from: existingEntry?.status ?? null, to: null },
+    { field: 'progress', from: existingEntry?.progress ?? null, to: null },
+    { field: 'score', from: existingEntry?.score ?? null, to: null },
+  ];
+}
+
+function isPendingCreateJob(job) {
+  return Boolean(
+    job?.changedFields?.some((change) => change?.field === 'status' && change.from === null)
+  );
+}
+
+function queueDeleteSyncIfNeeded(userId, existingEntry) {
+  if (!existingEntry) {
+    return;
+  }
+
+  const linkedAniListAccount = getAniListAccountByUserId(userId);
+  const linkedMalAccount = getMalAccountByUserId(userId);
+  const changedFields = getDeleteChangedFields(existingEntry);
+
+  if (linkedAniListAccount?.access_token) {
+    const pendingUpsert = getSyncQueueJob(userId, existingEntry.anime_id, 'upsert_anilist_entry');
+    deleteSyncQueueJobByEntry(userId, existingEntry.anime_id, 'upsert_anilist_entry');
+
+    if (isPendingCreateJob(pendingUpsert)) {
+      return;
+    }
+
+    enqueueSyncJob({
+      userId,
+      animeId: existingEntry.anime_id,
+      operation: 'delete_anilist_entry',
+      payload: buildAniListDeletePayload(existingEntry, linkedAniListAccount.anilist_user_id),
+      changedFields,
+    });
+    scheduleAutoSync(userId);
+    return;
+  }
+
+  if (linkedMalAccount?.access_token) {
+    const malMapping = getAnimeExternalIdByAnimeId('mal', existingEntry.anime_id);
+    const pendingUpsert = getSyncQueueJob(userId, existingEntry.anime_id, 'upsert_mal_entry');
+
+    deleteSyncQueueJobByEntry(userId, existingEntry.anime_id, 'upsert_mal_entry');
+
+    if (isPendingCreateJob(pendingUpsert)) {
+      return;
+    }
+
+    enqueueSyncJob({
+      userId,
+      animeId: existingEntry.anime_id,
+      operation: 'delete_mal_entry',
+      payload: buildMalDeletePayload(existingEntry, malMapping?.external_id ?? null),
+      changedFields,
+    });
+    scheduleAutoSync(userId);
+  }
 }
 
 function removeMyAnimeEntry(currentSession, animeId) {
@@ -298,6 +406,7 @@ function removeMyAnimeEntry(currentSession, animeId) {
     return { ok: false, message: 'Entry not found.' };
   }
 
+  queueDeleteSyncIfNeeded(auth.user.id, existingEntry);
   removeUserAnimeEntry(auth.user.id, numericAnimeId);
 
   return { ok: true, message: 'Anime removed from your list.' };
@@ -307,6 +416,12 @@ function clearMyAnimeList(currentSession) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) {
     return { ok: false, message: auth.message };
+  }
+
+  const existingEntries = getUserAnimeList(auth.user.id);
+
+  for (const entry of existingEntries) {
+    queueDeleteSyncIfNeeded(auth.user.id, entry);
   }
 
   const removedCount = clearUserAnimeList(auth.user.id);

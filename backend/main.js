@@ -1,10 +1,26 @@
+require('./env');
+
 const { app, ipcMain } = require('electron');
+const path = require('path');
+
+if (!app.isPackaged) {
+  app.setPath('userData', path.join(__dirname, '.electron-user-data'));
+  app.setPath('crashDumps', path.join(__dirname, '.electron-crash-dumps'));
+  app.disableHardwareAcceleration();
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('disable-software-rasterizer');
+}
+
 const { createWindow } = require('./window');
 const { setupTray } = require('./tray');
 const { registerShortcuts } = require('./shortcuts');
 
 const anilist = require('./anilist');
 const anilistOAuth = require('./anilistOAuth');
+const mal = require('./mal');
+const { previewMalImport, importMalEntries } = require('./malImport');
+const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
+const malOAuth = require('./malOAuth');
 const {
   saveAnime,
   saveAnimeSummary,
@@ -15,9 +31,14 @@ const {
   getAniListAccountByAniListUserId,
   getAniListAccountByUserId,
   deleteAniListAccountByUserId,
+  getMalAccountByMalUserId,
+  getMalAccountByUserId,
+  deleteMalAccountByUserId,
   mergeUserIntoUser,
   upsertAniListAccount,
   updateAniListAccountImportTime,
+  upsertMalAccount,
+  updateMalAccountImportTime,
   insertSyncHistory,
 } = require('./db');
 const { mapAnimeForDb } = require('./animeMapper');
@@ -49,6 +70,7 @@ const {
 } = require('./sync');
 
 const ANILIST_URL = 'https://graphql.anilist.co';
+let mainWindow = null;
 
 const DEFAULT_APP_SETTINGS = {
   themeAccent: 'cyan',
@@ -65,6 +87,8 @@ const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'drop
 
 let pendingAniListSignup = null;
 let pendingAniListLinkConflict = null;
+let pendingMalSignup = null;
+let pendingMalLinkConflict = null;
 
 function getAppPreferences() {
   const themeAccent = getAppSetting('preferences.themeAccent');
@@ -281,6 +305,7 @@ async function importAuthenticatedAniListList(accessToken, viewer) {
 
 async function finishAniListLogin({ accessToken, viewer, userId }) {
   deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
 
   upsertAniListAccount({
     userId,
@@ -352,8 +377,19 @@ function buildAniListAccountPayload(account) {
   };
 }
 
+function buildMalAccountPayload(account) {
+  return {
+    malUserId: account.mal_user_id,
+    malUsername: account.mal_username,
+    originalMalUsername: account.original_mal_username,
+    lastImportAt: account.last_import_at,
+    updatedAt: account.updated_at,
+  };
+}
+
 async function linkAniListToUser({ accessToken, viewer, userId }) {
   deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
   upsertAniListAccount({
     userId,
     anilistUserId: viewer.id,
@@ -384,6 +420,61 @@ async function linkAniListToUser({ accessToken, viewer, userId }) {
       updatedAt: new Date().toISOString(),
     },
     import: importResult,
+  };
+}
+
+async function finishMalLogin({ tokenData, viewer, userId }) {
+  deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
+
+  upsertMalAccount({
+    userId,
+    malUserId: viewer.id,
+    malUsername: viewer.name,
+    originalMalUsername: viewer.name,
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token,
+    tokenExpiresAt: getMalTokenExpiry(tokenData),
+  });
+
+  const loginResult = loginUserById(userId);
+
+  if (!loginResult.ok) {
+    return loginResult;
+  }
+
+  return {
+    ok: true,
+    message: 'Logged in with MyAnimeList.',
+    user: loginResult.user,
+    import: {
+      ok: true,
+      message: 'MyAnimeList import preview will be available in the sync step.',
+    },
+  };
+}
+
+async function linkMalToUser({ tokenData, viewer, userId }) {
+  deleteAniListAccountByUserId(userId);
+  deleteMalAccountByUserId(userId);
+
+  upsertMalAccount({
+    userId,
+    malUserId: viewer.id,
+    malUsername: viewer.name,
+    originalMalUsername: viewer.name,
+    accessToken: tokenData.access_token,
+    refreshToken: tokenData.refresh_token,
+    tokenExpiresAt: getMalTokenExpiry(tokenData),
+  });
+
+  const account = getMalAccountByUserId(userId);
+
+  return {
+    ok: true,
+    linked: true,
+    message: `Linked MyAnimeList account ${viewer.name}.`,
+    account: account ? buildMalAccountPayload(account) : null,
   };
 }
 
@@ -482,6 +573,67 @@ ipcMain.handle('anilist:import-list', async (_event, payload) => {
       ok: false,
       message: error.message || 'Failed to import AniList list.',
     };
+  }
+});
+
+ipcMain.handle('mal:preview-import', async () => {
+  try {
+    const session = getCurrentSession();
+
+    if (!session.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.' };
+    }
+
+    const malList = await withFreshMalAccount(session.user.id, async (linkedAccount) => {
+      if (!linkedAccount?.access_token) {
+        throw new Error('Link a MyAnimeList account before importing.');
+      }
+
+      return await mal.getViewerAnimeList(linkedAccount.access_token);
+    });
+    const result = await previewMalImport(malList);
+    return {
+      ok: true,
+      message: `Found ${result.preview.totalFound} MyAnimeList entries.`,
+      username: result.username,
+      preview: result.preview,
+    };
+  } catch (error) {
+    console.error('MyAnimeList preview error:', error);
+    return { ok: false, message: error.message || 'Failed to preview MyAnimeList list.' };
+  }
+});
+
+ipcMain.handle('mal:import-list', async (_event, payload) => {
+  try {
+    const session = getCurrentSession();
+
+    if (!session.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.' };
+    }
+
+    let linkedAccount = null;
+    const malList = await withFreshMalAccount(session.user.id, async (account) => {
+      if (!account?.access_token) {
+        throw new Error('Link a MyAnimeList account before importing.');
+      }
+
+      linkedAccount = account;
+      return await mal.getViewerAnimeList(account.access_token);
+    });
+    const result = await importMalEntries(session, malList, {
+      selectedStatuses: payload?.selectedStatuses,
+      selectedAnimeIds: payload?.selectedAnimeIds,
+    });
+
+    if (result.ok) {
+      updateMalAccountImportTime(linkedAccount.mal_user_id);
+    }
+
+    return result;
+  } catch (error) {
+    console.error('MyAnimeList import error:', error);
+    return { ok: false, message: error.message || 'Failed to import MyAnimeList list.' };
   }
 });
 
@@ -604,6 +756,50 @@ ipcMain.handle('sync:get-activity', () => {
   } catch (error) {
     console.error('Sync activity error:', error);
     return { ok: false, message: 'Failed to load sync activity.' };
+  }
+});
+
+ipcMain.handle('sync:pull-from-mal', async () => {
+  try {
+    const session = getCurrentSession();
+
+    if (!session.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.' };
+    }
+
+    let linkedAccount = null;
+    const malList = await withFreshMalAccount(session.user.id, async (account) => {
+      if (!account?.access_token) {
+        throw new Error('Link a MyAnimeList account before updating from MyAnimeList.');
+      }
+
+      linkedAccount = account;
+      return await mal.getViewerAnimeList(account.access_token);
+    });
+    const result = await importMalEntries(session, malList, {
+      selectedStatuses: IMPORT_STATUS_ORDER,
+      selectedAnimeIds: [],
+    });
+
+    if (result.ok) {
+      updateMalAccountImportTime(linkedAccount.mal_user_id);
+      for (const change of result.summary?.changes || []) {
+        insertSyncHistory({
+          userId: session.user.id,
+          animeId: change.animeId,
+          animeTitle: change.animeTitle,
+          operation: 'pull_from_mal',
+          changedFields: change.changedFields,
+          status: 'completed',
+          message: 'Updated local entry from MyAnimeList.',
+        });
+      }
+    }
+
+    return result;
+  } catch (error) {
+    console.error('MyAnimeList pull error:', error);
+    return { ok: false, message: error.message || 'Failed to update from MyAnimeList.' };
   }
 });
 
@@ -946,6 +1142,98 @@ ipcMain.handle('auth:anilist-complete', async (_event, payload) => {
   }
 });
 
+ipcMain.handle('auth:mal-start', async () => {
+  try {
+    const tokenData = await malOAuth.authorizeWithBrowser();
+    const viewer = await mal.getViewer(tokenData.access_token);
+
+    if (!viewer?.id || !viewer?.name) {
+      return { ok: false, message: 'MyAnimeList did not return account details.' };
+    }
+
+    const linkedAccount = getMalAccountByMalUserId(viewer.id);
+
+    if (linkedAccount?.user_id) {
+      pendingMalSignup = null;
+      return await finishMalLogin({
+        tokenData,
+        viewer,
+        userId: linkedAccount.user_id,
+      });
+    }
+
+    pendingMalSignup = {
+      tokenData,
+      viewer,
+      createdAt: Date.now(),
+    };
+
+    return {
+      ok: true,
+      needsProfile: true,
+      message: 'MyAnimeList account verified. Choose your local display name.',
+      mal: {
+        id: viewer.id,
+        username: viewer.name,
+      },
+      suggestedUsername: viewer.name,
+    };
+  } catch (error) {
+    console.error('MyAnimeList OAuth start error:', error);
+    return {
+      ok: false,
+      message: error.message || 'Failed to log in with MyAnimeList.',
+    };
+  }
+});
+
+ipcMain.handle('auth:mal-complete', async (_event, payload) => {
+  try {
+    if (!pendingMalSignup?.tokenData || !pendingMalSignup?.viewer) {
+      return { ok: false, message: 'MyAnimeList login session expired. Try again.' };
+    }
+
+    if (Date.now() - pendingMalSignup.createdAt > 10 * 60 * 1000) {
+      pendingMalSignup = null;
+      return { ok: false, message: 'MyAnimeList login session expired. Try again.' };
+    }
+
+    const username = String(payload?.username || '').trim();
+    const usernameError = validateUsername(username);
+
+    if (usernameError) {
+      return { ok: false, message: usernameError };
+    }
+
+    const usernameNormalized = normalizeUsername(username);
+
+    if (getUserByNormalizedUsername(usernameNormalized)) {
+      return { ok: false, message: 'Username is already taken.' };
+    }
+
+    const signup = pendingMalSignup;
+    const created = await createLinkedUser(username);
+
+    if (!created.ok || !created.user) {
+      return created;
+    }
+
+    pendingMalSignup = null;
+
+    return await finishMalLogin({
+      tokenData: signup.tokenData,
+      viewer: signup.viewer,
+      userId: created.user.id,
+    });
+  } catch (error) {
+    console.error('MyAnimeList OAuth complete error:', error);
+    return {
+      ok: false,
+      message: error.message || 'Failed to finish MyAnimeList login.',
+    };
+  }
+});
+
 ipcMain.handle('auth:anilist-link-status', () => {
   try {
     return getAniListLinkStatus(getCurrentSession());
@@ -1087,6 +1375,159 @@ ipcMain.handle('auth:anilist-resolve-link-conflict', async (_event, payload) => 
   }
 });
 
+ipcMain.handle('auth:mal-link-status', () => {
+  try {
+    const session = getCurrentSession();
+
+    if (!session?.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.', linked: false };
+    }
+
+    const linkedAccount = getMalAccountByUserId(session.user.id);
+
+    return {
+      ok: true,
+      linked: Boolean(linkedAccount),
+      account: linkedAccount ? buildMalAccountPayload(linkedAccount) : null,
+    };
+  } catch (error) {
+    console.error('MyAnimeList link status error:', error);
+    return { ok: false, message: 'Failed to load MyAnimeList link status.', linked: false };
+  }
+});
+
+ipcMain.handle('auth:mal-link', async () => {
+  try {
+    const session = getCurrentSession();
+
+    if (!session.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.', linked: false };
+    }
+
+    const tokenData = await malOAuth.authorizeWithBrowser();
+    const viewer = await mal.getViewer(tokenData.access_token);
+
+    if (!viewer?.id || !viewer?.name) {
+      return { ok: false, message: 'MyAnimeList did not return account details.', linked: false };
+    }
+
+    const existingLinkedAccount = getMalAccountByMalUserId(viewer.id);
+
+    if (
+      existingLinkedAccount?.user_id &&
+      Number(existingLinkedAccount.user_id) !== Number(session.user.id)
+    ) {
+      const existingUser = getSafeUserById(existingLinkedAccount.user_id);
+
+      pendingMalLinkConflict = {
+        tokenData,
+        viewer,
+        sourceUserId: Number(existingLinkedAccount.user_id),
+        targetUserId: Number(session.user.id),
+        createdAt: Date.now(),
+      };
+
+      return {
+        ok: true,
+        message: `MyAnimeList account ${viewer.name} is already linked to another local account.`,
+        linked: false,
+        needsConflictResolution: true,
+        conflict: {
+          malUserId: viewer.id,
+          malUsername: viewer.name,
+          sourceUser: existingUser
+            ? {
+                id: existingUser.id,
+                username: existingUser.username,
+              }
+            : null,
+          targetUser: {
+            id: session.user.id,
+            username: session.user.username,
+          },
+        },
+      };
+    }
+
+    pendingMalLinkConflict = null;
+
+    return await linkMalToUser({
+      tokenData,
+      viewer,
+      userId: session.user.id,
+    });
+  } catch (error) {
+    console.error('MyAnimeList link error:', error);
+    return {
+      ok: false,
+      linked: false,
+      message: error.message || 'Failed to link MyAnimeList account.',
+    };
+  }
+});
+
+ipcMain.handle('auth:mal-resolve-link-conflict', async (_event, payload) => {
+  try {
+    const session = getCurrentSession();
+
+    if (!session.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.', linked: false };
+    }
+
+    if (!pendingMalLinkConflict) {
+      return { ok: false, message: 'No MyAnimeList link conflict is waiting.', linked: false };
+    }
+
+    if (Date.now() - pendingMalLinkConflict.createdAt > 10 * 60 * 1000) {
+      pendingMalLinkConflict = null;
+      return { ok: false, message: 'MyAnimeList link conflict expired. Try linking again.', linked: false };
+    }
+
+    if (Number(pendingMalLinkConflict.targetUserId) !== Number(session.user.id)) {
+      pendingMalLinkConflict = null;
+      return { ok: false, message: 'MyAnimeList link conflict no longer matches this account.', linked: false };
+    }
+
+    const action = String(payload?.action || '').trim();
+
+    if (!['transfer', 'merge'].includes(action)) {
+      return { ok: false, message: 'Choose transfer or merge.', linked: false };
+    }
+
+    const conflict = pendingMalLinkConflict;
+    pendingMalLinkConflict = null;
+
+    let mergeSummary = null;
+
+    if (action === 'merge') {
+      mergeSummary = mergeUserIntoUser(conflict.sourceUserId, conflict.targetUserId);
+    }
+
+    const result = await linkMalToUser({
+      tokenData: conflict.tokenData,
+      viewer: conflict.viewer,
+      userId: conflict.targetUserId,
+    });
+
+    return {
+      ...result,
+      message:
+        action === 'merge'
+          ? `${result.message} Merged ${mergeSummary?.movedEntries ?? 0} list entries from the old local account.`
+          : result.message,
+      resolution: action,
+      mergeSummary,
+    };
+  } catch (error) {
+    console.error('MyAnimeList link conflict resolution error:', error);
+    return {
+      ok: false,
+      linked: false,
+      message: error.message || 'Failed to resolve MyAnimeList link conflict.',
+    };
+  }
+});
+
 ipcMain.handle('auth:register', async (_event, payload) => {
   try {
     const username = payload?.username ?? '';
@@ -1183,9 +1624,29 @@ ipcMain.handle('list:clear', () => {
   }
 });
 
-app.whenReady().then(() => {
-  const win = createWindow();
+function bootAppWindow() {
+  mainWindow = createWindow();
 
-  setupTray(win);
-  registerShortcuts(win);
+  setupTray(mainWindow);
+  registerShortcuts(mainWindow);
+
+  mainWindow.on('closed', () => {
+    mainWindow = null;
+  });
+}
+
+app.whenReady().then(() => {
+  bootAppWindow();
+
+  app.on('activate', () => {
+    if (!mainWindow) {
+      bootAppWindow();
+    }
+  });
+});
+
+app.on('window-all-closed', () => {
+  if (process.platform !== 'darwin') {
+    app.quit();
+  }
 });

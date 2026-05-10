@@ -158,6 +158,21 @@ db.prepare(
 `
 ).run();
 
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS anime_external_ids (
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    anime_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (provider, external_id),
+    UNIQUE(provider, anime_id),
+    FOREIGN KEY (anime_id) REFERENCES anime(id) ON DELETE CASCADE
+  )
+`
+).run();
+
 addColumnIfMissing('user_anime_lists', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'repeat_count', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'is_rewatching', 'INTEGER NOT NULL DEFAULT 0');
@@ -194,6 +209,25 @@ db.prepare(
     anilist_username TEXT NOT NULL,
     original_anilist_username TEXT NOT NULL,
     access_token TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    last_import_at TEXT,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+  )
+`
+).run();
+
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS mal_accounts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL UNIQUE,
+    mal_user_id INTEGER NOT NULL UNIQUE,
+    mal_username TEXT NOT NULL,
+    original_mal_username TEXT NOT NULL,
+    access_token TEXT NOT NULL,
+    refresh_token TEXT,
+    token_expires_at INTEGER,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_import_at TEXT,
@@ -654,6 +688,23 @@ const deleteAniListAccountByUserIdStmt = db.prepare(`
   WHERE user_id = ?
 `);
 
+const getMalAccountByMalUserIdStmt = db.prepare(`
+  SELECT *
+  FROM mal_accounts
+  WHERE mal_user_id = ?
+`);
+
+const getMalAccountByUserIdStmt = db.prepare(`
+  SELECT *
+  FROM mal_accounts
+  WHERE user_id = ?
+`);
+
+const deleteMalAccountByUserIdStmt = db.prepare(`
+  DELETE FROM mal_accounts
+  WHERE user_id = ?
+`);
+
 const deleteUserAnimeListByUserIdStmt = db.prepare(`
   DELETE FROM user_anime_lists
   WHERE user_id = ?
@@ -720,12 +771,40 @@ const upsertAniListAccountStmt = db.prepare(`
     updated_at = CURRENT_TIMESTAMP
 `);
 
+const upsertMalAccountStmt = db.prepare(`
+  INSERT INTO mal_accounts (
+    user_id,
+    mal_user_id,
+    mal_username,
+    original_mal_username,
+    access_token,
+    refresh_token,
+    token_expires_at,
+    updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  ON CONFLICT(mal_user_id) DO UPDATE SET
+    user_id = excluded.user_id,
+    mal_username = excluded.mal_username,
+    access_token = excluded.access_token,
+    refresh_token = excluded.refresh_token,
+    token_expires_at = excluded.token_expires_at,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
 const updateAniListAccountImportTimeStmt = db.prepare(`
   UPDATE anilist_accounts
   SET
     last_import_at = CURRENT_TIMESTAMP,
     updated_at = CURRENT_TIMESTAMP
   WHERE anilist_user_id = ?
+`);
+
+const updateMalAccountImportTimeStmt = db.prepare(`
+  UPDATE mal_accounts
+  SET
+    last_import_at = CURRENT_TIMESTAMP,
+    updated_at = CURRENT_TIMESTAMP
+  WHERE mal_user_id = ?
 `);
 
 const getSyncQueueJobStmt = db.prepare(`
@@ -806,6 +885,11 @@ const deleteSyncQueueJobStmt = db.prepare(`
   WHERE id = ?
 `);
 
+const deleteSyncQueueJobByEntryStmt = db.prepare(`
+  DELETE FROM sync_queue
+  WHERE user_id = ? AND anime_id = ? AND operation = ?
+`);
+
 const insertSyncHistoryStmt = db.prepare(`
   INSERT INTO sync_history (
     user_id,
@@ -861,6 +945,30 @@ const getUserAnimeListStmt = db.prepare(`
   JOIN anime a ON a.id = l.anime_id
   WHERE l.user_id = ?
   ORDER BY l.updated_at DESC
+`);
+
+const upsertAnimeExternalIdStmt = db.prepare(`
+  INSERT INTO anime_external_ids (
+    provider,
+    external_id,
+    anime_id,
+    updated_at
+  ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+  ON CONFLICT(provider, external_id) DO UPDATE SET
+    anime_id = excluded.anime_id,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
+const getAnimeExternalIdStmt = db.prepare(`
+  SELECT *
+  FROM anime_external_ids
+  WHERE provider = ? AND external_id = ?
+`);
+
+const getAnimeExternalIdByAnimeIdStmt = db.prepare(`
+  SELECT *
+  FROM anime_external_ids
+  WHERE provider = ? AND anime_id = ?
 `);
 
 const addUserAnimeEntryStmt = db.prepare(`
@@ -1129,6 +1237,32 @@ function getUserAnimeList(userId) {
   return getUserAnimeListStmt.all(userId);
 }
 
+function upsertAnimeExternalId({ provider, externalId, animeId }) {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const normalizedExternalId = String(externalId || '').trim();
+  const numericAnimeId = Number(animeId);
+
+  if (!normalizedProvider || !normalizedExternalId || !Number.isInteger(numericAnimeId)) {
+    return;
+  }
+
+  upsertAnimeExternalIdStmt.run(normalizedProvider, normalizedExternalId, numericAnimeId);
+}
+
+function getAnimeExternalId(provider, externalId) {
+  return getAnimeExternalIdStmt.get(
+    String(provider || '').trim().toLowerCase(),
+    String(externalId || '').trim()
+  );
+}
+
+function getAnimeExternalIdByAnimeId(provider, animeId) {
+  return getAnimeExternalIdByAnimeIdStmt.get(
+    String(provider || '').trim().toLowerCase(),
+    Number(animeId)
+  );
+}
+
 function addUserAnimeEntry({
   userId,
   animeId,
@@ -1245,8 +1379,21 @@ function deleteAniListAccountByUserId(userId) {
   deleteAniListAccountByUserIdStmt.run(userId);
 }
 
+function getMalAccountByMalUserId(malUserId) {
+  return getMalAccountByMalUserIdStmt.get(malUserId);
+}
+
+function getMalAccountByUserId(userId) {
+  return getMalAccountByUserIdStmt.get(userId);
+}
+
+function deleteMalAccountByUserId(userId) {
+  deleteMalAccountByUserIdStmt.run(userId);
+}
+
 function deleteUser(userId) {
   deleteAniListAccountByUserIdStmt.run(userId);
+  deleteMalAccountByUserIdStmt.run(userId);
   deleteUserAnimeListByUserIdStmt.run(userId);
   deleteUserStmt.run(userId);
 }
@@ -1282,6 +1429,30 @@ function upsertAniListAccount({
 
 function updateAniListAccountImportTime(anilistUserId) {
   updateAniListAccountImportTimeStmt.run(anilistUserId);
+}
+
+function upsertMalAccount({
+  userId,
+  malUserId,
+  malUsername,
+  originalMalUsername,
+  accessToken,
+  refreshToken,
+  tokenExpiresAt,
+}) {
+  upsertMalAccountStmt.run(
+    userId,
+    malUserId,
+    malUsername,
+    originalMalUsername,
+    accessToken,
+    refreshToken ?? null,
+    tokenExpiresAt ?? null
+  );
+}
+
+function updateMalAccountImportTime(malUserId) {
+  updateMalAccountImportTimeStmt.run(malUserId);
 }
 
 function safeJsonParse(value, fallback) {
@@ -1337,6 +1508,11 @@ function enqueueSyncJob({ userId, animeId, operation, payload, changedFields }) 
   return getSyncQueueJobStmt.get(userId, animeId, operation);
 }
 
+function getSyncQueueJob(userId, animeId, operation) {
+  const row = getSyncQueueJobStmt.get(userId, animeId, operation);
+  return row ? mapSyncQueueRow(row) : null;
+}
+
 function getDueSyncQueueJobs(userId, limit = 10) {
   return getDueSyncQueueJobsStmt.all(userId, limit).map(mapSyncQueueRow);
 }
@@ -1355,6 +1531,10 @@ function markSyncQueueJobFailed(id, error, nextAttemptAt) {
 
 function deleteSyncQueueJob(id) {
   deleteSyncQueueJobStmt.run(id);
+}
+
+function deleteSyncQueueJobByEntry(userId, animeId, operation) {
+  deleteSyncQueueJobByEntryStmt.run(userId, animeId, operation);
 }
 
 function insertSyncHistory({ userId, animeId, animeTitle, operation, changedFields, status, message }) {
@@ -1398,6 +1578,9 @@ module.exports = {
   updateLastLogin,
   getUserAnimeEntry,
   getUserAnimeList,
+  upsertAnimeExternalId,
+  getAnimeExternalId,
+  getAnimeExternalIdByAnimeId,
   addUserAnimeEntry,
   updateUserAnimeEntry,
   removeUserAnimeEntry,
@@ -1414,16 +1597,23 @@ module.exports = {
   getAniListAccountByAniListUserId,
   getAniListAccountByUserId,
   deleteAniListAccountByUserId,
+  getMalAccountByMalUserId,
+  getMalAccountByUserId,
+  deleteMalAccountByUserId,
   deleteUser,
   mergeUserIntoUser,
   upsertAniListAccount,
   updateAniListAccountImportTime,
+  upsertMalAccount,
+  updateMalAccountImportTime,
   enqueueSyncJob,
+  getSyncQueueJob,
   getDueSyncQueueJobs,
   getSyncQueueItems,
   getSyncQueueCount,
   markSyncQueueJobFailed,
   deleteSyncQueueJob,
+  deleteSyncQueueJobByEntry,
   insertSyncHistory,
   getSyncHistoryItems,
 };

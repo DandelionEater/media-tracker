@@ -64,6 +64,48 @@ type ImportPreviewResponse = {
   };
 };
 
+type AniListLinkedAccount = {
+  anilistUserId: number;
+  anilistUsername: string;
+  originalAniListUsername: string;
+  lastImportAt: string | null;
+  updatedAt: string;
+};
+
+type AniListLinkConflict = {
+  anilistUserId: number;
+  anilistUsername: string;
+  sourceUser: {
+    id: number;
+    username: string;
+  } | null;
+  targetUser: {
+    id: number;
+    username: string;
+  };
+};
+
+type MalLinkedAccount = {
+  malUserId: number;
+  malUsername: string;
+  originalMalUsername: string;
+  lastImportAt: string | null;
+  updatedAt: string;
+};
+
+type MalLinkConflict = {
+  malUserId: number;
+  malUsername: string;
+  sourceUser: {
+    id: number;
+    username: string;
+  } | null;
+  targetUser: {
+    id: number;
+    username: string;
+  };
+};
+
 type SettingsPageProps = {
   username: string;
   settings: AppSettings;
@@ -88,6 +130,25 @@ type SettingsPageProps = {
       skipped: number;
     };
   }>;
+  onImportMal: (
+    selectedStatuses: string[],
+    selectedAnimeIds: number[]
+  ) => Promise<{
+    ok: boolean;
+    message: string;
+    summary?: {
+      sourceUsername: string;
+      totalFound: number;
+      selectedStatuses: string[];
+      selectedAnimeIds: number[];
+      imported: number;
+      created: number;
+      updated: number;
+      skipped: number;
+      mapped?: number;
+      unmapped?: number;
+    };
+  }>;
   onClearMyList: () => Promise<{
     ok: boolean;
     message: string;
@@ -97,26 +158,17 @@ type SettingsPageProps = {
     ok: boolean;
     message: string;
     linked: boolean;
-    account?: {
-      anilistUserId: number;
-      anilistUsername: string;
-      originalAniListUsername: string;
-      lastImportAt: string | null;
-      updatedAt: string;
-    } | null;
+    account?: AniListLinkedAccount | null;
     needsConflictResolution?: boolean;
-    conflict?: {
-      anilistUserId: number;
-      anilistUsername: string;
-      sourceUser: {
-        id: number;
-        username: string;
-      } | null;
-      targetUser: {
-        id: number;
-        username: string;
-      };
-    };
+    conflict?: AniListLinkConflict;
+  }>;
+  onLinkMalAccount: () => Promise<{
+    ok: boolean;
+    message: string;
+    linked: boolean;
+    account?: MalLinkedAccount | null;
+    needsConflictResolution?: boolean;
+    conflict?: MalLinkConflict;
   }>;
   onRunSyncNow: () => Promise<{
     ok: boolean;
@@ -135,6 +187,20 @@ type SettingsPageProps = {
       created: number;
       updated: number;
       skipped: number;
+    };
+  }>;
+  onPullFromMal: () => Promise<{
+    ok: boolean;
+    message: string;
+    summary?: {
+      sourceUsername: string;
+      totalFound: number;
+      imported: number;
+      created: number;
+      updated: number;
+      skipped: number;
+      mapped?: number;
+      unmapped?: number;
     };
   }>;
 };
@@ -247,10 +313,13 @@ export function SettingsPage({
   onShowWelcomeScreen,
   onResetSettings,
   onImportAniList,
+  onImportMal,
   onClearMyList,
   onLinkAniListAccount,
+  onLinkMalAccount,
   onRunSyncNow,
   onPullFromAniList,
+  onPullFromMal,
 }: SettingsPageProps) {
   const sectionRefs = useRef<Partial<Record<SettingsSectionId, HTMLElement | null>>>({});
   const restoredSectionScroll = useRef(false);
@@ -258,6 +327,8 @@ export function SettingsPage({
     readStoredSettingsSection
   );
   const [importUsername, setImportUsername] = useState(username);
+  const [importPreviewUsername, setImportPreviewUsername] = useState(username);
+  const [importProvider, setImportProvider] = useState<"anilist" | "mal">("anilist");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -288,12 +359,14 @@ export function SettingsPage({
   const [syncStatus, setSyncStatus] = useState({
     loading: true,
     linked: false,
+    provider: null as "anilist" | "mal" | null,
+    providerLabel: null as string | null,
     autoSyncEnabled: true,
     pendingCount: 0,
     feedback: null as { kind: "success" | "error"; message: string } | null,
   });
   const [isSyncing, setIsSyncing] = useState(false);
-  const [isPullingFromAniList, setIsPullingFromAniList] = useState(false);
+  const [isPullingFromRemote, setIsPullingFromRemote] = useState(false);
   const [isSyncActivityOpen, setIsSyncActivityOpen] = useState(false);
   const [syncActivityTab, setSyncActivityTab] = useState<SyncActivityTab>("pending");
   const [syncActivity, setSyncActivity] = useState<{
@@ -310,29 +383,28 @@ export function SettingsPage({
   const [aniListLink, setAniListLink] = useState<{
     loading: boolean;
     linked: boolean;
-    account: {
-      anilistUserId: number;
-      anilistUsername: string;
-      originalAniListUsername: string;
-      lastImportAt: string | null;
-      updatedAt: string;
-    } | null;
+    account: AniListLinkedAccount | null;
     feedback: {
       kind: "success" | "error";
       message: string;
     } | null;
-    conflict: {
-      anilistUserId: number;
-      anilistUsername: string;
-      sourceUser: {
-        id: number;
-        username: string;
-      } | null;
-      targetUser: {
-        id: number;
-        username: string;
-      };
+    conflict: AniListLinkConflict | null;
+  }>({
+    loading: true,
+    linked: false,
+    account: null,
+    feedback: null,
+    conflict: null,
+  });
+  const [malLink, setMalLink] = useState<{
+    loading: boolean;
+    linked: boolean;
+    account: MalLinkedAccount | null;
+    feedback: {
+      kind: "success" | "error";
+      message: string;
     } | null;
+    conflict: MalLinkConflict | null;
   }>({
     loading: true,
     linked: false,
@@ -347,6 +419,9 @@ export function SettingsPage({
       "AniList preferred"
     );
   }, [settings.titleLanguage]);
+  const syncProviderLabel = syncStatus.providerLabel ?? "external account";
+  const isAniListSync = syncStatus.provider === "anilist";
+  const syncTargetLabel = syncStatus.linked ? syncProviderLabel : "No linked account";
 
   function toggleSection(section: SettingsSectionId) {
     setOpenSection((current) => {
@@ -388,6 +463,7 @@ export function SettingsPage({
     let cancelled = false;
 
     loadAniListLinkStatus(undefined, () => cancelled);
+    loadMalLinkStatus(undefined, () => cancelled);
 
     return () => {
       cancelled = true;
@@ -406,6 +482,8 @@ export function SettingsPage({
         ...current,
         loading: false,
         linked: Boolean(result.linked),
+        provider: result.provider ?? null,
+        providerLabel: result.providerLabel ?? null,
         autoSyncEnabled: result.autoSyncEnabled ?? true,
         pendingCount: result.pendingCount ?? 0,
         feedback: result.ok
@@ -454,6 +532,39 @@ export function SettingsPage({
     }
   }
 
+  async function loadMalLinkStatus(
+    feedback?: { kind: "success" | "error"; message: string },
+    isCancelled = () => false
+  ) {
+    try {
+      const result = await window.api.getMalLinkStatus();
+
+      if (isCancelled()) {
+        return;
+      }
+
+      setMalLink((current) => ({
+        ...current,
+        loading: false,
+        linked: Boolean(result.ok && result.linked),
+        account: result.account ?? null,
+        conflict: null,
+        feedback: result.ok
+          ? feedback ?? current.feedback
+          : { kind: "error", message: result.message || "Failed to load MyAnimeList link status." },
+      }));
+    } catch {
+      if (!isCancelled()) {
+        setMalLink((current) => ({
+          ...current,
+          loading: false,
+          conflict: null,
+          feedback: { kind: "error", message: "Failed to load MyAnimeList link status." },
+        }));
+      }
+    }
+  }
+
   async function updateAutoSync(enabled: boolean) {
     try {
       const result = await window.api.setAutoSync(enabled);
@@ -462,14 +573,16 @@ export function SettingsPage({
         ...current,
         loading: false,
         linked: Boolean(result.linked),
+        provider: result.provider ?? null,
+        providerLabel: result.providerLabel ?? null,
         autoSyncEnabled: result.autoSyncEnabled ?? enabled,
         pendingCount: result.pendingCount ?? current.pendingCount,
         feedback: {
           kind: result.ok ? "success" : "error",
           message: result.ok
             ? enabled
-              ? "Automatic AniList sync enabled."
-              : "Automatic AniList sync disabled."
+              ? `Automatic ${result.providerLabel ?? "external"} sync enabled.`
+              : `Automatic ${result.providerLabel ?? "external"} sync disabled.`
             : result.message || "Failed to update sync setting.",
         },
       }));
@@ -504,10 +617,13 @@ export function SettingsPage({
     }
   }
 
-  async function pullFromAniList() {
+  async function pullFromRemote() {
     try {
-      setIsPullingFromAniList(true);
-      const result = await onPullFromAniList();
+      setIsPullingFromRemote(true);
+      const result =
+        syncStatus.provider === "mal"
+          ? await onPullFromMal()
+          : await onPullFromAniList();
       await loadSyncStatus();
 
       setSyncStatus((current) => ({
@@ -522,7 +638,7 @@ export function SettingsPage({
         await loadSyncActivity(syncActivityTab);
       }
     } finally {
-      setIsPullingFromAniList(false);
+      setIsPullingFromRemote(false);
     }
   }
 
@@ -569,8 +685,11 @@ export function SettingsPage({
       const result = await onLinkAniListAccount();
 
       if (result.ok && !result.needsConflictResolution) {
-        await loadAniListLinkStatus({ kind: "success", message: result.message });
-        await loadSyncStatus();
+        await Promise.all([
+          loadAniListLinkStatus({ kind: "success", message: result.message }),
+          loadMalLinkStatus(),
+          loadSyncStatus(),
+        ]);
         return;
       }
 
@@ -608,8 +727,11 @@ export function SettingsPage({
       const result = await window.api.resolveAniListLinkConflict(action);
 
       if (result.ok) {
-        await loadAniListLinkStatus({ kind: "success", message: result.message });
-        await loadSyncStatus();
+        await Promise.all([
+          loadAniListLinkStatus({ kind: "success", message: result.message }),
+          loadMalLinkStatus(),
+          loadSyncStatus(),
+        ]);
         return;
       }
 
@@ -632,6 +754,88 @@ export function SettingsPage({
     }
   }
 
+  async function linkMalAccount() {
+    try {
+      setMalLink((current) => ({
+        ...current,
+        loading: true,
+        conflict: null,
+        feedback: { kind: "success", message: "Opening MyAnimeList in your browser..." },
+      }));
+
+      const result = await onLinkMalAccount();
+
+      if (result.ok && !result.needsConflictResolution) {
+        await Promise.all([
+          loadMalLinkStatus({ kind: "success", message: result.message }),
+          loadAniListLinkStatus(),
+          loadSyncStatus(),
+        ]);
+        return;
+      }
+
+      setMalLink({
+        loading: false,
+        linked: Boolean(result.ok && result.linked),
+        account: result.account ?? null,
+        conflict: result.needsConflictResolution ? result.conflict ?? null : null,
+        feedback: {
+          kind: result.ok ? "success" : "error",
+          message: result.message,
+        },
+      });
+    } catch {
+      setMalLink((current) => ({
+        ...current,
+        loading: false,
+        conflict: null,
+        feedback: { kind: "error", message: "Failed to link MyAnimeList account." },
+      }));
+    }
+  }
+
+  async function resolveMalConflict(action: "transfer" | "merge") {
+    try {
+      setMalLink((current) => ({
+        ...current,
+        loading: true,
+        feedback: {
+          kind: "success",
+          message:
+            action === "merge" ? "Merging accounts..." : "Transferring MyAnimeList link...",
+        },
+      }));
+
+      const result = await window.api.resolveMalLinkConflict(action);
+
+      if (result.ok) {
+        await Promise.all([
+          loadMalLinkStatus({ kind: "success", message: result.message }),
+          loadAniListLinkStatus(),
+          loadSyncStatus(),
+        ]);
+        return;
+      }
+
+      setMalLink({
+        loading: false,
+        linked: Boolean(result.linked),
+        account: result.account ?? null,
+        conflict: malLink.conflict,
+        feedback: {
+          kind: "error",
+          message: result.message,
+        },
+      });
+    } catch {
+      setMalLink((current) => ({
+        ...current,
+        loading: false,
+        feedback: { kind: "error", message: "Failed to resolve MyAnimeList link conflict." },
+      }));
+    }
+  }
+
   const selectedImportStatuses = useMemo(() => {
     if (!importPreview) {
       return [];
@@ -649,10 +853,12 @@ export function SettingsPage({
     }
 
     try {
+      setImportProvider("anilist");
       setIsPreviewLoading(true);
       setPreviewError(null);
       setImportFeedback(null);
       setImportPreview(null);
+      setImportPreviewUsername(trimmedUsername);
       setSelectedImportIds([]);
       setOpenImportGroups({});
       setIsImportModalOpen(true);
@@ -666,6 +872,39 @@ export function SettingsPage({
         return;
       }
 
+      setImportPreview(result.preview);
+      setSelectedImportIds(
+        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      );
+      setOpenImportGroups(
+        Object.fromEntries(
+          result.preview.groups.map((group, index) => [group.status, index < 2])
+        )
+      );
+    } finally {
+      setIsPreviewLoading(false);
+    }
+  }
+
+  async function openMalImportPreview() {
+    try {
+      setImportProvider("mal");
+      setIsPreviewLoading(true);
+      setPreviewError(null);
+      setImportFeedback(null);
+      setImportPreview(null);
+      setSelectedImportIds([]);
+      setOpenImportGroups({});
+      setIsImportModalOpen(true);
+
+      const result = (await window.api.previewMalImport()) as ImportPreviewResponse;
+
+      if (!result.ok || !result.preview) {
+        setPreviewError(result.message || "Failed to preview MyAnimeList list.");
+        return;
+      }
+
+      setImportPreviewUsername(result.username || "MyAnimeList");
       setImportPreview(result.preview);
       setSelectedImportIds(
         result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
@@ -916,6 +1155,11 @@ export function SettingsPage({
                   : aniListLink.linked
                     ? `AniList ${aniListLink.account?.anilistUsername ?? "linked"}`
                     : "AniList not linked",
+                malLink.loading
+                  ? "Checking MAL"
+                  : malLink.linked
+                    ? `MAL ${malLink.account?.malUsername ?? "linked"}`
+                    : "MAL not linked",
               ]}
               open={openSection === "account"}
               onToggle={() => toggleSection("account")}
@@ -1029,18 +1273,132 @@ export function SettingsPage({
                 )}
               </div>
             </div>
+            <div className="mt-5">
+              <SectionHeading
+                icon={LinkIcon}
+                title="MyAnimeList account"
+                description="Link your local profile to MyAnimeList so the app can recognize your MAL identity."
+              />
+
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-semibold text-white">
+                      {malLink.linked
+                        ? `Connected as ${malLink.account?.malUsername ?? "MyAnimeList user"}`
+                        : "No MyAnimeList account linked"}
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-white/45">
+                      {malLink.linked
+                        ? "This local account can be matched back to your MyAnimeList profile."
+                        : "Authorize MyAnimeList in your browser and attach it to this local account."}
+                    </p>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={linkMalAccount}
+                    disabled={malLink.loading}
+                    className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                      malLink.loading
+                        ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                        : "border border-white/10 bg-white text-black hover:opacity-90"
+                    }`}
+                  >
+                    <LinkIcon className="h-4 w-4" />
+                    {malLink.loading
+                      ? "Checking..."
+                      : malLink.linked
+                        ? "Relink MyAnimeList"
+                        : "Link MyAnimeList"}
+                  </button>
+                </div>
+
+                {malLink.account && (
+                  <div className="mt-5 grid grid-cols-1 gap-3 md:grid-cols-3">
+                    <LinkStat label="MAL ID" value={String(malLink.account.malUserId)} />
+                    <LinkStat label="Original name" value={malLink.account.originalMalUsername} />
+                    <LinkStat
+                      label="Last import"
+                      value={
+                        malLink.account.lastImportAt
+                          ? formatDateTime(malLink.account.lastImportAt)
+                          : "Not yet"
+                      }
+                    />
+                  </div>
+                )}
+
+                {malLink.conflict && (
+                  <div className="mt-5 rounded-3xl border border-amber-300/20 bg-amber-300/10 p-4">
+                    <p className="text-sm font-semibold text-white">
+                      MyAnimeList account already linked
+                    </p>
+                    <p className="mt-2 text-sm leading-6 text-white/70">
+                      {malLink.conflict.malUsername} is linked to{" "}
+                      <span className="font-semibold text-white">
+                        {malLink.conflict.sourceUser?.username ?? "another local account"}
+                      </span>
+                      . Transfer moves only the MyAnimeList connection here. Merge brings over
+                      non-duplicate list entries and removes that old local account.
+                    </p>
+
+                    <div className="mt-4 flex flex-wrap gap-3">
+                      <button
+                        type="button"
+                        disabled={malLink.loading}
+                        onClick={() => resolveMalConflict("transfer")}
+                        className="rounded-2xl border border-white/10 bg-white/[0.06] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Transfer link here
+                      </button>
+                      <button
+                        type="button"
+                        disabled={malLink.loading}
+                        onClick={() => resolveMalConflict("merge")}
+                        className="rounded-2xl border border-white/10 bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Merge into this account
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {malLink.feedback && (
+                  <div
+                    className={`mt-5 rounded-3xl border p-4 ${
+                      malLink.feedback.kind === "success"
+                        ? "border-emerald-400/20 bg-emerald-400/10"
+                        : "border-rose-400/20 bg-rose-400/10"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-white">
+                      {malLink.feedback.message}
+                    </p>
+                  </div>
+                )}
+              </div>
+            </div>
             </AccordionSection>
           </div>
 
           <div ref={rememberSectionRef("sync")} className="scroll-mt-24">
             <AccordionSection
               icon={ArrowPathIcon}
-              title="AniList Sync"
-              description="Push local tracker changes to your linked AniList account."
+              title={syncStatus.linked ? `${syncProviderLabel} Sync` : "External Sync"}
+              description={
+                syncStatus.linked
+                  ? `Push local tracker changes to your linked ${syncProviderLabel} account.`
+                  : "Link an external account before syncing local tracker changes."
+              }
               summary={[
-                syncStatus.autoSyncEnabled ? "Auto on" : "Auto off",
+                syncStatus.linked
+                  ? syncStatus.autoSyncEnabled
+                    ? "Auto on"
+                    : "Auto off"
+                  : "Auto unavailable",
                 `${syncStatus.pendingCount} pending`,
-                syncStatus.linked ? "Linked" : "Not linked",
+                syncStatus.linked ? syncProviderLabel : "Unavailable",
               ]}
               open={openSection === "sync"}
               onToggle={() => toggleSection("sync")}
@@ -1049,7 +1407,11 @@ export function SettingsPage({
               <SectionHeading
                 icon={ArrowPathIcon}
                 title="Sync controls"
-                description="Local edits are queued first, then pushed to AniList when sync runs."
+                description={
+                  syncStatus.linked
+                    ? `Local edits are queued first, then pushed to ${syncProviderLabel} when sync runs.`
+                    : "Sync is unavailable until you link AniList or MyAnimeList."
+                }
               />
 
               <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
@@ -1059,7 +1421,7 @@ export function SettingsPage({
                   description={
                     syncStatus.linked
                       ? "Push queued local changes after a short delay."
-                      : "Link AniList before automatic sync can run."
+                      : "Link AniList or MyAnimeList before automatic sync can run."
                   }
                   checked={syncStatus.autoSyncEnabled}
                   disabled={!syncStatus.linked || syncStatus.loading}
@@ -1071,7 +1433,9 @@ export function SettingsPage({
                   <p className="mt-2 text-sm leading-6 text-white/45">
                     {syncStatus.pendingCount > 0
                       ? `${syncStatus.pendingCount} change${syncStatus.pendingCount === 1 ? "" : "s"} waiting to sync.`
-                      : "No queued AniList changes right now."}
+                      : syncStatus.linked
+                        ? `No queued ${syncProviderLabel} changes right now.`
+                        : "Sync is unavailable because no external account is linked."}
                   </p>
 
                   <div className="mt-5 flex flex-wrap gap-3">
@@ -1099,22 +1463,26 @@ export function SettingsPage({
                 </div>
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-                  <p className="font-semibold text-white">Update from AniList</p>
+                  <p className="font-semibold text-white">Update from {syncTargetLabel}</p>
                   <p className="mt-2 text-sm leading-6 text-white/45">
-                    Pull your full AniList library and replace local tracker fields that differ.
+                    {!syncStatus.linked
+                      ? "Link an external account before pulling remote list updates."
+                      : isAniListSync
+                      ? "Pull your full AniList library and replace local tracker fields that differ."
+                      : "Pull your full MyAnimeList library and replace local tracker fields that differ."}
                   </p>
 
                   <button
                     type="button"
-                    onClick={pullFromAniList}
-                    disabled={!syncStatus.linked || isPullingFromAniList}
+                    onClick={pullFromRemote}
+                    disabled={!syncStatus.linked || isPullingFromRemote}
                     className={`mt-5 rounded-2xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                      !syncStatus.linked || isPullingFromAniList
+                      !syncStatus.linked || isPullingFromRemote
                         ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
                         : "border border-white/10 bg-white text-black hover:opacity-90"
                     }`}
                   >
-                    {isPullingFromAniList ? "Updating..." : "Update from AniList"}
+                    {isPullingFromRemote ? "Updating..." : `Update from ${syncTargetLabel}`}
                   </button>
                 </div>
               </div>
@@ -1260,6 +1628,50 @@ export function SettingsPage({
 
               <div>
                 <SectionHeading
+                  icon={CloudArrowDownIcon}
+                  title="Import from MyAnimeList"
+                  description="Preview your linked MyAnimeList library, then choose exact matched titles to bring over."
+                />
+
+                <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="font-semibold text-white">
+                        {malLink.linked
+                          ? `Ready to import ${malLink.account?.malUsername ?? "your MAL list"}`
+                          : "Link MyAnimeList first"}
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-white/45">
+                        MyAnimeList entries are matched to AniList anime records before import so they can fit the local library.
+                      </p>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={isPreviewLoading || !malLink.linked}
+                      onClick={openMalImportPreview}
+                      className={`rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                        isPreviewLoading || !malLink.linked
+                          ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                          : "border border-white/10 bg-white text-black hover:opacity-90"
+                      }`}
+                    >
+                      {isPreviewLoading && importProvider === "mal"
+                        ? "Loading preview..."
+                        : "Choose what to import"}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
+                    <p className="text-sm leading-6 text-white/70">
+                      Some MAL entries may be skipped if the app cannot confidently match them to an AniList anime record.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <SectionHeading
                   icon={TrashIcon}
                   title="Clear my anime list"
                   description="Remove every anime from your list without affecting the rest of the app."
@@ -1385,7 +1797,8 @@ export function SettingsPage({
 
       <ImportSelectionModal
         isOpen={isImportModalOpen}
-        username={importUsername.trim()}
+        provider={importProvider}
+        username={importPreviewUsername.trim()}
         preview={importPreview}
         previewError={previewError}
         isPreviewLoading={isPreviewLoading}
@@ -1429,11 +1842,14 @@ export function SettingsPage({
         onConfirm={async () => {
           try {
             setIsImporting(true);
-            const result = await onImportAniList(
-              importUsername.trim(),
-              selectedImportStatuses,
-              selectedImportIds
-            );
+            const result =
+              importProvider === "mal"
+                ? await onImportMal(selectedImportStatuses, selectedImportIds)
+                : await onImportAniList(
+                    importUsername.trim(),
+                    selectedImportStatuses,
+                    selectedImportIds
+                  );
             setImportFeedback({
               kind: result.ok ? "success" : "error",
               message: result.message,
@@ -1757,9 +2173,14 @@ function SyncActivityModal({
                       <p className="font-semibold text-white">
                         {item.animeTitle || item.anime_title || `Anime #${item.anime_id}`}
                       </p>
-                      <p className="mt-1 text-xs uppercase tracking-[0.18em] text-white/30">
-                        {formatOperation(item.operation)}
-                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-2">
+                        <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-white/70">
+                          {formatOperation(item.operation)}
+                        </span>
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${getOperationAccent(item.operation)}`}>
+                          {formatOperationProvider(item.operation)}
+                        </span>
+                      </div>
                     </div>
                     <div className="text-right">
                       <p className="text-sm text-white/55">
@@ -1808,6 +2229,7 @@ function SyncActivityModal({
 
 function ImportSelectionModal({
   isOpen,
+  provider,
   username,
   preview,
   previewError,
@@ -1826,6 +2248,7 @@ function ImportSelectionModal({
   onConfirm,
 }: {
   isOpen: boolean;
+  provider: "anilist" | "mal";
   username: string;
   preview: ImportPreviewResponse["preview"] | null;
   previewError: string | null;
@@ -1858,13 +2281,17 @@ function ImportSelectionModal({
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p className="text-sm uppercase tracking-[0.3em] text-white/35">
-              AniList import
+              {provider === "mal" ? "MyAnimeList import" : "AniList import"}
             </p>
             <h2 className="mt-3 text-2xl font-bold tracking-tight text-white">
               Choose exact anime to import
             </h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-white/50">
-              Previewing <span className="text-white">{username || "your AniList account"}</span>.
+              Previewing{" "}
+              <span className="text-white">
+                {username || (provider === "mal" ? "your MyAnimeList account" : "your AniList account")}
+              </span>
+              .
               Expand a group, tick the titles you want, then import only those.
             </p>
           </div>
@@ -2090,7 +2517,48 @@ function capitalize(value: string) {
 }
 
 function formatOperation(value: string) {
-  return value.replace(/_/g, " ");
+  switch (value) {
+    case "upsert_anilist_entry":
+      return "Pushed list entry";
+    case "upsert_mal_entry":
+      return "Pushed list entry";
+    case "delete_anilist_entry":
+      return "Deleted list entry";
+    case "delete_mal_entry":
+      return "Deleted list entry";
+    case "pull_from_anilist":
+      return "Pulled remote update";
+    case "pull_from_mal":
+      return "Pulled remote update";
+    default:
+      return value
+        .replace(/_/g, " ")
+        .replace(/^./, (char) => char.toUpperCase());
+  }
+}
+
+function formatOperationProvider(value: string) {
+  if (value.includes("mal")) {
+    return "MyAnimeList";
+  }
+
+  if (value.includes("anilist")) {
+    return "AniList";
+  }
+
+  return "Sync";
+}
+
+function getOperationAccent(value: string) {
+  if (value.includes("mal")) {
+    return "bg-indigo-400/10 text-indigo-100";
+  }
+
+  if (value.includes("anilist")) {
+    return "bg-sky-400/10 text-sky-100";
+  }
+
+  return "bg-white/8 text-white/60";
 }
 
 function formatFieldName(value: string) {

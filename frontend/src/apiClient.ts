@@ -10,6 +10,7 @@ const API_BASE_URL =
     : "https://api.seenary.app");
 
 let pendingAniListLoginFlowId: string | null = null;
+let pendingMalLoginFlowId: string | null = null;
 
 async function rpc(method: string, args: unknown[] = []) {
   const response = await fetch(`${API_BASE_URL}/rpc`, {
@@ -30,11 +31,11 @@ async function rpc(method: string, args: unknown[] = []) {
   return payload;
 }
 
-function openPopup(url: string) {
-  const popup = window.open(url, "seenary-anilist-oauth", "width=560,height=720,popup=yes");
+function openPopup(url: string, name = "seenary-oauth") {
+  const popup = window.open(url, name, "width=560,height=720,popup=yes");
 
   if (!popup) {
-    throw new Error("Allow popups so Seenary can open AniList authorization.");
+    throw new Error("Allow popups so Seenary can open the authorization page.");
   }
 
   popup.focus();
@@ -100,6 +101,65 @@ async function linkAniListAccount() {
   return await waitForAniListFlow("pollAniListLink", start.flowId, popup);
 }
 
+async function waitForMalFlow(method: string, flowId: string, popup: Window | null) {
+  const startedAt = Date.now();
+  const timeoutMs = 10 * 60 * 1000;
+
+  while (Date.now() - startedAt < timeoutMs) {
+    const result = await rpc(method, [flowId]);
+
+    if (result.done) {
+      return result;
+    }
+
+    if (popup?.closed) {
+      await new Promise((resolve) => window.setTimeout(resolve, 700));
+    } else {
+      await new Promise((resolve) => window.setTimeout(resolve, 1000));
+    }
+  }
+
+  throw new Error("MyAnimeList authorization timed out.");
+}
+
+async function startMalLogin() {
+  const start = await rpc("startMalLogin");
+
+  if (!start.pendingOAuth) {
+    return start;
+  }
+
+  const popup = openPopup(start.authUrl, "seenary-mal-oauth");
+  const result = await waitForMalFlow("pollMalLogin", start.flowId, popup);
+
+  if (result.needsProfile) {
+    pendingMalLoginFlowId = start.flowId;
+  }
+
+  return result;
+}
+
+async function completeMalLogin(username: string) {
+  const result = await rpc("completeMalLogin", [username, pendingMalLoginFlowId]);
+
+  if (result.ok) {
+    pendingMalLoginFlowId = null;
+  }
+
+  return result;
+}
+
+async function linkMalAccount() {
+  const start = await rpc("linkMalAccount");
+
+  if (!start.pendingOAuth) {
+    return start;
+  }
+
+  const popup = openPopup(start.authUrl, "seenary-mal-oauth");
+  return await waitForMalFlow("pollMalLink", start.flowId, popup);
+}
+
 export function installApiClient() {
   if (window.api) {
     return;
@@ -115,12 +175,16 @@ export function installApiClient() {
     previewAniListImport: (username) => rpc("previewAniListImport", [username]),
     importAniList: (username, selectedStatuses, selectedAnimeIds) =>
       rpc("importAniList", [username, selectedStatuses, selectedAnimeIds]),
+    previewMalImport: () => rpc("previewMalImport"),
+    importMal: (selectedStatuses, selectedAnimeIds) =>
+      rpc("importMal", [selectedStatuses, selectedAnimeIds]),
     getSettings: () => rpc("getSettings"),
     updateSettings: (settings) => rpc("updateSettings", [settings]),
     getSyncStatus: () => rpc("getSyncStatus"),
     setAutoSync: (enabled) => rpc("setAutoSync", [enabled]),
     runSyncNow: () => rpc("runSyncNow"),
     pullFromAniList: () => rpc("pullFromAniList"),
+    pullFromMal: () => rpc("pullFromMal"),
     getSyncActivity: () => rpc("getSyncActivity"),
     getAnimeDetails: (id) => rpc("getAnimeDetails", [id]),
     cacheMinimalAnime: (media) => rpc("cacheMinimalAnime", [media]),
@@ -128,9 +192,14 @@ export function installApiClient() {
     login: (username, password) => rpc("login", [username, password]),
     startAniListLogin,
     completeAniListLogin,
+    startMalLogin,
+    completeMalLogin,
     getAniListLinkStatus: () => rpc("getAniListLinkStatus"),
     linkAniListAccount,
     resolveAniListLinkConflict: (action) => rpc("resolveAniListLinkConflict", [action]),
+    getMalLinkStatus: () => rpc("getMalLinkStatus"),
+    linkMalAccount,
+    resolveMalLinkConflict: (action) => rpc("resolveMalLinkConflict", [action]),
     logout: () => rpc("logout"),
     getSession: () => rpc("getSession"),
     setTutorialDismissed: (dismissed) => rpc("setTutorialDismissed", [dismissed]),

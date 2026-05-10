@@ -16,12 +16,19 @@ contextBridge.exposeInMainWorld('api', {
       selectedStatuses,
       selectedAnimeIds,
     }),
+  previewMalImport: () => ipcRenderer.invoke('mal:preview-import'),
+  importMal: (selectedStatuses, selectedAnimeIds) =>
+    ipcRenderer.invoke('mal:import-list', {
+      selectedStatuses,
+      selectedAnimeIds,
+    }),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
   getSyncStatus: () => ipcRenderer.invoke('sync:get-status'),
   setAutoSync: (enabled) => ipcRenderer.invoke('sync:set-auto', enabled),
   runSyncNow: () => ipcRenderer.invoke('sync:run-now'),
   pullFromAniList: () => ipcRenderer.invoke('sync:pull-from-anilist'),
+  pullFromMal: () => ipcRenderer.invoke('sync:pull-from-mal'),
   getSyncActivity: () => ipcRenderer.invoke('sync:get-activity'),
   getAnimeDetails: (id) => ipcRenderer.invoke('anime:get-details', id),
   cacheMinimalAnime: (media) => ipcRenderer.invoke('anime:cache-minimal', media),
@@ -35,12 +42,23 @@ contextBridge.exposeInMainWorld('api', {
   completeAniListLogin: (username) =>
     ipcRenderer.invoke('auth:anilist-complete', { username }),
 
+  startMalLogin: () => ipcRenderer.invoke('auth:mal-start'),
+
+  completeMalLogin: (username) => ipcRenderer.invoke('auth:mal-complete', { username }),
+
   getAniListLinkStatus: () => ipcRenderer.invoke('auth:anilist-link-status'),
 
   linkAniListAccount: () => ipcRenderer.invoke('auth:anilist-link'),
 
   resolveAniListLinkConflict: (action) =>
     ipcRenderer.invoke('auth:anilist-resolve-link-conflict', { action }),
+
+  getMalLinkStatus: () => ipcRenderer.invoke('auth:mal-link-status'),
+
+  linkMalAccount: () => ipcRenderer.invoke('auth:mal-link'),
+
+  resolveMalLinkConflict: (action) =>
+    ipcRenderer.invoke('auth:mal-resolve-link-conflict', { action }),
 
   logout: () => ipcRenderer.invoke('auth:logout'),
 

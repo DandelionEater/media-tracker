@@ -19,10 +19,14 @@ out/
 *.db-shm
 *.db-wal
 backend/media.db
+backend/.electron-user-data/
+backend/.electron-crash-dumps/
 
 # Environment and local config
 .env
 .env.*
+!.env.example
+!backend/.env.example
 *.local
 
 # Logs

@@ -20,7 +20,9 @@ async function anilistRequest(query, variables = {}, accessToken = null) {
 
   if (!res.ok) {
     if (res.status === 404) {
-      throw new Error(USER_IMPORT_NOT_FOUND_MESSAGE);
+      const error = new Error(USER_IMPORT_NOT_FOUND_MESSAGE);
+      error.status = res.status;
+      throw error;
     }
 
     const retryAfter = Number(res.headers.get('retry-after'));
@@ -41,7 +43,9 @@ async function anilistRequest(query, variables = {}, accessToken = null) {
   }
 
   if (data.errors?.length) {
-    throw new Error(data.errors[0]?.message || 'AniList returned an error.');
+    const error = new Error(data.errors[0]?.message || 'AniList returned an error.');
+    error.status = data.errors[0]?.status ?? null;
+    throw error;
   }
 
   return data;
@@ -725,6 +729,64 @@ async function saveMediaListEntry(accessToken, payload) {
   return data.data.SaveMediaListEntry;
 }
 
+async function getMediaListEntryId(accessToken, userId, mediaId) {
+  const query = `
+    query ($userId: Int, $mediaId: Int) {
+      MediaList(userId: $userId, mediaId: $mediaId, type: ANIME) {
+        id
+      }
+    }
+  `;
+
+  try {
+    const data = await anilistRequest(
+      query,
+      {
+        userId,
+        mediaId,
+      },
+      accessToken
+    );
+
+    return data?.data?.MediaList?.id ?? null;
+  } catch (error) {
+    if (error?.status === 404 || /not found/i.test(error?.message || '')) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function deleteMediaListEntry(accessToken, payload) {
+  const mediaId = Number(payload.mediaId);
+  const userId = Number(payload.userId);
+
+  if (!Number.isInteger(mediaId) || mediaId <= 0 || !Number.isInteger(userId) || userId <= 0) {
+    throw new Error('Invalid AniList delete payload.');
+  }
+
+  const entryId = await getMediaListEntryId(accessToken, userId, mediaId);
+
+  if (!entryId) {
+    return {
+      deleted: true,
+      alreadyDeleted: true,
+    };
+  }
+
+  const query = `
+    mutation ($id: Int) {
+      DeleteMediaListEntry(id: $id) {
+        deleted
+      }
+    }
+  `;
+  const data = await anilistRequest(query, { id: entryId }, accessToken);
+
+  return data.data.DeleteMediaListEntry;
+}
+
 module.exports = {
   searchAnime,
   getTrendingAnime,
@@ -734,4 +796,5 @@ module.exports = {
   getViewer,
   getViewerAnimeCollection,
   saveMediaListEntry,
+  deleteMediaListEntry,
 };

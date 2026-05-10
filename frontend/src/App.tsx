@@ -42,6 +42,15 @@ type AniListImportResult = {
   };
 };
 
+type MalImportResult = {
+  ok: boolean;
+  message: string;
+  summary?: AniListImportResult["summary"] & {
+    mapped?: number;
+    unmapped?: number;
+  };
+};
+
 type ClearListResult = {
   ok: boolean;
   message: string;
@@ -109,6 +118,7 @@ function App() {
   const [previousView, setPreviousView] = useState<AppView>("home");
   const [previousAnimeId, setPreviousAnimeId] = useState<number | null>(null);
   const [detailsReturnView, setDetailsReturnView] = useState<AppView>("home");
+  const [detailsHistory, setDetailsHistory] = useState<number[]>([]);
   const [showTutorial, setShowTutorial] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
@@ -379,6 +389,22 @@ function App() {
     return result;
   };
 
+  const handleImportMal = async (
+    selectedStatuses: string[],
+    selectedAnimeIds: number[]
+  ): Promise<MalImportResult> => {
+    const result = await window.api.importMal(selectedStatuses, selectedAnimeIds);
+
+    if (result.ok) {
+      await loadTrackedEntries();
+      showSyncToast("success", "MyAnimeList import complete", result.message);
+    } else {
+      showSyncToast("error", "MyAnimeList import failed", result.message);
+    }
+
+    return result;
+  };
+
   const handleLinkAniListAccount = async () => {
     const result = await window.api.linkAniListAccount();
 
@@ -390,6 +416,20 @@ function App() {
       }
     } else {
       showSyncToast("error", "AniList link failed", result.message);
+    }
+
+    return result;
+  };
+
+  const handleLinkMalAccount = async () => {
+    const result = await window.api.linkMalAccount();
+
+    if (result.ok) {
+      if (!result.needsConflictResolution) {
+        showSyncToast("success", "MyAnimeList link complete", result.message);
+      }
+    } else {
+      showSyncToast("error", "MyAnimeList link failed", result.message);
     }
 
     return result;
@@ -417,6 +457,22 @@ function App() {
     showSyncToast(
       result.ok ? "success" : "error",
       result.ok ? "AniList update complete" : "AniList update failed",
+      result.message
+    );
+
+    return result;
+  };
+
+  const handlePullFromMal = async () => {
+    const result = await window.api.pullFromMal();
+
+    if (result.ok) {
+      await loadTrackedEntries();
+    }
+
+    showSyncToast(
+      result.ok ? "success" : "error",
+      result.ok ? "MyAnimeList update complete" : "MyAnimeList update failed",
       result.message
     );
 
@@ -494,6 +550,7 @@ function App() {
     setPreviousView("home");
     setPreviousAnimeId(null);
     setDetailsReturnView("home");
+    setDetailsHistory([]);
     setShowTutorial(true);
   };
 
@@ -571,6 +628,7 @@ function App() {
     setPreviousAnimeId(null);
     setDetailsReturnView("home");
     setPreviousView("home");
+    setDetailsHistory([]);
   };
 
   const handleDownloadDesktopUpdate = async () => {
@@ -598,7 +656,17 @@ function App() {
   };
 
   const handleOpenAnimeDetails = (animeId: number) => {
-    setDetailsReturnView(currentView);
+    if (currentView === "details" && selectedAnimeId !== null) {
+      if (selectedAnimeId === animeId) {
+        return;
+      }
+
+      setDetailsHistory((current) => [...current, selectedAnimeId]);
+    } else {
+      setDetailsHistory([]);
+      setDetailsReturnView(currentView);
+    }
+
     setSelectedAnimeId(animeId);
     setCurrentView("details");
   };
@@ -632,6 +700,7 @@ function App() {
     setPreviousView("home");
     setPreviousAnimeId(null);
     setDetailsReturnView("home");
+    setDetailsHistory([]);
   };
 
   const handleOpenSettings = () => {
@@ -652,7 +721,17 @@ function App() {
   };
 
   const handleBackFromDetails = async () => {
+    const previousDetailsAnimeId = detailsHistory.at(-1);
+
+    if (previousDetailsAnimeId !== undefined) {
+      setDetailsHistory((current) => current.slice(0, -1));
+      setSelectedAnimeId(previousDetailsAnimeId);
+      await loadTrackedEntries();
+      return;
+    }
+
     setSelectedAnimeId(null);
+    setDetailsHistory([]);
     await loadTrackedEntries();
 
     if (detailsReturnView === "list") {
@@ -723,6 +802,7 @@ function App() {
                 <AnimeDetails
                   animeId={selectedAnimeId}
                   onBack={handleBackFromDetails}
+                  onSelectAnime={handleOpenAnimeDetails}
                   onListChanged={loadTrackedEntries}
                   titleLanguage={settings.titleLanguage}
                 />
@@ -743,9 +823,12 @@ function App() {
                   onShowWelcomeScreen={handleShowWelcomeScreen}
                   onResetSettings={handleResetSettings}
                   onImportAniList={handleImportAniList}
+                  onImportMal={handleImportMal}
                   onLinkAniListAccount={handleLinkAniListAccount}
+                  onLinkMalAccount={handleLinkMalAccount}
                   onRunSyncNow={handleRunSyncNow}
                   onPullFromAniList={handlePullFromAniList}
+                  onPullFromMal={handlePullFromMal}
                   onClearMyList={handleClearMyList}
                 />
               ) : (

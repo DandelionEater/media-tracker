@@ -2,6 +2,7 @@ const { app, BrowserWindow, globalShortcut } = require('electron');
 const path = require('path');
 
 function createWindow() {
+  const debugWindow = !app.isPackaged && process.env.ELECTRON_DEBUG_WINDOW === '1';
   const win = new BrowserWindow({
     width: 1280,
     height: 900,
@@ -9,9 +10,9 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
 
-    frame: false,
-    transparent: true,
-    backgroundColor: '#00000000',
+    frame: debugWindow,
+    transparent: !debugWindow,
+    backgroundColor: debugWindow ? '#111111' : '#00000000',
 
     resizable: true,
     hasShadow: true,
@@ -26,8 +27,17 @@ function createWindow() {
   if (app.isPackaged) {
     win.loadFile(path.join(__dirname, 'frontend-dist', 'index.html'));
   } else {
-    win.loadURL(process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173');
+    const rendererUrl = process.env.ELECTRON_RENDERER_URL || 'http://localhost:5173';
+    win.loadURL(rendererUrl);
   }
+
+  win.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedUrl) => {
+    console.error(`Renderer failed to load ${validatedUrl}: ${errorCode} ${errorDescription}`);
+  });
+
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('Renderer process gone:', details);
+  });
 
   // DevTools shortcut (CTRL+SHIFT+I)
   globalShortcut.register('CommandOrControl+Shift+I', () => {

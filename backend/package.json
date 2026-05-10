@@ -1,11 +1,13 @@
 {
   "name": "seenary",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
     "start": "node server.js",
-    "desktop": "electron .",
+    "desktop": "node scripts/start-electron.js",
+    "rebuild:node": "npm rebuild better-sqlite3 argon2",
+    "rebuild:electron": "electron-rebuild -f",
     "build:frontend": "npm --prefix ../frontend run build",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "node scripts/build-release.js"
