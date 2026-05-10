@@ -80,3 +80,8 @@ contextBridge.exposeInMainWorld('api', {
 
   clearMyList: () => ipcRenderer.invoke('list:clear'),
 });
+
+contextBridge.exposeInMainWorld('desktopShortcuts', {
+  getHideShowShortcut: () => ipcRenderer.invoke('shortcuts:get-hide-show'),
+  setHideShowShortcut: (payload) => ipcRenderer.invoke('shortcuts:set-hide-show', payload),
+});

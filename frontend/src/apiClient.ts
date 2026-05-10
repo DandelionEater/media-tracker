@@ -35,6 +35,10 @@ function openPopup(url: string, name = "seenary-oauth") {
   const popup = window.open(url, name, "width=560,height=720,popup=yes");
 
   if (!popup) {
+    if (window.desktopUpdater) {
+      return null;
+    }
+
     throw new Error("Allow popups so Seenary can open the authorization page.");
   }
 

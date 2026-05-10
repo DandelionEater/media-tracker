@@ -446,5 +446,23 @@ declare global {
       installUpdate: () => Promise<{ ok: boolean; message?: string }>;
       remindLater: () => Promise<{ ok: boolean }>;
     };
+    desktopShortcuts?: {
+      getHideShowShortcut: () => Promise<{
+        ok: boolean;
+        enabled: boolean;
+        accelerator: string;
+        defaultAccelerator?: string;
+        message?: string;
+      }>;
+      setHideShowShortcut: (payload: {
+        enabled: boolean;
+        accelerator: string;
+      }) => Promise<{
+        ok: boolean;
+        enabled: boolean;
+        accelerator: string;
+        message?: string;
+      }>;
+    };
   }
 }

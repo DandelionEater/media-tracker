@@ -13,7 +13,7 @@ if (!app.isPackaged) {
 
 const { createWindow } = require('./window');
 const { setupTray } = require('./tray');
-const { registerShortcuts } = require('./shortcuts');
+const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
 
 const anilist = require('./anilist');
 const anilistOAuth = require('./anilistOAuth');
@@ -1629,6 +1629,7 @@ function bootAppWindow() {
 
   setupTray(mainWindow);
   registerShortcuts(mainWindow);
+  registerShortcutIpc(() => mainWindow);
 
   mainWindow.on('closed', () => {
     mainWindow = null;

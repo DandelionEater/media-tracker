@@ -33,7 +33,7 @@ export function UpdateModal({
 }: UpdateModalProps) {
   const isDownloading = status === "downloading";
   const isDownloaded = status === "downloaded";
-  const notes = formatReleaseNotes(info.releaseNotes);
+  const releaseNoteBlocks = parseReleaseNotes(info.releaseNotes);
 
   return (
     <div className="no-drag absolute inset-0 z-[80] flex items-center justify-center bg-black/55 px-5 backdrop-blur-sm">
@@ -75,16 +75,41 @@ export function UpdateModal({
               )}
             </div>
 
-            {notes.length ? (
-              <div className="scroll-container max-h-44 overflow-y-auto pr-1">
-                <ul className="space-y-2 text-sm leading-6 text-white/62">
-                  {notes.map((note, index) => (
-                    <li key={`${note}-${index}`} className="flex gap-2">
-                      <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--app-accent)]" />
-                      <span>{note}</span>
-                    </li>
-                  ))}
-                </ul>
+            {releaseNoteBlocks.length ? (
+              <div className="scroll-container max-h-56 space-y-4 overflow-y-auto pr-1">
+                {releaseNoteBlocks.map((block, index) => {
+                  if (block.type === "heading") {
+                    return (
+                      <p
+                        key={`${block.type}-${block.text}-${index}`}
+                        className="text-xs font-semibold uppercase tracking-[0.2em] text-white/38"
+                      >
+                        {block.text}
+                      </p>
+                    );
+                  }
+
+                  if (block.type === "bullet") {
+                    return (
+                      <div
+                        key={`${block.type}-${block.text}-${index}`}
+                        className="flex gap-2 text-sm leading-6 text-white/62"
+                      >
+                        <span className="mt-2 h-1.5 w-1.5 shrink-0 rounded-full bg-[var(--app-accent)]" />
+                        <span>{block.text}</span>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <p
+                      key={`${block.type}-${block.text}-${index}`}
+                      className="text-sm leading-6 text-white/55"
+                    >
+                      {block.text}
+                    </p>
+                  );
+                })}
               </div>
             ) : (
               <p className="text-sm leading-6 text-white/45">
@@ -156,9 +181,35 @@ export function UpdateModal({
   );
 }
 
-function formatReleaseNotes(releaseNotes?: string) {
+type ReleaseNoteBlock = {
+  type: "heading" | "bullet" | "paragraph";
+  text: string;
+};
+
+function parseReleaseNotes(releaseNotes?: string): ReleaseNoteBlock[] {
   return String(releaseNotes || "")
     .split(/\r?\n/)
-    .map((line) => line.replace(/^[-*]\s*/, "").trim())
-    .filter(Boolean);
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => !/^tag:\s*/i.test(line))
+    .map((line) => {
+      if (/^#{1,6}\s+/.test(line)) {
+        return {
+          type: "heading",
+          text: line.replace(/^#{1,6}\s+/, ""),
+        };
+      }
+
+      if (/^[-*]\s+/.test(line)) {
+        return {
+          type: "bullet",
+          text: line.replace(/^[-*]\s+/, ""),
+        };
+      }
+
+      return {
+        type: "paragraph",
+        text: line,
+      };
+    });
 }

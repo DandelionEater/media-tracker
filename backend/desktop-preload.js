@@ -25,3 +25,8 @@ contextBridge.exposeInMainWorld('desktopUpdater', {
   installUpdate: () => ipcRenderer.invoke('updater:install'),
   remindLater: () => ipcRenderer.invoke('updater:remind-later'),
 });
+
+contextBridge.exposeInMainWorld('desktopShortcuts', {
+  getHideShowShortcut: () => ipcRenderer.invoke('shortcuts:get-hide-show'),
+  setHideShowShortcut: (payload) => ipcRenderer.invoke('shortcuts:set-hide-show', payload),
+});

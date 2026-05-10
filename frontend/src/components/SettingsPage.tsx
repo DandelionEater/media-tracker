@@ -5,6 +5,7 @@ import {
   CheckCircleIcon,
   ChevronDownIcon,
   CloudArrowDownIcon,
+  CommandLineIcon,
   EyeSlashIcon,
   HomeIcon,
   LanguageIcon,
@@ -207,6 +208,14 @@ type SettingsPageProps = {
 
 type SettingsSectionId = "appearance" | "home" | "content" | "account" | "sync" | "data" | "general";
 type SyncActivityTab = "pending" | "completed" | "failed";
+type DesktopShortcutState = {
+  available: boolean;
+  loading: boolean;
+  enabled: boolean;
+  accelerator: string;
+  draftAccelerator: string;
+  feedback: { kind: "success" | "error"; message: string } | null;
+};
 type SyncActivityItem = {
   id: number;
   anime_id?: number | null;
@@ -270,6 +279,13 @@ const IMPORT_STATUS_LABELS: Record<string, string> = {
   paused: "Paused",
   dropped: "Dropped",
 };
+
+const SHORTCUT_PRESETS = [
+  "Control+Space",
+  "Control+Shift+Space",
+  "Alt+Space",
+  "Control+Alt+Space",
+];
 
 const SETTINGS_OPEN_SECTION_KEY = "media-tracker.settings.open-section";
 const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
@@ -369,6 +385,14 @@ export function SettingsPage({
   const [isPullingFromRemote, setIsPullingFromRemote] = useState(false);
   const [isSyncActivityOpen, setIsSyncActivityOpen] = useState(false);
   const [syncActivityTab, setSyncActivityTab] = useState<SyncActivityTab>("pending");
+  const [desktopShortcut, setDesktopShortcut] = useState<DesktopShortcutState>({
+    available: Boolean(window.desktopShortcuts),
+    loading: Boolean(window.desktopShortcuts),
+    enabled: true,
+    accelerator: "Control+Space",
+    draftAccelerator: "Control+Space",
+    feedback: null,
+  });
   const [syncActivity, setSyncActivity] = useState<{
     loading: boolean;
     pending: SyncActivityItem[];
@@ -473,6 +497,78 @@ export function SettingsPage({
   useEffect(() => {
     loadSyncStatus();
   }, []);
+
+  useEffect(() => {
+    loadDesktopShortcut();
+  }, []);
+
+  async function loadDesktopShortcut() {
+    if (!window.desktopShortcuts) {
+      return;
+    }
+
+    try {
+      const result = await window.desktopShortcuts.getHideShowShortcut();
+
+      setDesktopShortcut((current) => ({
+        ...current,
+        available: true,
+        loading: false,
+        enabled: result.enabled,
+        accelerator: result.accelerator,
+        draftAccelerator: result.accelerator,
+        feedback: result.ok
+          ? current.feedback
+          : { kind: "error", message: result.message || "Failed to load shortcut setting." },
+      }));
+    } catch {
+      setDesktopShortcut((current) => ({
+        ...current,
+        available: true,
+        loading: false,
+        feedback: { kind: "error", message: "Failed to load shortcut setting." },
+      }));
+    }
+  }
+
+  async function saveDesktopShortcut(next: {
+    enabled?: boolean;
+    accelerator?: string;
+  }) {
+    if (!window.desktopShortcuts || desktopShortcut.loading) {
+      return;
+    }
+
+    const enabled = next.enabled ?? desktopShortcut.enabled;
+    const accelerator = (next.accelerator ?? desktopShortcut.draftAccelerator).trim();
+
+    setDesktopShortcut((current) => ({ ...current, loading: true }));
+
+    try {
+      const result = await window.desktopShortcuts.setHideShowShortcut({
+        enabled,
+        accelerator,
+      });
+
+      setDesktopShortcut((current) => ({
+        ...current,
+        loading: false,
+        enabled: result.enabled,
+        accelerator: result.accelerator,
+        draftAccelerator: result.accelerator || accelerator,
+        feedback: {
+          kind: result.ok ? "success" : "error",
+          message: result.message || (result.ok ? "Shortcut updated." : "Failed to update shortcut."),
+        },
+      }));
+    } catch {
+      setDesktopShortcut((current) => ({
+        ...current,
+        loading: false,
+        feedback: { kind: "error", message: "Failed to update shortcut." },
+      }));
+    }
+  }
 
   async function loadSyncStatus() {
     try {
@@ -1773,22 +1869,118 @@ export function SettingsPage({
               open={openSection === "general"}
               onToggle={() => toggleSection("general")}
             >
-            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-              <ActionCard
-                icon={SparklesIcon}
-                title="Show welcome screen again"
-                description="Reopen the intro screen whenever you want a fresh walkthrough."
-                actionLabel="Open welcome"
-                onAction={onShowWelcomeScreen}
-              />
+            <div className="space-y-5">
+              {desktopShortcut.available && (
+                <div>
+                  <SectionHeading
+                    icon={CommandLineIcon}
+                    title="Desktop shortcut"
+                    description="Choose the global shortcut that hides or shows the desktop app."
+                  />
 
-              <ActionCard
-                icon={ArrowPathIcon}
-                title="Reset preferences"
-                description="Return the settings panel to the default app behavior and visual style."
-                actionLabel="Reset defaults"
-                onAction={onResetSettings}
-              />
+                  <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="font-semibold text-white">Hide/show Seenary</p>
+                        <p className="mt-2 max-w-2xl text-sm leading-6 text-white/45">
+                          Use Electron accelerator format, such as Control+Shift+Space or Alt+Space.
+                          Turn it off if the shortcut conflicts with another app.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={desktopShortcut.loading}
+                        onClick={() => saveDesktopShortcut({ enabled: !desktopShortcut.enabled })}
+                        className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                          desktopShortcut.enabled
+                            ? "border border-white/10 bg-white/[0.04] text-white/75 hover:bg-white/8"
+                            : "border border-white/10 bg-white text-black hover:opacity-90"
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        {desktopShortcut.enabled ? "Disable shortcut" : "Enable shortcut"}
+                      </button>
+                    </div>
+
+                    <div className="mt-5 flex flex-col gap-3 md:flex-row">
+                      <input
+                        value={desktopShortcut.draftAccelerator}
+                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                        onChange={(event) =>
+                          setDesktopShortcut((current) => ({
+                            ...current,
+                            draftAccelerator: event.target.value,
+                          }))
+                        }
+                        className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/25 disabled:cursor-not-allowed disabled:opacity-50"
+                        placeholder="Control+Shift+Space"
+                      />
+                      <button
+                        type="button"
+                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                        onClick={() => saveDesktopShortcut({ enabled: true })}
+                        className="rounded-2xl border border-white/10 bg-white px-5 py-3 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Save shortcut
+                      </button>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {SHORTCUT_PRESETS.map((accelerator) => (
+                        <button
+                          key={accelerator}
+                          type="button"
+                          disabled={desktopShortcut.loading}
+                          onClick={() =>
+                            setDesktopShortcut((current) => ({
+                              ...current,
+                              enabled: true,
+                              draftAccelerator: accelerator,
+                            }))
+                          }
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                            desktopShortcut.draftAccelerator === accelerator
+                              ? "border-white/25 bg-white/12 text-white"
+                              : "border-white/10 bg-white/[0.04] text-white/55 hover:bg-white/8 hover:text-white"
+                          } disabled:cursor-not-allowed disabled:opacity-50`}
+                        >
+                          {accelerator}
+                        </button>
+                      ))}
+                    </div>
+
+                    {desktopShortcut.feedback && (
+                      <p
+                        className={`mt-4 rounded-2xl border px-3 py-2 text-sm ${
+                          desktopShortcut.feedback.kind === "success"
+                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                            : "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                        }`}
+                      >
+                        {desktopShortcut.feedback.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <ActionCard
+                  icon={SparklesIcon}
+                  title="Show welcome screen again"
+                  description="Reopen the intro screen whenever you want a fresh walkthrough."
+                  actionLabel="Open welcome"
+                  onAction={onShowWelcomeScreen}
+                />
+
+                <ActionCard
+                  icon={ArrowPathIcon}
+                  title="Reset preferences"
+                  description="Return the settings panel to the default app behavior and visual style."
+                  actionLabel="Reset defaults"
+                  onAction={onResetSettings}
+                />
+              </div>
             </div>
             </AccordionSection>
           </div>

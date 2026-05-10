@@ -4,14 +4,15 @@ const path = require('path');
 
 const packageJson = require('../package.json');
 
+const repoRoot = path.resolve(__dirname, '..', '..');
 const releaseDir = process.argv[2]
   ? path.resolve(process.argv[2])
-  : path.resolve(__dirname, '..', '..', 'release', packageJson.version);
+  : path.resolve(repoRoot, 'release', packageJson.version);
 const latestYmlPath = path.join(releaseDir, 'latest.yml');
 
 function runGit(args) {
   return execFileSync('git', args, {
-    cwd: path.resolve(__dirname, '..', '..'),
+    cwd: repoRoot,
     encoding: 'utf8',
     stdio: ['ignore', 'pipe', 'ignore'],
   }).trim();
@@ -26,6 +27,12 @@ function getCommitRange() {
 }
 
 function getReleaseNotes() {
+  const releaseNotesPath = findReleaseNotesFile();
+
+  if (releaseNotesPath) {
+    return fs.readFileSync(releaseNotesPath, 'utf8').trim();
+  }
+
   try {
     const range = getCommitRange();
     const args =
@@ -37,10 +44,29 @@ function getReleaseNotes() {
       .map((line) => line.trim())
       .filter(Boolean);
 
-    return notes.length ? notes : [`Seenary ${packageJson.version} update.`];
+    return notes.length
+      ? notes.map((note) => `- ${note}`).join('\n')
+      : `Seenary ${packageJson.version} update.`;
   } catch {
-    return [`Seenary ${packageJson.version} update.`];
+    return `Seenary ${packageJson.version} update.`;
   }
+}
+
+function findReleaseNotesFile() {
+  const candidates = [
+    `release-notes-${packageJson.version}.md`,
+    `release-notes-${packageJson.version}-beta.md`,
+  ];
+
+  for (const candidate of candidates) {
+    const filePath = path.join(repoRoot, candidate);
+
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+  }
+
+  return null;
 }
 
 function yamlBlock(value) {
@@ -64,7 +90,7 @@ const current = fs
 const next = `${current.trimEnd()}
 releaseName: Seenary ${packageJson.version}
 releaseNotes: |
-${yamlBlock(releaseNotes.map((note) => `- ${note}`).join('\n'))}
+${yamlBlock(releaseNotes)}
 `;
 
 fs.writeFileSync(latestYmlPath, next);

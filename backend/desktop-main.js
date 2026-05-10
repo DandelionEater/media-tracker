@@ -1,10 +1,11 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { setupTray } = require('./tray');
-const { registerShortcuts } = require('./shortcuts');
+const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
 const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
+let mainWindow = null;
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -33,21 +34,30 @@ function createWindow() {
     return { action: 'deny' };
   });
 
+  win.on('closed', () => {
+    if (mainWindow === win) {
+      mainWindow = null;
+    }
+  });
+
   return win;
 }
 
 app.whenReady().then(() => {
   const win = createWindow();
+  mainWindow = win;
 
   setupTray(win, {
     onCheckForUpdates: app.isPackaged ? () => checkForUpdates(win, { manual: true }) : null,
   });
   registerShortcuts(win);
+  registerShortcutIpc(() => mainWindow);
   setupAutoUpdates(win);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const nextWin = createWindow();
+      mainWindow = nextWin;
       setupTray(nextWin, {
         onCheckForUpdates: app.isPackaged
           ? () => checkForUpdates(nextWin, { manual: true })
@@ -59,6 +69,8 @@ app.whenReady().then(() => {
 });
 
 app.on('window-all-closed', () => {
+  mainWindow = null;
+
   if (process.platform !== 'darwin') {
     stopAutoUpdates();
     app.quit();
