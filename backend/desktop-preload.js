@@ -24,9 +24,15 @@ contextBridge.exposeInMainWorld('desktopUpdater', {
   downloadUpdate: () => ipcRenderer.invoke('updater:download'),
   installUpdate: () => ipcRenderer.invoke('updater:install'),
   remindLater: () => ipcRenderer.invoke('updater:remind-later'),
+  getState: () => ipcRenderer.invoke('updater:get-state'),
 });
 
 contextBridge.exposeInMainWorld('desktopShortcuts', {
   getHideShowShortcut: () => ipcRenderer.invoke('shortcuts:get-hide-show'),
   setHideShowShortcut: (payload) => ipcRenderer.invoke('shortcuts:set-hide-show', payload),
+});
+
+contextBridge.exposeInMainWorld('desktopStartup', {
+  getStartupSetting: () => ipcRenderer.invoke('startup:get'),
+  setStartupSetting: (enabled) => ipcRenderer.invoke('startup:set', enabled),
 });

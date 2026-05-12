@@ -449,7 +449,7 @@ export default function AnimeDetails({
 
             <section className="mt-6 grid grid-cols-1 gap-8 xl:grid-cols-[1fr_18rem]">
               <div className="min-w-0 space-y-8">
-                <PersonalTrackerPanel
+                <PersonalListPanel
                   entry={listEntry}
                   totalEpisodes={anime.episodes ?? null}
                   onAdd={handleAddToList}
@@ -673,7 +673,7 @@ function InfoLine({
   );
 }
 
-function PersonalTrackerPanel({
+function PersonalListPanel({
   entry,
   totalEpisodes,
   onAdd,
@@ -695,7 +695,7 @@ function PersonalTrackerPanel({
           </div>
           <div>
             <p className="text-xs uppercase tracking-[0.22em] text-white/35">
-              Your tracker
+              Your list
             </p>
             <h2 className="mt-1 text-base font-semibold text-white">Not in list</h2>
           </div>
@@ -743,7 +743,7 @@ function PersonalTrackerPanel({
           onClick={onEdit}
           disabled={busy}
           className="rounded-2xl border border-white/10 bg-white/6 p-2.5 text-white/70 transition hover:bg-white/10 hover:text-white disabled:opacity-50"
-          title="Edit tracker entry"
+          title="Edit list entry"
         >
           <PencilSquareIcon className="h-5 w-5" />
         </button>
@@ -762,8 +762,8 @@ function PersonalTrackerPanel({
       )}
 
       <div className="mt-5 grid grid-cols-2 gap-3">
-        <TrackerStat label="Score" value={entry.score ?? "-"} icon={StarIcon} />
-        <TrackerStat
+        <ListStat label="Score" value={entry.score ?? "-"} icon={StarIcon} />
+        <ListStat
           label="Updated"
           value={entry.updated_at ? formatDate(entry.updated_at) : "-"}
           icon={ClockIcon}
@@ -779,7 +779,7 @@ function PersonalTrackerPanel({
   );
 }
 
-function TrackerStat({
+function ListStat({
   label,
   value,
   icon: Icon,

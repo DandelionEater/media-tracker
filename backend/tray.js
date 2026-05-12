@@ -4,7 +4,7 @@ const path = require('path');
 let tray;
 
 function setupTray(win, options = {}) {
-  const iconPath = path.join(__dirname, 'icon.png');
+  const iconPath = path.join(__dirname, 'tray.png');
 
   tray = new Tray(iconPath);
 

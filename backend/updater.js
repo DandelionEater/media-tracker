@@ -2,15 +2,18 @@ const { app, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
 const DEFAULT_UPDATE_FEED_URL = 'https://api.seenary.app/desktop-updates';
-const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000;
+const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
+const STARTUP_CHECK_DELAY_MS = 10 * 1000;
 
 let checkTimer = null;
+let startupCheckTimer = null;
 let isChecking = false;
 let isDownloading = false;
 let activeWindow = null;
 let latestUpdateInfo = null;
 let downloadedUpdateInfo = null;
 let handlersRegistered = false;
+let updaterEventsRegistered = false;
 
 function getUpdateFeedUrl() {
   return process.env.SEENARY_UPDATE_FEED_URL || DEFAULT_UPDATE_FEED_URL;
@@ -29,6 +32,18 @@ function setupAutoUpdates(win) {
     url: getUpdateFeedUrl(),
   });
   registerUpdaterIpc();
+  registerUpdaterEvents();
+
+  scheduleStartupCheck();
+  scheduleRecurringChecks();
+}
+
+function registerUpdaterEvents() {
+  if (updaterEventsRegistered) {
+    return;
+  }
+
+  updaterEventsRegistered = true;
 
   autoUpdater.on('checking-for-update', () => {
     isChecking = true;
@@ -67,13 +82,32 @@ function setupAutoUpdates(win) {
   autoUpdater.on('error', (error) => {
     handleUpdateError(error);
   });
+}
 
-  checkForUpdates();
-  checkTimer = setInterval(checkForUpdates, UPDATE_CHECK_INTERVAL_MS);
+function scheduleStartupCheck() {
+  if (startupCheckTimer) {
+    clearTimeout(startupCheckTimer);
+  }
+
+  startupCheckTimer = setTimeout(() => {
+    startupCheckTimer = null;
+    checkForUpdates();
+  }, STARTUP_CHECK_DELAY_MS);
+  startupCheckTimer.unref?.();
+}
+
+function scheduleRecurringChecks() {
+  if (checkTimer) {
+    return;
+  }
+
+  checkTimer = setInterval(() => {
+    checkForUpdates();
+  }, UPDATE_CHECK_INTERVAL_MS);
   checkTimer.unref?.();
 }
 
-function checkForUpdates(win = null, options = {}) {
+function checkForUpdates(win = null) {
   if (!app.isPackaged || isChecking || isDownloading) {
     return;
   }
@@ -124,6 +158,8 @@ function registerUpdaterIpc() {
   ipcMain.handle('updater:remind-later', () => {
     return { ok: true };
   });
+
+  ipcMain.handle('updater:get-state', () => getUpdateState());
 }
 
 function sendToRenderer(channel, payload) {
@@ -172,10 +208,26 @@ function handleUpdateError(error) {
 }
 
 function stopAutoUpdates() {
+  if (startupCheckTimer) {
+    clearTimeout(startupCheckTimer);
+    startupCheckTimer = null;
+  }
+
   if (checkTimer) {
     clearInterval(checkTimer);
     checkTimer = null;
   }
+}
+
+function getUpdateState() {
+  return {
+    ok: true,
+    checking: isChecking,
+    downloading: isDownloading,
+    intervalMs: UPDATE_CHECK_INTERVAL_MS,
+    availableUpdate: latestUpdateInfo,
+    downloadedUpdate: downloadedUpdateInfo,
+  };
 }
 
 module.exports = {

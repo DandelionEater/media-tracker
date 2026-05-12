@@ -126,7 +126,7 @@ function waitForAuthorizationCode(state) {
       sendCallbackPage(
         res,
         'AniList login complete',
-        'You can close this tab and return to Media Tracker.'
+        'You can close this tab and return to Seenary.'
       );
       stopActiveServer();
       resolve(code);

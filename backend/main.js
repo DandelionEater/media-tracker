@@ -14,11 +14,13 @@ if (!app.isPackaged) {
 const { createWindow } = require('./window');
 const { setupTray } = require('./tray');
 const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
+const { registerStartupIpc } = require('./startup');
 
 const anilist = require('./anilist');
 const anilistOAuth = require('./anilistOAuth');
 const mal = require('./mal');
 const { previewMalImport, importMalEntries } = require('./malImport');
+const { previewTextImport, importTextEntries } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const malOAuth = require('./malOAuth');
 const {
@@ -634,6 +636,26 @@ ipcMain.handle('mal:import-list', async (_event, payload) => {
   } catch (error) {
     console.error('MyAnimeList import error:', error);
     return { ok: false, message: error.message || 'Failed to import MyAnimeList list.' };
+  }
+});
+
+ipcMain.handle('text-import:preview', async (_event, payload) => {
+  try {
+    return await previewTextImport(payload?.text, {
+      hideAdultContent: payload?.hideAdultContent,
+    });
+  } catch (error) {
+    console.error('Text import preview error:', error);
+    return { ok: false, message: error.message || 'Failed to preview text import.' };
+  }
+});
+
+ipcMain.handle('text-import:import', (_event, payload) => {
+  try {
+    return importTextEntries(getCurrentSession(), payload?.entries, payload?.selectedAnimeIds);
+  } catch (error) {
+    console.error('Text import error:', error);
+    return { ok: false, message: error.message || 'Failed to import text list.' };
   }
 });
 
@@ -1630,6 +1652,7 @@ function bootAppWindow() {
   setupTray(mainWindow);
   registerShortcuts(mainWindow);
   registerShortcutIpc(() => mainWindow);
+  registerStartupIpc();
 
   mainWindow.on('closed', () => {
     mainWindow = null;

@@ -266,7 +266,7 @@ export function ListEntryModal({
               List Entry
             </p>
             <h2 className="mt-2 text-2xl font-semibold text-white">
-              Edit tracker entry
+              Edit list entry
             </h2>
             {title && <p className="mt-2 text-sm text-white/55">{title}</p>}
           </div>

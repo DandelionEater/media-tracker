@@ -191,6 +191,56 @@ declare global {
           unmapped?: number;
         };
       }>;
+      previewTextImport: (text: string, hideAdultContent?: boolean) => Promise<{
+        ok: boolean;
+        message?: string;
+        preview?: {
+          totalFound: number;
+          unmatched?: string[];
+          groups: Array<{
+            status: string;
+            items: Array<{
+              animeId: number;
+              status: string;
+              progress: number;
+              score: number | null;
+              notes: string | null;
+              title: {
+                romaji?: string | null;
+                english?: string | null;
+                native?: string | null;
+                userPreferred?: string | null;
+              };
+              coverImage?: {
+                large?: string | null;
+              };
+              episodes?: number | null;
+              format?: string | null;
+              season?: string | null;
+              seasonYear?: number | null;
+              sourceTitle?: string;
+              media?: any;
+            }>;
+          }>;
+        };
+      }>;
+      importTextList: (
+        entries: any[],
+        selectedAnimeIds?: number[]
+      ) => Promise<{
+        ok: boolean;
+        message: string;
+        summary?: {
+          sourceUsername: string;
+          totalFound: number;
+          selectedStatuses: string[];
+          selectedAnimeIds: number[];
+          imported: number;
+          created: number;
+          updated: number;
+          skipped: number;
+        };
+      }>;
       getSettings: () => Promise<AppSettings>;
       updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
       getSyncStatus: () => Promise<{
@@ -445,6 +495,14 @@ declare global {
       downloadUpdate: () => Promise<{ ok: boolean; message?: string }>;
       installUpdate: () => Promise<{ ok: boolean; message?: string }>;
       remindLater: () => Promise<{ ok: boolean }>;
+      getState: () => Promise<{
+        ok: boolean;
+        checking: boolean;
+        downloading: boolean;
+        intervalMs: number;
+        availableUpdate?: DesktopUpdateInfo | null;
+        downloadedUpdate?: DesktopUpdateInfo | null;
+      }>;
     };
     desktopShortcuts?: {
       getHideShowShortcut: () => Promise<{
@@ -461,6 +519,22 @@ declare global {
         ok: boolean;
         enabled: boolean;
         accelerator: string;
+        message?: string;
+      }>;
+    };
+    desktopStartup?: {
+      getStartupSetting: () => Promise<{
+        ok: boolean;
+        available: boolean;
+        openAtLogin: boolean;
+        wasOpenedAtLogin?: boolean;
+        message?: string;
+      }>;
+      setStartupSetting: (enabled: boolean) => Promise<{
+        ok: boolean;
+        available: boolean;
+        openAtLogin: boolean;
+        wasOpenedAtLogin?: boolean;
         message?: string;
       }>;
     };

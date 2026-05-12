@@ -13,6 +13,7 @@ import {
 import { ListEntryModal } from "./ListEntryModal";
 import { MyListCard } from "./MyListCard";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
+import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 
 type MyListEntry = {
   anime_id: number;
@@ -99,8 +100,10 @@ const DEFAULT_OPEN_SECTIONS: Record<MyListEntry["status"], boolean> = {
   dropped: false,
 };
 
-const MY_LIST_OPEN_SECTIONS_KEY = "media-tracker.my-list.open-sections";
-const MY_LIST_SORT_MODE_KEY = "media-tracker.my-list.sort-mode";
+const MY_LIST_OPEN_SECTIONS_KEY = "seenary.my-list.open-sections";
+const MY_LIST_OPEN_SECTIONS_LEGACY_KEY = "media-tracker.my-list.open-sections";
+const MY_LIST_SORT_MODE_KEY = "seenary.my-list.sort-mode";
+const MY_LIST_SORT_MODE_LEGACY_KEY = "media-tracker.my-list.sort-mode";
 
 function readStoredOpenSections() {
   if (typeof window === "undefined") {
@@ -108,7 +111,10 @@ function readStoredOpenSections() {
   }
 
   try {
-    const rawValue = window.localStorage.getItem(MY_LIST_OPEN_SECTIONS_KEY);
+    const rawValue = getMigratedLocalStorageItem(
+      MY_LIST_OPEN_SECTIONS_KEY,
+      MY_LIST_OPEN_SECTIONS_LEGACY_KEY
+    );
 
     if (!rawValue) {
       return DEFAULT_OPEN_SECTIONS;
@@ -149,7 +155,10 @@ function readStoredSortMode(): SortMode {
   }
 
   try {
-    const storedSortMode = window.localStorage.getItem(MY_LIST_SORT_MODE_KEY);
+    const storedSortMode = getMigratedLocalStorageItem(
+      MY_LIST_SORT_MODE_KEY,
+      MY_LIST_SORT_MODE_LEGACY_KEY
+    );
 
     return storedSortMode === "personalScore" || storedSortMode === "alphabetical"
       ? storedSortMode
@@ -270,7 +279,7 @@ export function MyListPage({
         <div className="mx-auto max-w-6xl">
           <div className="mb-8">
             <p className="text-sm uppercase tracking-[0.3em] text-white/35">
-              Personal tracker
+              Personal list
             </p>
 
             <div className="mt-3 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">

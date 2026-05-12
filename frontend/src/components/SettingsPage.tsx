@@ -6,17 +6,20 @@ import {
   ChevronDownIcon,
   CloudArrowDownIcon,
   CommandLineIcon,
+  DocumentTextIcon,
   EyeSlashIcon,
   HomeIcon,
   LanguageIcon,
   LinkIcon,
   PaintBrushIcon,
   PlayCircleIcon,
+  RocketLaunchIcon,
   SparklesIcon,
   TrashIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
+import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 
 export type ThemeAccent = "cyan" | "violet" | "rose" | "amber" | "emerald";
 
@@ -48,6 +51,8 @@ type ImportPreviewItem = {
   format?: string | null;
   season?: string | null;
   seasonYear?: number | null;
+  sourceTitle?: string;
+  media?: any;
 };
 
 type ImportPreviewGroup = {
@@ -150,6 +155,23 @@ type SettingsPageProps = {
       unmapped?: number;
     };
   }>;
+  onImportTextList: (
+    entries: ImportPreviewItem[],
+    selectedAnimeIds: number[]
+  ) => Promise<{
+    ok: boolean;
+    message: string;
+    summary?: {
+      sourceUsername: string;
+      totalFound: number;
+      selectedStatuses: string[];
+      selectedAnimeIds: number[];
+      imported: number;
+      created: number;
+      updated: number;
+      skipped: number;
+    };
+  }>;
   onClearMyList: () => Promise<{
     ok: boolean;
     message: string;
@@ -214,6 +236,12 @@ type DesktopShortcutState = {
   enabled: boolean;
   accelerator: string;
   draftAccelerator: string;
+  feedback: { kind: "success" | "error"; message: string } | null;
+};
+type DesktopStartupState = {
+  available: boolean;
+  loading: boolean;
+  openAtLogin: boolean;
   feedback: { kind: "success" | "error"; message: string } | null;
 };
 type SyncActivityItem = {
@@ -287,7 +315,8 @@ const SHORTCUT_PRESETS = [
   "Control+Alt+Space",
 ];
 
-const SETTINGS_OPEN_SECTION_KEY = "media-tracker.settings.open-section";
+const SETTINGS_OPEN_SECTION_KEY = "seenary.settings.open-section";
+const SETTINGS_OPEN_SECTION_LEGACY_KEY = "media-tracker.settings.open-section";
 const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
   "appearance",
   "home",
@@ -304,7 +333,10 @@ function readStoredSettingsSection(): SettingsSectionId {
   }
 
   try {
-    const storedSection = window.localStorage.getItem(SETTINGS_OPEN_SECTION_KEY);
+    const storedSection = getMigratedLocalStorageItem(
+      SETTINGS_OPEN_SECTION_KEY,
+      SETTINGS_OPEN_SECTION_LEGACY_KEY
+    );
     const migratedSection =
       storedSection === "behavior"
         ? "home"
@@ -330,6 +362,7 @@ export function SettingsPage({
   onResetSettings,
   onImportAniList,
   onImportMal,
+  onImportTextList,
   onClearMyList,
   onLinkAniListAccount,
   onLinkMalAccount,
@@ -338,18 +371,20 @@ export function SettingsPage({
   onPullFromMal,
 }: SettingsPageProps) {
   const sectionRefs = useRef<Partial<Record<SettingsSectionId, HTMLElement | null>>>({});
+  const textImportInputRef = useRef<HTMLInputElement | null>(null);
   const restoredSectionScroll = useRef(false);
   const [openSection, setOpenSection] = useState<SettingsSectionId | null>(
     readStoredSettingsSection
   );
   const [importUsername, setImportUsername] = useState(username);
   const [importPreviewUsername, setImportPreviewUsername] = useState(username);
-  const [importProvider, setImportProvider] = useState<"anilist" | "mal">("anilist");
+  const [importProvider, setImportProvider] = useState<"anilist" | "mal" | "txt">("anilist");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreviewResponse["preview"] | null>(null);
+  const [textImportFileName, setTextImportFileName] = useState("");
   const [selectedImportIds, setSelectedImportIds] = useState<number[]>([]);
   const [openImportGroups, setOpenImportGroups] = useState<Record<string, boolean>>({});
   const [importFeedback, setImportFeedback] = useState<{
@@ -391,6 +426,12 @@ export function SettingsPage({
     enabled: true,
     accelerator: "Control+Space",
     draftAccelerator: "Control+Space",
+    feedback: null,
+  });
+  const [desktopStartup, setDesktopStartup] = useState<DesktopStartupState>({
+    available: Boolean(window.desktopStartup),
+    loading: Boolean(window.desktopStartup),
+    openAtLogin: false,
     feedback: null,
   });
   const [syncActivity, setSyncActivity] = useState<{
@@ -501,6 +542,70 @@ export function SettingsPage({
   useEffect(() => {
     loadDesktopShortcut();
   }, []);
+
+  useEffect(() => {
+    loadDesktopStartup();
+  }, []);
+
+  async function loadDesktopStartup() {
+    if (!window.desktopStartup) {
+      return;
+    }
+
+    try {
+      const result = await window.desktopStartup.getStartupSetting();
+
+      setDesktopStartup((current) => ({
+        ...current,
+        available: result.available,
+        loading: false,
+        openAtLogin: result.openAtLogin,
+        feedback:
+          !result.available
+            ? current.feedback
+            : result.ok
+            ? result.message
+              ? { kind: "success", message: result.message }
+              : current.feedback
+            : { kind: "error", message: result.message || "Failed to load startup setting." },
+      }));
+    } catch {
+      setDesktopStartup((current) => ({
+        ...current,
+        available: true,
+        loading: false,
+        feedback: { kind: "error", message: "Failed to load startup setting." },
+      }));
+    }
+  }
+
+  async function saveDesktopStartup(openAtLogin: boolean) {
+    if (!window.desktopStartup || desktopStartup.loading) {
+      return;
+    }
+
+    setDesktopStartup((current) => ({ ...current, loading: true }));
+
+    try {
+      const result = await window.desktopStartup.setStartupSetting(openAtLogin);
+
+      setDesktopStartup({
+        available: result.available,
+        loading: false,
+        openAtLogin: result.openAtLogin,
+        feedback: {
+          kind: result.ok ? "success" : "error",
+          message: result.message || (result.ok ? "Startup setting updated." : "Failed to update startup setting."),
+        },
+      });
+    } catch {
+      setDesktopStartup((current) => ({
+        ...current,
+        loading: false,
+        feedback: { kind: "error", message: "Failed to update startup setting." },
+      }));
+    }
+  }
 
   async function loadDesktopShortcut() {
     if (!window.desktopShortcuts) {
@@ -1015,6 +1120,52 @@ export function SettingsPage({
     }
   }
 
+  async function openTextImportPreview(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    try {
+      setImportProvider("txt");
+      setTextImportFileName(file.name);
+      setIsPreviewLoading(true);
+      setPreviewError(null);
+      setImportFeedback(null);
+      setImportPreview(null);
+      setSelectedImportIds([]);
+      setOpenImportGroups({});
+      setIsImportModalOpen(true);
+
+      const text = await file.text();
+      const result = (await window.api.previewTextImport(
+        text,
+        settings.hideAdultContent
+      )) as ImportPreviewResponse;
+
+      if (!result.ok || !result.preview) {
+        setPreviewError(result.message || "Failed to preview text list.");
+        return;
+      }
+
+      setImportPreviewUsername(file.name);
+      setImportPreview(result.preview);
+      setSelectedImportIds(
+        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      );
+      setOpenImportGroups(
+        Object.fromEntries(
+          result.preview.groups.map((group, index) => [group.status, index < 2])
+        )
+      );
+    } finally {
+      setIsPreviewLoading(false);
+
+      if (textImportInputRef.current) {
+        textImportInputRef.current.value = "";
+      }
+    }
+  }
+
   return (
     <div className="scroll-container h-full overflow-y-auto px-6 py-24 text-white">
       <div className="mx-auto max-w-5xl space-y-8">
@@ -1484,8 +1635,8 @@ export function SettingsPage({
               title={syncStatus.linked ? `${syncProviderLabel} Sync` : "External Sync"}
               description={
                 syncStatus.linked
-                  ? `Push local tracker changes to your linked ${syncProviderLabel} account.`
-                  : "Link an external account before syncing local tracker changes."
+                  ? `Push local list changes to your linked ${syncProviderLabel} account.`
+                  : "Link an external account before syncing local list changes."
               }
               summary={[
                 syncStatus.linked
@@ -1564,8 +1715,8 @@ export function SettingsPage({
                     {!syncStatus.linked
                       ? "Link an external account before pulling remote list updates."
                       : isAniListSync
-                      ? "Pull your full AniList library and replace local tracker fields that differ."
-                      : "Pull your full MyAnimeList library and replace local tracker fields that differ."}
+                      ? "Pull your full AniList library and replace local list fields that differ."
+                      : "Pull your full MyAnimeList library and replace local list fields that differ."}
                   </p>
 
                   <button
@@ -1768,6 +1919,56 @@ export function SettingsPage({
 
               <div>
                 <SectionHeading
+                  icon={DocumentTextIcon}
+                  title="Import from text file"
+                  description="Bring in a simple notepad list, one anime title per line."
+                />
+
+                <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                    <div>
+                      <p className="font-semibold text-white">
+                        {textImportFileName || "Choose a .txt file"}
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-white/45">
+                        Lines without progress are imported as completed. Lines like 3/12 are imported with that progress.
+                      </p>
+                    </div>
+
+                    <input
+                      ref={textImportInputRef}
+                      type="file"
+                      accept=".txt,text/plain"
+                      className="hidden"
+                      onChange={(event) => openTextImportPreview(event.target.files?.[0] ?? null)}
+                    />
+
+                    <button
+                      type="button"
+                      disabled={isPreviewLoading}
+                      onClick={() => textImportInputRef.current?.click()}
+                      className={`rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                        isPreviewLoading
+                          ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                          : "border border-white/10 bg-white text-black hover:opacity-90"
+                      }`}
+                    >
+                      {isPreviewLoading && importProvider === "txt"
+                        ? "Matching titles..."
+                        : "Choose text file"}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
+                    <p className="text-sm leading-6 text-white/70">
+                      Text imports use best-effort AniList matching. Review the preview before importing.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <SectionHeading
                   icon={TrashIcon}
                   title="Clear my anime list"
                   description="Remove every anime from your list without affecting the rest of the app."
@@ -1865,11 +2066,54 @@ export function SettingsPage({
               icon={SparklesIcon}
               title="General"
               description="Welcome screen and small quality-of-life recovery actions."
-              summary={["Welcome replay", "Recovery actions"]}
+              summary={[
+                ...(window.desktopStartup
+                  ? [desktopStartup.openAtLogin ? "Launches at login" : "Manual launch"]
+                  : []),
+                "Welcome replay",
+                "Recovery actions",
+              ]}
               open={openSection === "general"}
               onToggle={() => toggleSection("general")}
             >
             <div className="space-y-5">
+              {window.desktopStartup && (
+                <div>
+                  <SectionHeading
+                    icon={RocketLaunchIcon}
+                    title="Startup"
+                    description="Choose whether Seenary should open when you sign in."
+                  />
+
+                  <div className="space-y-3">
+                    <ToggleSetting
+                      icon={RocketLaunchIcon}
+                      title="Launch Seenary at login"
+                      description={
+                        desktopStartup.available
+                          ? "Open the desktop app automatically after you sign in to your computer."
+                          : "This option is available after installing the desktop app."
+                      }
+                      checked={desktopStartup.openAtLogin}
+                      disabled={!desktopStartup.available || desktopStartup.loading}
+                      onChange={saveDesktopStartup}
+                    />
+
+                    {desktopStartup.feedback && (
+                      <p
+                        className={`rounded-2xl border px-3 py-2 text-sm ${
+                          desktopStartup.feedback.kind === "success"
+                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                            : "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                        }`}
+                      >
+                        {desktopStartup.feedback.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
               {desktopShortcut.available && (
                 <div>
                   <SectionHeading
@@ -2035,9 +2279,14 @@ export function SettingsPage({
           try {
             setIsImporting(true);
             const result =
-              importProvider === "mal"
-                ? await onImportMal(selectedImportStatuses, selectedImportIds)
-                : await onImportAniList(
+              importProvider === "txt"
+                ? await onImportTextList(
+                    importPreview?.groups.flatMap((group) => group.items) ?? [],
+                    selectedImportIds
+                  )
+                : importProvider === "mal"
+                  ? await onImportMal(selectedImportStatuses, selectedImportIds)
+                  : await onImportAniList(
                     importUsername.trim(),
                     selectedImportStatuses,
                     selectedImportIds
@@ -2440,7 +2689,7 @@ function ImportSelectionModal({
   onConfirm,
 }: {
   isOpen: boolean;
-  provider: "anilist" | "mal";
+  provider: "anilist" | "mal" | "txt";
   username: string;
   preview: ImportPreviewResponse["preview"] | null;
   previewError: string | null;
@@ -2473,7 +2722,11 @@ function ImportSelectionModal({
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p className="text-sm uppercase tracking-[0.3em] text-white/35">
-              {provider === "mal" ? "MyAnimeList import" : "AniList import"}
+              {provider === "txt"
+                ? "Text file import"
+                : provider === "mal"
+                  ? "MyAnimeList import"
+                  : "AniList import"}
             </p>
             <h2 className="mt-3 text-2xl font-bold tracking-tight text-white">
               Choose exact anime to import
@@ -2481,7 +2734,12 @@ function ImportSelectionModal({
             <p className="mt-2 max-w-3xl text-sm leading-6 text-white/50">
               Previewing{" "}
               <span className="text-white">
-                {username || (provider === "mal" ? "your MyAnimeList account" : "your AniList account")}
+                {username ||
+                  (provider === "txt"
+                    ? "your text file"
+                    : provider === "mal"
+                      ? "your MyAnimeList account"
+                      : "your AniList account")}
               </span>
               .
               Expand a group, tick the titles you want, then import only those.
@@ -2611,11 +2869,16 @@ function ImportSelectionModal({
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-start justify-between gap-3">
                                   <div className="min-w-0">
-                                    <p className="line-clamp-2 text-sm font-semibold text-white">
-                                      {title}
-                                    </p>
-                                    <p className="mt-1 text-xs text-white/45">
-                                      {[
+                                <p className="line-clamp-2 text-sm font-semibold text-white">
+                                  {title}
+                                </p>
+                                {provider === "txt" && item.sourceTitle && item.sourceTitle !== title && (
+                                  <p className="mt-1 line-clamp-1 text-xs text-white/35">
+                                    From: {item.sourceTitle}
+                                  </p>
+                                )}
+                                <p className="mt-1 text-xs text-white/45">
+                                  {[
                                         item.format,
                                         item.season && item.seasonYear
                                           ? `${capitalize(item.season)} ${item.seasonYear}`

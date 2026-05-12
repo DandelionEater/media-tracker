@@ -255,6 +255,33 @@ function App() {
       }));
     });
 
+    updater.getState?.().then((state) => {
+      if (!state?.ok) {
+        return;
+      }
+
+      if (state.downloadedUpdate) {
+        setDesktopUpdate({
+          visible: true,
+          status: "downloaded",
+          info: state.downloadedUpdate,
+          progress: 100,
+          errorMessage: null,
+        });
+        return;
+      }
+
+      if (state.availableUpdate) {
+        setDesktopUpdate({
+          visible: true,
+          status: state.downloading ? "downloading" : "available",
+          info: state.availableUpdate,
+          progress: state.downloading ? 4 : 0,
+          errorMessage: null,
+        });
+      }
+    });
+
     return () => {
       removeAvailable();
       removeDownloading();
@@ -400,6 +427,22 @@ function App() {
       showSyncToast("success", "MyAnimeList import complete", result.message);
     } else {
       showSyncToast("error", "MyAnimeList import failed", result.message);
+    }
+
+    return result;
+  };
+
+  const handleImportTextList = async (
+    entries: any[],
+    selectedAnimeIds: number[]
+  ): Promise<AniListImportResult> => {
+    const result = await window.api.importTextList(entries, selectedAnimeIds);
+
+    if (result.ok) {
+      await loadTrackedEntries();
+      showSyncToast("success", "Text import complete", result.message);
+    } else {
+      showSyncToast("error", "Text import failed", result.message);
     }
 
     return result;
@@ -824,6 +867,7 @@ function App() {
                   onResetSettings={handleResetSettings}
                   onImportAniList={handleImportAniList}
                   onImportMal={handleImportMal}
+                  onImportTextList={handleImportTextList}
                   onLinkAniListAccount={handleLinkAniListAccount}
                   onLinkMalAccount={handleLinkMalAccount}
                   onRunSyncNow={handleRunSyncNow}

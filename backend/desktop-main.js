@@ -2,6 +2,7 @@ const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { setupTray } = require('./tray');
 const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
+const { registerStartupIpc } = require('./startup');
 const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
@@ -52,6 +53,7 @@ app.whenReady().then(() => {
   });
   registerShortcuts(win);
   registerShortcutIpc(() => mainWindow);
+  registerStartupIpc();
   setupAutoUpdates(win);
 
   app.on('activate', () => {

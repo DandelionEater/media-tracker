@@ -8,7 +8,7 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const releaseDir = process.argv[2]
   ? path.resolve(process.argv[2])
   : path.resolve(repoRoot, 'release', packageJson.version);
-const latestYmlPath = path.join(releaseDir, 'latest.yml');
+const updateMetadataPath = findUpdateMetadataFile();
 
 function runGit(args) {
   return execFileSync('git', args, {
@@ -76,14 +76,14 @@ function yamlBlock(value) {
     .join('\n');
 }
 
-if (!fs.existsSync(latestYmlPath)) {
-  console.error(`Could not find ${latestYmlPath}`);
+if (!updateMetadataPath) {
+  console.error(`Could not find update metadata in ${releaseDir}`);
   process.exit(1);
 }
 
 const releaseNotes = getReleaseNotes();
 const current = fs
-  .readFileSync(latestYmlPath, 'utf8')
+  .readFileSync(updateMetadataPath, 'utf8')
   .replace(/\nreleaseName:.*(?:\r?\n|$)/g, '\n')
   .replace(/\nreleaseNotes:\s\|[\s\S]*$/g, '');
 
@@ -93,5 +93,24 @@ releaseNotes: |
 ${yamlBlock(releaseNotes)}
 `;
 
-fs.writeFileSync(latestYmlPath, next);
-console.log(`Wrote release notes to ${latestYmlPath}`);
+fs.writeFileSync(updateMetadataPath, next);
+console.log(`Wrote release notes to ${updateMetadataPath}`);
+
+function findUpdateMetadataFile() {
+  const candidates = [
+    'latest.yml',
+    'beta.yml',
+    'alpha.yml',
+    'dev.yml',
+  ];
+
+  for (const candidate of candidates) {
+    const filePath = path.join(releaseDir, candidate);
+
+    if (fs.existsSync(filePath)) {
+      return filePath;
+    }
+  }
+
+  return null;
+}

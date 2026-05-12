@@ -9,6 +9,7 @@ const path = require('path');
 const anilist = require('./anilist');
 const mal = require('./mal');
 const { previewMalImport, importMalEntries } = require('./malImport');
+const { previewTextImport, importTextEntries } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
   dbPath,
@@ -544,12 +545,15 @@ function findDesktopUpdateCandidates() {
       return;
     }
 
-    const hasLatestYml = entries.some((entry) => entry.isFile() && entry.name === 'latest.yml');
+    const hasUpdateYml = entries.some(
+      (entry) =>
+        entry.isFile() && ['latest.yml', 'beta.yml', 'alpha.yml', 'dev.yml'].includes(entry.name)
+    );
     const hasDesktopUpdatesDir = entries.some(
       (entry) => entry.isDirectory() && entry.name === 'desktop-updates'
     );
 
-    if (hasLatestYml || hasDesktopUpdatesDir || path.basename(resolvedPath) === 'desktop-updates') {
+    if (hasUpdateYml || hasDesktopUpdatesDir || path.basename(resolvedPath) === 'desktop-updates') {
       found.push(getDirectorySummary(resolvedPath));
     }
 
@@ -619,7 +623,7 @@ function sendDesktopUpdateFile(req, res) {
     res.writeHead(200, {
       'Content-Type': getContentType(filePath),
       'Content-Length': stats.size,
-      'Cache-Control': relativePath === 'latest.yml' ? 'no-cache' : 'public, max-age=31536000',
+      'Cache-Control': relativePath.endsWith('.yml') ? 'no-cache' : 'public, max-age=31536000',
     });
     fs.createReadStream(filePath).pipe(res);
   });
@@ -1402,6 +1406,10 @@ async function handleRpc(method, args, req, res) {
 
       return result;
     }
+    case 'previewTextImport':
+      return await previewTextImport(args[0], { hideAdultContent: args[1] });
+    case 'importTextList':
+      return importTextEntries(currentSession, args[0], args[1]);
     case 'getSettings':
       return getAppPreferences();
     case 'updateSettings':

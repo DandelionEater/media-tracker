@@ -200,7 +200,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
         className="w-full max-w-md rounded-3xl border border-white/10 bg-white/5 p-6 shadow-2xl backdrop-blur-md"
       >
         <p className="mb-2 text-sm uppercase tracking-[0.3em] text-white/35">
-          Media Tracker
+          Seenary
         </p>
 
         <h1 className="text-3xl font-bold text-white">
@@ -216,7 +216,7 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
             ? `Connected to ${oauthProfile.provider} as ${oauthProfile.username}.`
             : mode === "login"
               ? "Log in to access your personal anime list."
-              : "Create your account to start building your anime tracker."}
+              : "Create your account to start building your anime list."}
         </p>
 
         {oauthProfile ? (

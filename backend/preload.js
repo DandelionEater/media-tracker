@@ -22,6 +22,10 @@ contextBridge.exposeInMainWorld('api', {
       selectedStatuses,
       selectedAnimeIds,
     }),
+  previewTextImport: (text, hideAdultContent = true) =>
+    ipcRenderer.invoke('text-import:preview', { text, hideAdultContent }),
+  importTextList: (entries, selectedAnimeIds) =>
+    ipcRenderer.invoke('text-import:import', { entries, selectedAnimeIds }),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
   getSyncStatus: () => ipcRenderer.invoke('sync:get-status'),
@@ -84,4 +88,9 @@ contextBridge.exposeInMainWorld('api', {
 contextBridge.exposeInMainWorld('desktopShortcuts', {
   getHideShowShortcut: () => ipcRenderer.invoke('shortcuts:get-hide-show'),
   setHideShowShortcut: (payload) => ipcRenderer.invoke('shortcuts:set-hide-show', payload),
+});
+
+contextBridge.exposeInMainWorld('desktopStartup', {
+  getStartupSetting: () => ipcRenderer.invoke('startup:get'),
+  setStartupSetting: (enabled) => ipcRenderer.invoke('startup:set', enabled),
 });

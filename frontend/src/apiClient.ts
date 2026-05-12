@@ -182,6 +182,10 @@ export function installApiClient() {
     previewMalImport: () => rpc("previewMalImport"),
     importMal: (selectedStatuses, selectedAnimeIds) =>
       rpc("importMal", [selectedStatuses, selectedAnimeIds]),
+    previewTextImport: (text, hideAdultContent = true) =>
+      rpc("previewTextImport", [text, hideAdultContent]),
+    importTextList: (entries, selectedAnimeIds) =>
+      rpc("importTextList", [entries, selectedAnimeIds]),
     getSettings: () => rpc("getSettings"),
     updateSettings: (settings) => rpc("updateSettings", [settings]),
     getSyncStatus: () => rpc("getSyncStatus"),

@@ -18,9 +18,12 @@ import {
   TvIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
+import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 
-const HOME_TAB_STORAGE_KEY = "media-tracker.home-tab";
-const HOME_DISCOVER_STATE_STORAGE_KEY = "media-tracker.discover-state";
+const HOME_TAB_STORAGE_KEY = "seenary.home-tab";
+const HOME_TAB_LEGACY_STORAGE_KEY = "media-tracker.home-tab";
+const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
+const HOME_DISCOVER_STATE_LEGACY_STORAGE_KEY = "media-tracker.discover-state";
 const TRENDING_CYCLE_MS = 6500;
 
 type TrackedAnimeEntry = {
@@ -224,7 +227,10 @@ export function HomePage({
 }: HomePageProps) {
   const [dontShowAgain, setDontShowAgain] = useState(false);
   const [activeHomeTab, setActiveHomeTab] = useState<HomeTab>(() => {
-    const savedTab = window.localStorage.getItem(HOME_TAB_STORAGE_KEY);
+    const savedTab = getMigratedLocalStorageItem(
+      HOME_TAB_STORAGE_KEY,
+      HOME_TAB_LEGACY_STORAGE_KEY
+    );
     return savedTab === "discover" ? "discover" : "personal";
   });
   const [trendingAnime, setTrendingAnime] = useState<TrendingAnime[]>([]);
@@ -674,7 +680,7 @@ export function HomePage({
           </p>
 
           <h1 className="text-4xl font-bold tracking-tight text-white">
-            Your anime tracker starts here.
+            Your anime list starts here.
           </h1>
 
           <p className="mt-4 text-base leading-7 text-white/60">
@@ -2426,7 +2432,10 @@ function formatScore10(value: number) {
 
 function readSavedDiscoverState(): SavedDiscoverState | null {
   try {
-    const raw = window.localStorage.getItem(HOME_DISCOVER_STATE_STORAGE_KEY);
+    const raw = getMigratedLocalStorageItem(
+      HOME_DISCOVER_STATE_STORAGE_KEY,
+      HOME_DISCOVER_STATE_LEGACY_STORAGE_KEY
+    );
     if (!raw) return null;
 
     const parsed = JSON.parse(raw) as SavedDiscoverState;
