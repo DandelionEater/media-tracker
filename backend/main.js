@@ -3,6 +3,8 @@ require('./env');
 const { app, ipcMain } = require('electron');
 const path = require('path');
 
+app.setAppUserModelId('app.seenary.desktop');
+
 if (!app.isPackaged) {
   app.setPath('userData', path.join(__dirname, '.electron-user-data'));
   app.setPath('crashDumps', path.join(__dirname, '.electron-crash-dumps'));

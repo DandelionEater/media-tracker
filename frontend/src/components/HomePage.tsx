@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ArrowLeftIcon,
@@ -189,6 +189,10 @@ type HomePageProps = {
   autoRotateTrending: boolean;
   autoScrollHomeShelves: boolean;
   hideAdultContent: boolean;
+  initialScrollTop: number;
+  resetScrollOnMount: boolean;
+  onScrollRestored: () => void;
+  onScrollPositionChange: (scrollTop: number) => void;
   children?: ReactNode;
 };
 
@@ -223,6 +227,10 @@ export function HomePage({
   autoRotateTrending,
   autoScrollHomeShelves,
   hideAdultContent,
+  initialScrollTop,
+  resetScrollOnMount,
+  onScrollRestored,
+  onScrollPositionChange,
   children,
 }: HomePageProps) {
   const [dontShowAgain, setDontShowAgain] = useState(false);
@@ -255,6 +263,32 @@ export function HomePage({
   );
   const trendingTimerStartedAt = useRef<number | null>(null);
   const trendingRemainingMs = useRef(TRENDING_CYCLE_MS);
+  const skipNextDiscoverRestore = useRef(false);
+
+  useLayoutEffect(() => {
+    const targetScrollTop = resetScrollOnMount ? 0 : initialScrollTop;
+
+    if (resetScrollOnMount) {
+      skipNextDiscoverRestore.current = true;
+    }
+
+    window.requestAnimationFrame(() => {
+      if (homeScrollRef.current) {
+        homeScrollRef.current.scrollTop = targetScrollTop;
+      }
+
+      onScrollPositionChange(targetScrollTop);
+
+      if (resetScrollOnMount) {
+        onScrollRestored();
+      }
+    });
+  }, [
+    initialScrollTop,
+    onScrollPositionChange,
+    onScrollRestored,
+    resetScrollOnMount,
+  ]);
 
   function handleChangeHomeTab(tab: HomeTab) {
     setActiveHomeTab(tab);
@@ -472,6 +506,11 @@ export function HomePage({
   }, [activeDiscoverShelfId, discoverShelfPages]);
 
   useEffect(() => {
+    if (resetScrollOnMount) return;
+    if (skipNextDiscoverRestore.current) {
+      skipNextDiscoverRestore.current = false;
+      return;
+    }
     if (activeHomeTab !== "discover") return;
 
     window.requestAnimationFrame(() => {
@@ -485,7 +524,7 @@ export function HomePage({
 
       restoreDiscoverOverviewPosition();
     });
-  }, [activeDiscoverShelfId, activeHomeTab]);
+  }, [activeDiscoverShelfId, activeHomeTab, resetScrollOnMount]);
 
   useEffect(() => {
     let mounted = true;
@@ -732,6 +771,9 @@ export function HomePage({
   return (
     <div
       ref={homeScrollRef}
+      onScroll={(event) => {
+        onScrollPositionChange(event.currentTarget.scrollTop);
+      }}
       className="scroll-container h-full overflow-y-auto px-6 py-24 text-white"
     >
       <div className="mx-auto max-w-6xl space-y-10">
@@ -868,6 +910,7 @@ export function HomePage({
                   trackedAnimeIds={trackedAnimeIds}
                   trackedEntryByAnimeId={trackedEntryByAnimeId}
                   titleLanguage={titleLanguage}
+                  autoScroll={autoScrollHomeShelves}
                   railRef={(element) => {
                     discoverRailRefs.current[shelf.id] = element;
                   }}
@@ -995,6 +1038,7 @@ function DiscoverAnimeShelf({
   trackedAnimeIds,
   trackedEntryByAnimeId,
   titleLanguage,
+  autoScroll,
   railRef,
 }: {
   shelf: DiscoverShelf;
@@ -1005,8 +1049,57 @@ function DiscoverAnimeShelf({
   trackedAnimeIds: Set<number>;
   trackedEntryByAnimeId: Map<number, TrackedAnimeEntry>;
   titleLanguage: TitleLanguage;
+  autoScroll: boolean;
   railRef: (element: HTMLDivElement | null) => void;
 }) {
+  const localRailRef = useRef<HTMLDivElement | null>(null);
+  const manualPauseUntil = useRef(0);
+  const [isInteracting, setIsInteracting] = useState(false);
+
+  function rememberRail(element: HTMLDivElement | null) {
+    localRailRef.current = element;
+    railRef(element);
+  }
+
+  function scrollRail(source: "manual" | "auto" = "manual") {
+    const rail = localRailRef.current;
+    if (!rail) return;
+
+    if (source === "manual") {
+      manualPauseUntil.current = Date.now() + 12000;
+    }
+
+    const firstCard = rail.querySelector<HTMLElement>("[data-discover-shelf-card]");
+    const cardWidth = firstCard?.offsetWidth ?? 176;
+    const gap = 16;
+    const distance = cardWidth + gap;
+    const maxScrollLeft = rail.scrollWidth - rail.clientWidth;
+
+    if (rail.scrollLeft >= maxScrollLeft - distance * 0.5) {
+      rail.scrollTo({ left: 0, behavior: "smooth" });
+      return;
+    }
+
+    rail.scrollBy({ left: distance, behavior: "smooth" });
+  }
+
+  useEffect(() => {
+    if (!autoScroll || shelf.items.length <= 5) return;
+
+    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (prefersReducedMotion) return;
+
+    const timer = window.setInterval(() => {
+      if (isInteracting || Date.now() < manualPauseUntil.current) {
+        return;
+      }
+
+      scrollRail("auto");
+    }, 8500);
+
+    return () => window.clearInterval(timer);
+  }, [autoScroll, isInteracting, shelf.items.length]);
+
   return (
     <section>
       <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
@@ -1037,20 +1130,33 @@ function DiscoverAnimeShelf({
       </div>
 
       <div
-        ref={railRef}
+        ref={rememberRail}
+        onMouseEnter={() => setIsInteracting(true)}
+        onMouseLeave={() => setIsInteracting(false)}
+        onFocusCapture={() => setIsInteracting(true)}
+        onBlurCapture={(event) => {
+          if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+            setIsInteracting(false);
+          }
+        }}
         className="scroll-container flex gap-4 overflow-x-auto overflow-y-hidden pb-2"
       >
         {shelf.items.map((anime) => (
-          <DiscoverAnimeCard
+          <div
             key={`${shelf.id}-${anime.id}`}
-            anime={anime}
-            onSelectAnime={onSelectAnime}
-            onQuickAddAnime={onQuickAddAnime}
-            onEditEntry={onEditEntry}
-            titleLanguage={titleLanguage}
-            isTracked={trackedAnimeIds.has(anime.id)}
-            trackedEntry={trackedEntryByAnimeId.get(anime.id)}
-          />
+            data-discover-shelf-card
+            className="shrink-0"
+          >
+            <DiscoverAnimeCard
+              anime={anime}
+              onSelectAnime={onSelectAnime}
+              onQuickAddAnime={onQuickAddAnime}
+              onEditEntry={onEditEntry}
+              titleLanguage={titleLanguage}
+              isTracked={trackedAnimeIds.has(anime.id)}
+              trackedEntry={trackedEntryByAnimeId.get(anime.id)}
+            />
+          </div>
         ))}
       </div>
     </section>

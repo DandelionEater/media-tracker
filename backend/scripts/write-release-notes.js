@@ -96,6 +96,13 @@ ${yamlBlock(releaseNotes)}
 fs.writeFileSync(updateMetadataPath, next);
 console.log(`Wrote release notes to ${updateMetadataPath}`);
 
+const latestYmlPath = path.join(releaseDir, 'latest.yml');
+
+if (path.basename(updateMetadataPath) !== 'latest.yml') {
+  fs.writeFileSync(latestYmlPath, next);
+  console.log(`Mirrored release metadata to ${latestYmlPath}`);
+}
+
 function findUpdateMetadataFile() {
   const candidates = [
     'latest.yml',

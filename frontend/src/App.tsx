@@ -120,6 +120,7 @@ function App() {
   const [detailsReturnView, setDetailsReturnView] = useState<AppView>("home");
   const [detailsHistory, setDetailsHistory] = useState<number[]>([]);
   const [showTutorial, setShowTutorial] = useState(false);
+  const [pendingHomeScrollReset, setPendingHomeScrollReset] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -131,6 +132,7 @@ function App() {
     errorMessage: null,
   });
   const sessionWarningKeysRef = useRef<Set<string>>(new Set());
+  const homeScrollTopRef = useRef(0);
 
   const showSyncToast = (
     kind: "success" | "error" | "warning",
@@ -154,6 +156,14 @@ function App() {
       setSyncToast((current) => (current?.id === id ? null : current));
     }, 4200);
   };
+
+  const handleHomeScrollPositionChange = useCallback((scrollTop: number) => {
+    homeScrollTopRef.current = scrollTop;
+  }, []);
+
+  const handleHomeScrollRestored = useCallback(() => {
+    setPendingHomeScrollReset(false);
+  }, []);
 
   const handleReadNotification = (id: number) => {
     setNotifications((current) =>
@@ -739,6 +749,8 @@ function App() {
     setSearchQuery("");
     setResults([]);
     setSelectedAnimeId(null);
+    homeScrollTopRef.current = 0;
+    setPendingHomeScrollReset(true);
     setCurrentView("home");
     setPreviousView("home");
     setPreviousAnimeId(null);
@@ -889,6 +901,10 @@ function App() {
                   autoRotateTrending={settings.autoRotateTrending}
                   autoScrollHomeShelves={settings.autoScrollHomeShelves}
                   hideAdultContent={settings.hideAdultContent}
+                  initialScrollTop={homeScrollTopRef.current}
+                  resetScrollOnMount={pendingHomeScrollReset}
+                  onScrollRestored={handleHomeScrollRestored}
+                  onScrollPositionChange={handleHomeScrollPositionChange}
                 >
                   <div className="scroll-container h-full overflow-y-auto px-6 py-6">
                     <ResultsGrid

@@ -3,6 +3,7 @@ const path = require('path');
 
 function createWindow() {
   const debugWindow = !app.isPackaged && process.env.ELECTRON_DEBUG_WINDOW === '1';
+  const iconPath = path.join(__dirname, 'icon.png');
   const win = new BrowserWindow({
     width: 1280,
     height: 900,
@@ -16,6 +17,7 @@ function createWindow() {
 
     resizable: true,
     hasShadow: true,
+    icon: iconPath,
 
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),

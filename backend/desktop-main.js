@@ -6,7 +6,10 @@ const { registerStartupIpc } = require('./startup');
 const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
+const APP_USER_MODEL_ID = 'app.seenary.desktop';
 let mainWindow = null;
+
+app.setAppUserModelId(APP_USER_MODEL_ID);
 
 function createWindow() {
   const win = new BrowserWindow({

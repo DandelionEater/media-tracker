@@ -8,6 +8,8 @@ const runtimePng = path.join(repoRoot, 'backend', 'icon.png');
 const trayPng = path.join(repoRoot, 'backend', 'tray.png');
 const buildPng = path.join(repoRoot, 'backend', 'build', 'icon.png');
 const buildIco = path.join(repoRoot, 'backend', 'build', 'icon.ico');
+const frontendIconPng = path.join(repoRoot, 'frontend', 'public', 'icon.png');
+const frontendAppleIconPng = path.join(repoRoot, 'frontend', 'public', 'apple-touch-icon.png');
 const tempDir = path.join(repoRoot, 'backend', 'build', '.icon-work');
 const pngSizes = [16, 24, 32, 48, 64, 128, 256];
 
@@ -21,6 +23,8 @@ fs.mkdirSync(tempDir, { recursive: true });
 resizePng(sourcePng, runtimePng, 512);
 resizePng(sourcePng, trayPng, 32);
 resizePng(sourcePng, buildPng, 1024);
+resizePng(sourcePng, frontendIconPng, 512);
+resizePng(sourcePng, frontendAppleIconPng, 180);
 
 const iconImages = pngSizes.map((size) => {
   const outputPath = path.join(tempDir, `icon-${size}.png`);
@@ -38,6 +42,8 @@ console.log(`Generated ${runtimePng}`);
 console.log(`Generated ${trayPng}`);
 console.log(`Generated ${buildPng}`);
 console.log(`Generated ${buildIco}`);
+console.log(`Generated ${frontendIconPng}`);
+console.log(`Generated ${frontendAppleIconPng}`);
 
 function resizePng(inputPath, outputPath, size) {
   const command = `
