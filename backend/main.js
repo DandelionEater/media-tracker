@@ -28,6 +28,7 @@ const malOAuth = require('./malOAuth');
 const {
   saveAnime,
   saveAnimeSummary,
+  getAnimeById,
   getAppSetting,
   setAppSetting,
   getSafeUserById,
@@ -45,7 +46,7 @@ const {
   updateMalAccountImportTime,
   insertSyncHistory,
 } = require('./db');
-const { mapAnimeForDb } = require('./animeMapper');
+const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
 const {
   registerUser,
   loginUser,
@@ -74,6 +75,7 @@ const {
 } = require('./sync');
 
 const ANILIST_URL = 'https://graphql.anilist.co';
+const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 let mainWindow = null;
 
 const DEFAULT_APP_SETTINGS = {
@@ -1044,14 +1046,38 @@ async function fetchAnimeDetailsFromAniList(id) {
   return data.data.Media;
 }
 
+function hasFreshAnimeDetailsCache(row) {
+  if (!row) return false;
+
+  const hasFullDetails =
+    Boolean(row.site_url) ||
+    Boolean(row.description) ||
+    Boolean(row.trailer_id) ||
+    Boolean(row.external_links && row.external_links !== '[]') ||
+    Boolean(row.relations && row.relations !== '[]') ||
+    Boolean(row.recommendations && row.recommendations !== '[]');
+
+  if (!hasFullDetails) return false;
+
+  const cachedAt = Date.parse(row.cached_at);
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
+}
+
+async function getAnimeDetails(id) {
+  const cachedAnime = getAnimeById(id);
+
+  if (hasFreshAnimeDetailsCache(cachedAnime)) {
+    return mapDbAnimeForFrontend(cachedAnime);
+  }
+
+  const media = await fetchAnimeDetailsFromAniList(id);
+  saveAnime(mapAnimeForDb(media));
+  return media;
+}
+
 ipcMain.handle('anime:get-details', async (_event, id) => {
   try {
-    const media = await fetchAnimeDetailsFromAniList(id);
-
-    const mappedAnime = mapAnimeForDb(media);
-    saveAnime(mappedAnime);
-
-    return media;
+    return await getAnimeDetails(id);
   } catch (error) {
     console.error('Failed to fetch anime details:', error);
     throw error;

@@ -120,7 +120,6 @@ function App() {
   const [detailsReturnView, setDetailsReturnView] = useState<AppView>("home");
   const [detailsHistory, setDetailsHistory] = useState<number[]>([]);
   const [showTutorial, setShowTutorial] = useState(false);
-  const [pendingHomeScrollReset, setPendingHomeScrollReset] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
@@ -133,6 +132,7 @@ function App() {
   });
   const sessionWarningKeysRef = useRef<Set<string>>(new Set());
   const homeScrollTopRef = useRef(0);
+  const homeScrollElementRef = useRef<HTMLDivElement | null>(null);
 
   const showSyncToast = (
     kind: "success" | "error" | "warning",
@@ -161,9 +161,15 @@ function App() {
     homeScrollTopRef.current = scrollTop;
   }, []);
 
-  const handleHomeScrollRestored = useCallback(() => {
-    setPendingHomeScrollReset(false);
+  const handleHomeScrollContainerChange = useCallback((element: HTMLDivElement | null) => {
+    homeScrollElementRef.current = element;
   }, []);
+
+  const captureHomeScrollTop = useCallback(() => {
+    if (currentView === "home" && homeScrollElementRef.current) {
+      homeScrollTopRef.current = homeScrollElementRef.current.scrollTop;
+    }
+  }, [currentView]);
 
   const handleReadNotification = (id: number) => {
     setNotifications((current) =>
@@ -608,6 +614,7 @@ function App() {
   };
 
   const handleSearch = async (query: string) => {
+    captureHomeScrollTop();
     setSearchQuery(query);
 
     if (!query.trim()) {
@@ -709,6 +716,8 @@ function App() {
   };
 
   const handleOpenAnimeDetails = (animeId: number) => {
+    captureHomeScrollTop();
+
     if (currentView === "details" && selectedAnimeId !== null) {
       if (selectedAnimeId === animeId) {
         return;
@@ -734,6 +743,7 @@ function App() {
       return;
     }
 
+    captureHomeScrollTop();
     setPreviousView(currentView);
 
     if (currentView === "details") {
@@ -749,8 +759,6 @@ function App() {
     setSearchQuery("");
     setResults([]);
     setSelectedAnimeId(null);
-    homeScrollTopRef.current = 0;
-    setPendingHomeScrollReset(true);
     setCurrentView("home");
     setPreviousView("home");
     setPreviousAnimeId(null);
@@ -764,6 +772,7 @@ function App() {
       return;
     }
 
+    captureHomeScrollTop();
     setPreviousView(currentView);
 
     if (currentView === "details") {
@@ -902,8 +911,7 @@ function App() {
                   autoScrollHomeShelves={settings.autoScrollHomeShelves}
                   hideAdultContent={settings.hideAdultContent}
                   initialScrollTop={homeScrollTopRef.current}
-                  resetScrollOnMount={pendingHomeScrollReset}
-                  onScrollRestored={handleHomeScrollRestored}
+                  onScrollContainerChange={handleHomeScrollContainerChange}
                   onScrollPositionChange={handleHomeScrollPositionChange}
                 >
                   <div className="scroll-container h-full overflow-y-auto px-6 py-6">

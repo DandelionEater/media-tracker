@@ -15,6 +15,7 @@ const {
   dbPath,
   saveAnime,
   saveAnimeSummary,
+  getAnimeById,
   getAppSetting,
   setAppSetting,
   getSafeUserById,
@@ -38,7 +39,7 @@ const {
   deleteWebSession,
   deleteExpiredWebSessions,
 } = require('./db');
-const { mapAnimeForDb } = require('./animeMapper');
+const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
 const {
   registerUser,
   loginUser,
@@ -64,6 +65,7 @@ const {
 } = require('./sync');
 
 const PORT = Number(process.env.PORT || 3000);
+const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_WEB_ORIGIN = 'https://web.seenary.app';
 const ALLOWED_ORIGINS = new Set(
   (process.env.WEB_ORIGINS || process.env.WEB_ORIGIN || DEFAULT_WEB_ORIGIN)
@@ -1210,6 +1212,33 @@ async function fetchAnimeDetailsFromAniList(id) {
   return media;
 }
 
+function hasFreshAnimeDetailsCache(row) {
+  if (!row) return false;
+
+  const hasFullDetails =
+    Boolean(row.site_url) ||
+    Boolean(row.description) ||
+    Boolean(row.trailer_id) ||
+    Boolean(row.external_links && row.external_links !== '[]') ||
+    Boolean(row.relations && row.relations !== '[]') ||
+    Boolean(row.recommendations && row.recommendations !== '[]');
+
+  if (!hasFullDetails) return false;
+
+  const cachedAt = Date.parse(row.cached_at);
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
+}
+
+async function getAnimeDetails(id) {
+  const cachedAnime = getAnimeById(id);
+
+  if (hasFreshAnimeDetailsCache(cachedAnime)) {
+    return mapDbAnimeForFrontend(cachedAnime);
+  }
+
+  return await fetchAnimeDetailsFromAniList(id);
+}
+
 async function fetchAnimeDetailsFallback(id) {
   const query = `
     query ($id: Int) {
@@ -1499,7 +1528,7 @@ async function handleRpc(method, args, req, res) {
         ? getSyncActivity(currentSession.user.id)
         : { ok: false, message: 'You must be logged in.' };
     case 'getAnimeDetails':
-      return await fetchAnimeDetailsFromAniList(args[0]);
+      return await getAnimeDetails(args[0]);
     case 'cacheMinimalAnime':
       if (!args[0]?.id) return { ok: false, message: 'Invalid anime data.' };
       saveAnimeSummary(buildMinimalAnimeForDb(args[0]));

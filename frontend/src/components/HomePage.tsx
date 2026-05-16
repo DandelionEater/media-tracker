@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import {
   ArrowLeftIcon,
@@ -25,6 +25,7 @@ const HOME_TAB_LEGACY_STORAGE_KEY = "media-tracker.home-tab";
 const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
 const HOME_DISCOVER_STATE_LEGACY_STORAGE_KEY = "media-tracker.discover-state";
 const TRENDING_CYCLE_MS = 6500;
+const HOME_DISCOVER_CACHE_TTL_MS = 20 * 60 * 1000;
 
 type TrackedAnimeEntry = {
   anime_id: number;
@@ -150,6 +151,43 @@ type DiscoverShelf = {
   items: TrendingAnime[];
 };
 
+type HomeAnimeCacheEntry<T> = {
+  data: T;
+  savedAt: number;
+};
+
+const trendingAnimeCache = new Map<string, HomeAnimeCacheEntry<TrendingAnime[]>>();
+const discoverShelvesCache = new Map<string, HomeAnimeCacheEntry<DiscoverShelf[]>>();
+const trendingAnimeRequests = new Map<string, Promise<TrendingAnime[]>>();
+const discoverShelvesRequests = new Map<string, Promise<DiscoverShelf[]>>();
+
+function getHomeAnimeCacheKey(hideAdultContent: boolean) {
+  return hideAdultContent ? "safe" : "all";
+}
+
+function readFreshHomeAnimeCache<T>(
+  cache: Map<string, HomeAnimeCacheEntry<T>>,
+  key: string
+) {
+  const cached = cache.get(key);
+  if (!cached || Date.now() - cached.savedAt > HOME_DISCOVER_CACHE_TTL_MS) {
+    return null;
+  }
+
+  return cached.data;
+}
+
+function writeHomeAnimeCache<T>(
+  cache: Map<string, HomeAnimeCacheEntry<T>>,
+  key: string,
+  data: T
+) {
+  cache.set(key, {
+    data,
+    savedAt: Date.now(),
+  });
+}
+
 type DiscoverPageInfo = {
   currentPage: number;
   lastPage: number;
@@ -190,8 +228,7 @@ type HomePageProps = {
   autoScrollHomeShelves: boolean;
   hideAdultContent: boolean;
   initialScrollTop: number;
-  resetScrollOnMount: boolean;
-  onScrollRestored: () => void;
+  onScrollContainerChange: (element: HTMLDivElement | null) => void;
   onScrollPositionChange: (scrollTop: number) => void;
   children?: ReactNode;
 };
@@ -228,8 +265,7 @@ export function HomePage({
   autoScrollHomeShelves,
   hideAdultContent,
   initialScrollTop,
-  resetScrollOnMount,
-  onScrollRestored,
+  onScrollContainerChange,
   onScrollPositionChange,
   children,
 }: HomePageProps) {
@@ -263,32 +299,55 @@ export function HomePage({
   );
   const trendingTimerStartedAt = useRef<number | null>(null);
   const trendingRemainingMs = useRef(TRENDING_CYCLE_MS);
-  const skipNextDiscoverRestore = useRef(false);
+  const isRestoringScroll = useRef(false);
+
+  const rememberHomeScrollElement = useCallback((element: HTMLDivElement | null) => {
+    homeScrollRef.current = element;
+    onScrollContainerChange(element);
+  }, [onScrollContainerChange]);
 
   useLayoutEffect(() => {
-    const targetScrollTop = resetScrollOnMount ? 0 : initialScrollTop;
+    let frame = 0;
+    let timeout = 0;
+    let cancelled = false;
+    let attempts = 0;
 
-    if (resetScrollOnMount) {
-      skipNextDiscoverRestore.current = true;
+    isRestoringScroll.current = initialScrollTop > 0;
+
+    function restoreScroll() {
+      if (cancelled) return;
+
+      const container = homeScrollRef.current;
+      if (!container) {
+        isRestoringScroll.current = false;
+        return;
+      }
+
+      container.scrollTop = initialScrollTop;
+      const isAtTarget = Math.abs(container.scrollTop - initialScrollTop) < 2;
+      const isAtTopTarget = initialScrollTop <= 0;
+
+      if (isAtTarget || isAtTopTarget || attempts >= 40) {
+        isRestoringScroll.current = false;
+        onScrollPositionChange(initialScrollTop);
+        return;
+      }
+
+      attempts += 1;
+      timeout = window.setTimeout(() => {
+        frame = window.requestAnimationFrame(restoreScroll);
+      }, 50);
     }
 
-    window.requestAnimationFrame(() => {
-      if (homeScrollRef.current) {
-        homeScrollRef.current.scrollTop = targetScrollTop;
-      }
+    frame = window.requestAnimationFrame(restoreScroll);
 
-      onScrollPositionChange(targetScrollTop);
-
-      if (resetScrollOnMount) {
-        onScrollRestored();
-      }
-    });
-  }, [
-    initialScrollTop,
-    onScrollPositionChange,
-    onScrollRestored,
-    resetScrollOnMount,
-  ]);
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+      isRestoringScroll.current = false;
+    };
+  }, [initialScrollTop, onScrollPositionChange]);
 
   function handleChangeHomeTab(tab: HomeTab) {
     setActiveHomeTab(tab);
@@ -506,37 +565,58 @@ export function HomePage({
   }, [activeDiscoverShelfId, discoverShelfPages]);
 
   useEffect(() => {
-    if (resetScrollOnMount) return;
-    if (skipNextDiscoverRestore.current) {
-      skipNextDiscoverRestore.current = false;
-      return;
-    }
     if (activeHomeTab !== "discover") return;
 
     window.requestAnimationFrame(() => {
       if (activeDiscoverShelfId && discoverShelfPages[activeDiscoverShelfId]) {
-        if (homeScrollRef.current) {
-          homeScrollRef.current.scrollTop =
-            discoverShelfPages[activeDiscoverShelfId].scrollTop;
-        }
         return;
       }
 
-      restoreDiscoverOverviewPosition();
+      for (const [shelfId, scrollLeft] of Object.entries(
+        discoverOverviewRailScrolls.current
+      )) {
+        const rail = discoverRailRefs.current[shelfId];
+        if (rail) {
+          rail.scrollLeft = scrollLeft;
+        }
+      }
     });
-  }, [activeDiscoverShelfId, activeHomeTab, resetScrollOnMount]);
+  }, [activeDiscoverShelfId, activeHomeTab]);
 
   useEffect(() => {
     let mounted = true;
+    const cacheKey = getHomeAnimeCacheKey(hideAdultContent);
 
     async function loadTrendingAnime() {
+      const cached = readFreshHomeAnimeCache(trendingAnimeCache, cacheKey);
+      if (cached) {
+        setTrendingAnime(cached);
+        setActiveTrendingIndex(0);
+        setTrendingCycleKey(0);
+        setIsTrendingPaused(false);
+        setIsTrendingLoading(false);
+        trendingRemainingMs.current = TRENDING_CYCLE_MS;
+        return;
+      }
+
       setIsTrendingLoading(true);
 
       try {
-        const data = await window.api.getTrendingAnime(hideAdultContent);
+        let request = trendingAnimeRequests.get(cacheKey);
+
+        if (!request) {
+          request = (async (): Promise<TrendingAnime[]> => {
+            const data: unknown = await window.api.getTrendingAnime(hideAdultContent);
+            return Array.isArray(data) ? (data as TrendingAnime[]) : [];
+          })();
+          trendingAnimeRequests.set(cacheKey, request);
+        }
+
+        const data = await request;
+        writeHomeAnimeCache(trendingAnimeCache, cacheKey, data);
 
         if (mounted) {
-          setTrendingAnime(data || []);
+          setTrendingAnime(data);
           setActiveTrendingIndex(0);
           setTrendingCycleKey(0);
           setIsTrendingPaused(false);
@@ -545,9 +625,10 @@ export function HomePage({
       } catch (error) {
         console.error("Failed to load trending anime:", error);
         if (mounted) {
-          setTrendingAnime([]);
+          setTrendingAnime(trendingAnimeCache.get(cacheKey)?.data ?? []);
         }
       } finally {
+        trendingAnimeRequests.delete(cacheKey);
         if (mounted) {
           setIsTrendingLoading(false);
         }
@@ -577,22 +658,42 @@ export function HomePage({
 
   useEffect(() => {
     let mounted = true;
+    const cacheKey = getHomeAnimeCacheKey(hideAdultContent);
 
     async function loadDiscoverAnime() {
+      const cached = readFreshHomeAnimeCache(discoverShelvesCache, cacheKey);
+      if (cached) {
+        setDiscoverShelves(cached);
+        setIsDiscoverLoading(false);
+        return;
+      }
+
       setIsDiscoverLoading(true);
 
       try {
-        const data = await window.api.getDiscoverAnime(hideAdultContent);
+        let request = discoverShelvesRequests.get(cacheKey);
+
+        if (!request) {
+          request = (async (): Promise<DiscoverShelf[]> => {
+            const data: unknown = await window.api.getDiscoverAnime(hideAdultContent);
+            return Array.isArray(data) ? (data as DiscoverShelf[]) : [];
+          })();
+          discoverShelvesRequests.set(cacheKey, request);
+        }
+
+        const data = await request;
+        writeHomeAnimeCache(discoverShelvesCache, cacheKey, data);
 
         if (mounted) {
-          setDiscoverShelves(Array.isArray(data) ? data : []);
+          setDiscoverShelves(data);
         }
       } catch (error) {
         console.error("Failed to load discover anime:", error);
         if (mounted) {
-          setDiscoverShelves([]);
+          setDiscoverShelves(discoverShelvesCache.get(cacheKey)?.data ?? []);
         }
       } finally {
+        discoverShelvesRequests.delete(cacheKey);
         if (mounted) {
           setIsDiscoverLoading(false);
         }
@@ -770,9 +871,19 @@ export function HomePage({
 
   return (
     <div
-      ref={homeScrollRef}
+      ref={rememberHomeScrollElement}
       onScroll={(event) => {
-        onScrollPositionChange(event.currentTarget.scrollTop);
+        const scrollTop = event.currentTarget.scrollTop;
+
+        if (isRestoringScroll.current && scrollTop < initialScrollTop) {
+          return;
+        }
+
+        onScrollPositionChange(scrollTop);
+
+        if (activeHomeTab === "discover" && !activeDiscoverShelfId) {
+          discoverOverviewScrollTop.current = scrollTop;
+        }
       }}
       className="scroll-container h-full overflow-y-auto px-6 py-24 text-white"
     >
