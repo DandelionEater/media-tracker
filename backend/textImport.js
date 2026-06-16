@@ -2,11 +2,50 @@ const anilist = require('./anilist');
 const { mapAnimeForDb } = require('./animeMapper');
 const { saveAnimeSummary } = require('./db');
 const { saveMyAnimeEntry } = require('./lists');
+const zlib = require('zlib');
 
 const MAX_TEXT_IMPORT_LINES = 100;
-const TEXT_IMPORT_SEARCH_DELAY_MS = 850;
+const MAX_PDF_IMPORT_BYTES = 25 * 1024 * 1024;
+const TEXT_IMPORT_SEARCH_CONCURRENCY = 4;
+const TEXT_IMPORT_SEARCH_BATCH_DELAY_MS = 250;
 const TEXT_IMPORT_RATE_LIMIT_RETRY_MS = 3500;
 const TEXT_IMPORT_RATE_LIMIT_RETRIES = 2;
+const PDF_IMPORT_BLOCKED_LINE_PATTERNS = [
+  /\bsearch anime\b/i,
+  /\bbookmark\b/i,
+  /\bwatch now\b/i,
+  /\bdetails\b/i,
+  /\byour watchlist\b/i,
+  /\bwatch history\b/i,
+  /\bnever lose\b/i,
+  /\bepisode\b/i,
+  /\btrailer\b/i,
+  /\blog in\b/i,
+  /\bsign up\b/i,
+  /\bprivacy\b/i,
+  /\bterms\b/i,
+];
+const PDF_IMPORT_GENRE_WORDS = new Set([
+  'action',
+  'adventure',
+  'comedy',
+  'drama',
+  'ecchi',
+  'fantasy',
+  'horror',
+  'mahou',
+  'mecha',
+  'music',
+  'mystery',
+  'psychological',
+  'romance',
+  'sci-fi',
+  'slice',
+  'sports',
+  'supernatural',
+  'thriller',
+]);
+let pdfJsPromise = null;
 
 function parseTextList(text) {
   const seen = new Set();
@@ -67,59 +106,78 @@ async function previewTextImport(text, options = {}) {
   };
   const unmatched = [];
   let rateLimitedCount = 0;
+  const searchCache = new Map();
 
-  for (let index = 0; index < parsedEntries.length; index += 1) {
-    const parsedEntry = parsedEntries[index];
-    const searchResult = await searchAnimeForTextImport(parsedEntry.title, {
-      hideAdultContent: options.hideAdultContent,
-    });
+  for (let index = 0; index < parsedEntries.length; index += TEXT_IMPORT_SEARCH_CONCURRENCY) {
+    const batch = parsedEntries.slice(index, index + TEXT_IMPORT_SEARCH_CONCURRENCY);
+    const batchResults = await Promise.all(
+      batch.map(async (parsedEntry) => {
+        const cacheKey = normalizeSearchCacheKey(parsedEntry.title, options.hideAdultContent);
 
-    if (searchResult.rateLimited) {
-      const remainingEntries = parsedEntries.slice(index);
+        if (!searchCache.has(cacheKey)) {
+          searchCache.set(
+            cacheKey,
+            await searchAnimeForTextImport(parsedEntry.title, {
+              hideAdultContent: options.hideAdultContent,
+            })
+          );
+        }
+
+        return {
+          parsedEntry,
+          searchResult: searchCache.get(cacheKey),
+        };
+      })
+    );
+
+    const rateLimitedResultIndex = batchResults.findIndex(({ searchResult }) => searchResult.rateLimited);
+
+    if (rateLimitedResultIndex !== -1) {
+      const remainingEntries = parsedEntries.slice(index + rateLimitedResultIndex);
       rateLimitedCount += remainingEntries.length;
       unmatched.push(...remainingEntries.map((entry) => entry.rawLine));
       break;
     }
 
-    if (searchResult.error) {
-      unmatched.push(parsedEntry.rawLine);
-      await delayBetweenTextImportSearches(index, parsedEntries.length);
-      continue;
+    for (const { parsedEntry, searchResult } of batchResults) {
+      if (searchResult.error) {
+        unmatched.push(parsedEntry.rawLine);
+        continue;
+      }
+
+      const results = searchResult.results;
+      const match = Array.isArray(results) ? results[0] : null;
+
+      if (!match?.id) {
+        unmatched.push(parsedEntry.rawLine);
+        continue;
+      }
+
+      const episodes = Number.isInteger(match.episodes) && match.episodes > 0 ? match.episodes : null;
+      const hasProgress = typeof parsedEntry.progress === 'number';
+      const progress = hasProgress ? parsedEntry.progress : episodes ?? 0;
+      const total = parsedEntry.total ?? episodes;
+      const status =
+        hasProgress && total && parsedEntry.progress < total ? 'watching' : 'completed';
+
+      groupsByStatus[status].push({
+        animeId: match.id,
+        status,
+        progress,
+        score: null,
+        notes: null,
+        title: match.title || {},
+        coverImage: match.coverImage || null,
+        episodes,
+        format: match.format ?? null,
+        season: match.season ?? null,
+        seasonYear: match.seasonYear ?? null,
+        sourceTitle: parsedEntry.title,
+        media: match,
+      });
     }
 
-    const results = searchResult.results;
-    const match = Array.isArray(results) ? results[0] : null;
-
-    if (!match?.id) {
-      unmatched.push(parsedEntry.rawLine);
-      await delayBetweenTextImportSearches(index, parsedEntries.length);
-      continue;
-    }
-
-    const episodes = Number.isInteger(match.episodes) && match.episodes > 0 ? match.episodes : null;
-    const hasProgress = typeof parsedEntry.progress === 'number';
-    const progress = hasProgress ? parsedEntry.progress : episodes ?? 0;
-    const total = parsedEntry.total ?? episodes;
-    const status =
-      hasProgress && total && parsedEntry.progress < total ? 'watching' : 'completed';
-
-    groupsByStatus[status].push({
-      animeId: match.id,
-      status,
-      progress,
-      score: null,
-      notes: null,
-      title: match.title || {},
-      coverImage: match.coverImage || null,
-      episodes,
-      format: match.format ?? null,
-      season: match.season ?? null,
-      seasonYear: match.seasonYear ?? null,
-      sourceTitle: parsedEntry.title,
-      media: match,
-    });
-
-    await delayBetweenTextImportSearches(index, parsedEntries.length);
+    await delayBetweenTextImportSearchBatches(index, parsedEntries.length);
   }
 
   const groups = ['watching', 'completed']
@@ -152,6 +210,87 @@ async function previewTextImport(text, options = {}) {
       unmatched,
     },
   };
+}
+
+async function previewPdfImport(pdfBase64, options = {}) {
+  const text = filterPdfImportText(await extractTextFromPdfBase64(pdfBase64));
+
+  if (!text.trim()) {
+    return {
+      ok: false,
+      message:
+        'No readable text was found in this PDF. Try exporting a text-based page, not a scanned image.',
+    };
+  }
+
+  return await previewTextImport(text, options);
+}
+
+function filterPdfImportText(text) {
+  const seen = new Set();
+  const lines = [];
+
+  for (const rawLine of String(text || '').split(/\r?\n/)) {
+    const line = cleanPdfCandidateLine(rawLine);
+    const key = line.toLowerCase();
+
+    if (!line || seen.has(key) || !isLikelyPdfAnimeTitleLine(line)) {
+      continue;
+    }
+
+    seen.add(key);
+    lines.push(line);
+  }
+
+  return lines.join('\n');
+}
+
+function cleanPdfCandidateLine(line) {
+  return String(line || '')
+    .replace(/\s*\+\d+\s+more\s*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function isLikelyPdfAnimeTitleLine(line) {
+  if (line.length < 2 || line.length > 90) {
+    return false;
+  }
+
+  if (PDF_IMPORT_BLOCKED_LINE_PATTERNS.some((pattern) => pattern.test(line))) {
+    return false;
+  }
+
+  const lowerLine = line.toLowerCase();
+  const words = lowerLine.match(/[\p{L}\p{N}-]+/gu) || [];
+
+  if (!words.length || words.length > 12) {
+    return false;
+  }
+
+  const genreWordCount = words.filter((word) => PDF_IMPORT_GENRE_WORDS.has(word)).length;
+
+  if (genreWordCount >= 3) {
+    return false;
+  }
+
+  if (/[.!?]$/.test(line) && words.length > 4) {
+    return false;
+  }
+
+  if (line.split(/[·•|]/).length > 3) {
+    return false;
+  }
+
+  if (/\b(?:TV|OVA|ONA|MOVIE)\b/i.test(line) && /\b\d{1,3}\b/.test(line)) {
+    return false;
+  }
+
+  if (/\b(?:is|are|was|were|with|from|into|that|this|who|when|where)\b/i.test(line) && words.length > 7) {
+    return false;
+  }
+
+  return true;
 }
 
 async function searchAnimeForTextImport(title, options) {
@@ -187,9 +326,15 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function delayBetweenTextImportSearches(index, total) {
-  if (index < total - 1) {
-    await delay(TEXT_IMPORT_SEARCH_DELAY_MS);
+function normalizeSearchCacheKey(title, hideAdultContent) {
+  return `${hideAdultContent ? 'safe' : 'all'}:${String(title || '')
+    .trim()
+    .toLowerCase()}`;
+}
+
+async function delayBetweenTextImportSearchBatches(index, total) {
+  if (index + TEXT_IMPORT_SEARCH_CONCURRENCY < total) {
+    await delay(TEXT_IMPORT_SEARCH_BATCH_DELAY_MS);
   }
 }
 
@@ -257,7 +402,498 @@ function importTextEntries(currentSession, entries = [], selectedAnimeIds = []) 
   };
 }
 
+async function extractTextFromPdfBase64(pdfBase64) {
+  const buffer = Buffer.from(String(pdfBase64 || ''), 'base64');
+
+  if (!buffer.length) {
+    return '';
+  }
+
+  if (buffer.length > MAX_PDF_IMPORT_BYTES) {
+    throw new Error(`PDF import supports files up to ${MAX_PDF_IMPORT_BYTES / 1024 / 1024} MB for now.`);
+  }
+
+  const pdfjs = await loadPdfJs();
+  const loadingTask = pdfjs.getDocument({
+    data: new Uint8Array(buffer),
+    disableFontFace: true,
+    disableWorker: true,
+    isEvalSupported: false,
+    useSystemFonts: true,
+  });
+  const pdfDocument = await loadingTask.promise;
+  const lines = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdfDocument.numPages; pageNumber += 1) {
+      const page = await pdfDocument.getPage(pageNumber);
+      const textContent = await page.getTextContent({
+        disableNormalization: false,
+        includeMarkedContent: false,
+      });
+
+      lines.push(...pdfTextItemsToLines(textContent.items || []));
+      page.cleanup?.();
+    }
+  } finally {
+    await pdfDocument.destroy?.();
+  }
+
+  const pdfJsText = normalizeExtractedPdfText(lines.join('\n'));
+
+  if (pdfJsText.trim()) {
+    return pdfJsText;
+  }
+
+  const source = buffer.toString('latin1');
+  const objects = parsePdfObjects(source);
+  const unicodeMaps = buildPdfUnicodeMaps(objects);
+  const fontMaps = buildPdfFontMaps(objects, unicodeMaps);
+  const streams = objects
+    .filter((object) => object.stream)
+    .map((object) => decodePdfStream(object.dictionary, object.stream))
+    .filter(Boolean);
+
+  const streamText = streams
+    .map((stream) => extractTextFromPdfContentStream(stream.toString('latin1'), fontMaps))
+    .filter(Boolean)
+    .join('\n');
+  const normalizedStreamText = normalizeExtractedPdfText(streamText);
+
+  if (normalizedStreamText.trim()) {
+    return normalizedStreamText;
+  }
+
+  const looseText = streams
+    .map((stream) => extractLooseTextFromPdfStream(stream.toString('latin1')))
+    .filter(Boolean)
+    .join('\n');
+
+  return normalizeExtractedPdfText(looseText);
+}
+
+function loadPdfJs() {
+  if (!pdfJsPromise) {
+    pdfJsPromise = import('pdfjs-dist/legacy/build/pdf.mjs');
+  }
+
+  return pdfJsPromise;
+}
+
+function pdfTextItemsToLines(items) {
+  const positionedItems = items
+    .map((item) => ({
+      text: String(item.str || '').trim(),
+      x: Number(item.transform?.[4] || 0),
+      y: Number(item.transform?.[5] || 0),
+    }))
+    .filter((item) => item.text);
+  const rows = [];
+
+  for (const item of positionedItems) {
+    const row = rows.find((candidate) => Math.abs(candidate.y - item.y) <= 3);
+
+    if (row) {
+      row.items.push(item);
+      row.y = (row.y + item.y) / 2;
+    } else {
+      rows.push({ y: item.y, items: [item] });
+    }
+  }
+
+  return rows
+    .sort((a, b) => b.y - a.y)
+    .map((row) =>
+      row.items
+        .sort((a, b) => a.x - b.x)
+        .map((item) => item.text)
+        .join(' ')
+        .replace(/\s{2,}/g, ' ')
+        .trim()
+    )
+    .filter(Boolean);
+}
+
+function parsePdfObjects(source) {
+  const objects = [];
+  const objectRegex = /(\d+)\s+(\d+)\s+obj([\s\S]*?)endobj/g;
+  let match;
+
+  while ((match = objectRegex.exec(source))) {
+    const body = match[3];
+    const streamMatch = body.match(/<<(.*?)>>\s*stream\r?\n?([\s\S]*?)\r?\n?endstream/);
+
+    objects.push({
+      id: Number(match[1]),
+      body,
+      dictionary: streamMatch?.[1] || body.match(/<<(.*?)>>/)?.[1] || '',
+      stream: streamMatch ? Buffer.from(streamMatch[2], 'latin1') : null,
+    });
+  }
+
+  const embeddedObjects = [];
+
+  for (const object of objects) {
+    if (!/\/Type\s*\/ObjStm\b/.test(object.dictionary) || !object.stream) {
+      continue;
+    }
+
+    embeddedObjects.push(...parsePdfObjectStream(object));
+  }
+
+  objects.push(...embeddedObjects);
+
+  return objects;
+}
+
+function parsePdfObjectStream(object) {
+  const decoded = decodePdfStream(object.dictionary, object.stream);
+
+  if (!decoded) {
+    return [];
+  }
+
+  const count = Number(object.dictionary.match(/\/N\s+(\d+)/)?.[1] || 0);
+  const first = Number(object.dictionary.match(/\/First\s+(\d+)/)?.[1] || 0);
+  const text = decoded.toString('latin1');
+
+  if (!count || !first || first >= text.length) {
+    return [];
+  }
+
+  const header = text.slice(0, first).trim();
+  const body = text.slice(first);
+  const pairs = [...header.matchAll(/(\d+)\s+(\d+)/g)].slice(0, count);
+  const embeddedObjects = [];
+
+  for (let index = 0; index < pairs.length; index += 1) {
+    const id = Number(pairs[index][1]);
+    const start = Number(pairs[index][2]);
+    const end = index + 1 < pairs.length ? Number(pairs[index + 1][2]) : body.length;
+    const embeddedBody = body.slice(start, end).trim();
+
+    if (!id || !embeddedBody) {
+      continue;
+    }
+
+    embeddedObjects.push({
+      id,
+      body: embeddedBody,
+      dictionary: embeddedBody.match(/<<(.*?)>>/)?.[1] || embeddedBody,
+      stream: null,
+    });
+  }
+
+  return embeddedObjects;
+}
+
+function decodePdfStream(dictionary, streamContent) {
+  const hasFlate = /\/Filter\s*(?:\/FlateDecode|\[[^\]]*\/FlateDecode[^\]]*\])/.test(dictionary);
+
+  if (!hasFlate) {
+    return streamContent;
+  }
+
+  try {
+    return zlib.inflateSync(streamContent);
+  } catch {
+    return null;
+  }
+}
+
+function buildPdfUnicodeMaps(objects) {
+  const maps = new Map();
+
+  for (const object of objects) {
+    if (!object.stream) {
+      continue;
+    }
+
+    const decoded = decodePdfStream(object.dictionary, object.stream);
+    const text = decoded?.toString('latin1') || '';
+
+    if (text.includes('beginbfchar') || text.includes('beginbfrange')) {
+      maps.set(object.id, parsePdfUnicodeMap(text));
+    }
+  }
+
+  return maps;
+}
+
+function buildPdfFontMaps(objects, unicodeMaps) {
+  const fontObjectMaps = new Map();
+
+  for (const object of objects) {
+    const toUnicodeMatch = object.body.match(/\/ToUnicode\s+(\d+)\s+\d+\s+R/);
+
+    if (toUnicodeMatch) {
+      const map = unicodeMaps.get(Number(toUnicodeMatch[1]));
+
+      if (map?.size) {
+        fontObjectMaps.set(object.id, map);
+      }
+    }
+  }
+
+  const fontMaps = new Map();
+
+  for (const object of objects) {
+    const fontRefRegex = /\/([A-Za-z0-9._-]+)\s+(\d+)\s+\d+\s+R/g;
+    let match;
+
+    while ((match = fontRefRegex.exec(object.body))) {
+      const fontMap = fontObjectMaps.get(Number(match[2]));
+
+      if (fontMap) {
+        fontMaps.set(match[1], fontMap);
+      }
+    }
+  }
+
+  return fontMaps;
+}
+
+function parsePdfUnicodeMap(content) {
+  const map = new Map();
+  const charRegex = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g;
+  let charMatch;
+
+  while ((charMatch = charRegex.exec(content))) {
+    map.set(normalizeHexCode(charMatch[1]), decodePdfUnicodeHex(charMatch[2]));
+  }
+
+  const rangeRegex = /<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+(?:<([0-9a-fA-F]+)>|\[([^\]]+)\])/g;
+  let rangeMatch;
+
+  while ((rangeMatch = rangeRegex.exec(content))) {
+    const start = parseInt(rangeMatch[1], 16);
+    const end = parseInt(rangeMatch[2], 16);
+    const codeLength = normalizeHexCode(rangeMatch[1]).length;
+
+    if (rangeMatch[4]) {
+      const values = [...rangeMatch[4].matchAll(/<([0-9a-fA-F]+)>/g)].map((match) =>
+        decodePdfUnicodeHex(match[1])
+      );
+
+      values.forEach((value, index) => {
+        map.set((start + index).toString(16).toUpperCase().padStart(codeLength, '0'), value);
+      });
+      continue;
+    }
+
+    const destinationStart = parseInt(rangeMatch[3], 16);
+
+    for (let code = start; code <= end && code - start < 512; code += 1) {
+      map.set(
+        code.toString(16).toUpperCase().padStart(codeLength, '0'),
+        decodePdfUnicodeHex((destinationStart + code - start).toString(16))
+      );
+    }
+  }
+
+  return map;
+}
+
+function extractTextFromPdfContentStream(content, fontMaps) {
+  const blocks = content.match(/BT[\s\S]*?ET/g) || [];
+
+  return blocks
+    .map((block) => extractTextFromPdfTextBlock(block, fontMaps))
+    .join('\n');
+}
+
+function extractLooseTextFromPdfStream(content) {
+  const parts = [];
+  const tokenRegex =
+    /\/(?:ActualText|Alt)\s*(\((?:\\.|[^\\)])*\)|<([0-9a-fA-F\s]+)>)|\((?:\\.|[^\\)])*\)/g;
+  let tokenMatch;
+
+  while ((tokenMatch = tokenRegex.exec(content))) {
+    const token = tokenMatch[1] || tokenMatch[0];
+
+    if (token.startsWith('(')) {
+      parts.push(decodePdfLiteralString(token.slice(1, -1)));
+      continue;
+    }
+
+    if (tokenMatch[2]) {
+      parts.push(decodePdfHexString(tokenMatch[2]));
+    }
+  }
+
+  return parts.join('\n');
+}
+
+function extractTextFromPdfTextBlock(block, fontMaps) {
+  const parts = [];
+  let currentFontMap = null;
+  const tokenRegex = /\/([A-Za-z0-9._-]+)\s+[-\d.]+\s+Tf|\((?:\\.|[^\\)])*\)|<([0-9a-fA-F\s]+)>/g;
+  let tokenMatch;
+
+  while ((tokenMatch = tokenRegex.exec(block))) {
+    if (tokenMatch[1]) {
+      currentFontMap = fontMaps.get(tokenMatch[1]) || null;
+      continue;
+    }
+
+    const token = tokenMatch[0];
+
+    if (token.startsWith('(')) {
+      parts.push(decodePdfLiteralString(token.slice(1, -1)));
+      continue;
+    }
+
+    if (tokenMatch[2]) {
+      parts.push(decodePdfHexString(tokenMatch[2], currentFontMap));
+    }
+  }
+
+  return parts.join(' ');
+}
+
+function decodePdfLiteralString(value) {
+  return value
+    .replace(/\\([nrtbf()\\])/g, (_match, char) => {
+      switch (char) {
+        case 'n':
+          return '\n';
+        case 'r':
+          return '\r';
+        case 't':
+          return '\t';
+        case 'b':
+        case 'f':
+          return ' ';
+        default:
+          return char;
+      }
+    })
+    .replace(/\\\r?\n/g, '')
+    .replace(/\\([0-7]{1,3})/g, (_match, octal) =>
+      String.fromCharCode(parseInt(octal, 8))
+    );
+}
+
+function decodePdfHexString(value, unicodeMap = null) {
+  const hex = value.replace(/\s+/g, '');
+
+  if (!hex) {
+    return '';
+  }
+
+  if (unicodeMap?.size) {
+    const decoded = decodePdfHexWithUnicodeMap(hex, unicodeMap);
+
+    if (decoded) {
+      return decoded;
+    }
+  }
+
+  try {
+    const paddedHex = hex.length % 2 === 0 ? hex : `${hex}0`;
+    const bytes = Buffer.from(paddedHex, 'hex');
+
+    if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+      const chars = [];
+
+      for (let index = 2; index + 1 < bytes.length; index += 2) {
+        chars.push(String.fromCharCode(bytes.readUInt16BE(index)));
+      }
+
+      return chars.join('');
+    }
+
+    return bytes.toString('utf8');
+  } catch {
+    return '';
+  }
+}
+
+function decodePdfHexWithUnicodeMap(hex, unicodeMap) {
+  const codeLengths = Array.from(
+    new Set([...unicodeMap.keys()].map((key) => key.length))
+  ).sort((a, b) => b - a);
+  let output = '';
+  let index = 0;
+
+  while (index < hex.length) {
+    const matchLength = codeLengths.find((length) =>
+      unicodeMap.has(normalizeHexCode(hex.slice(index, index + length)))
+    );
+
+    if (!matchLength) {
+      index += 2;
+      continue;
+    }
+
+    output += unicodeMap.get(normalizeHexCode(hex.slice(index, index + matchLength))) || '';
+    index += matchLength;
+  }
+
+  return output;
+}
+
+function decodePdfUnicodeHex(value) {
+  const hex = normalizeHexCode(value);
+  const paddedHex = hex.length % 2 === 0 ? hex : `0${hex}`;
+  const bytes = Buffer.from(paddedHex, 'hex');
+
+  if (!bytes.length) {
+    return '';
+  }
+
+  const shouldDecodeUtf16 = bytes.length >= 2 && bytes.length % 2 === 0;
+
+  if (shouldDecodeUtf16) {
+    const chars = [];
+
+    for (let index = 0; index + 1 < bytes.length; index += 2) {
+      chars.push(String.fromCharCode(bytes.readUInt16BE(index)));
+    }
+
+    return chars.join('');
+  }
+
+  return bytes.toString('utf8');
+}
+
+function normalizeHexCode(value) {
+  return String(value || '').replace(/\s+/g, '').toUpperCase();
+}
+
+function normalizeExtractedPdfText(text) {
+  return String(text || '')
+    .replace(/\u0000/g, '')
+    .replace(/[ \t]+/g, ' ')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(isReadablePdfTextLine)
+    .filter(Boolean)
+    .join('\n');
+}
+
+function isReadablePdfTextLine(line) {
+  if (line.length < 2 || line.length > 180) {
+    return false;
+  }
+
+  const lettersAndNumbers = (line.match(/[\p{L}\p{N}]/gu) || []).length;
+  const commonText = (line.match(/[A-Za-z0-9\s:'’.,!?&+/-]/g) || []).length;
+  const replacementOrControl = (line.match(/[\u0000-\u001f\u007f-\u009f�]/g) || []).length;
+  const readable = (line.match(/[\p{L}\p{N}\p{P}\p{Zs}]/gu) || []).length;
+  const readableRatio = readable / Math.max(line.length, 1);
+  const commonTextRatio = commonText / Math.max(line.length, 1);
+
+  return (
+    lettersAndNumbers >= 2 &&
+    replacementOrControl === 0 &&
+    readableRatio > 0.85 &&
+    commonTextRatio > 0.65
+  );
+}
+
 module.exports = {
   previewTextImport,
+  previewPdfImport,
   importTextEntries,
 };

@@ -4,6 +4,7 @@ const { app, ipcMain } = require('electron');
 const path = require('path');
 
 app.setAppUserModelId('app.seenary.desktop');
+app.setName('Seenary');
 
 if (!app.isPackaged) {
   app.setPath('userData', path.join(__dirname, '.electron-user-data'));
@@ -17,12 +18,13 @@ const { createWindow } = require('./window');
 const { setupTray } = require('./tray');
 const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
+const { registerSystemLocaleIpc } = require('./systemLocale');
 
 const anilist = require('./anilist');
 const anilistOAuth = require('./anilistOAuth');
 const mal = require('./mal');
 const { previewMalImport, importMalEntries } = require('./malImport');
-const { previewTextImport, importTextEntries } = require('./textImport');
+const { previewTextImport, previewPdfImport, importTextEntries } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const malOAuth = require('./malOAuth');
 const {
@@ -651,6 +653,17 @@ ipcMain.handle('text-import:preview', async (_event, payload) => {
   } catch (error) {
     console.error('Text import preview error:', error);
     return { ok: false, message: error.message || 'Failed to preview text import.' };
+  }
+});
+
+ipcMain.handle('pdf-import:preview', async (_event, payload) => {
+  try {
+    return await previewPdfImport(payload?.pdfBase64, {
+      hideAdultContent: payload?.hideAdultContent,
+    });
+  } catch (error) {
+    console.error('PDF import preview error:', error);
+    return { ok: false, message: error.message || 'Failed to preview PDF import.' };
   }
 });
 
@@ -1673,6 +1686,8 @@ ipcMain.handle('list:clear', () => {
     return { ok: false, message: 'Failed to clear your list.', removedCount: 0 };
   }
 });
+
+registerSystemLocaleIpc();
 
 function bootAppWindow() {
   mainWindow = createWindow();

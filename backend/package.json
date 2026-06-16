@@ -1,6 +1,6 @@
 {
   "name": "seenary",
-  "version": "0.1.4-beta",
+  "version": "0.1.5-beta",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
@@ -21,7 +21,8 @@
     "argon2": "^0.41.1",
     "better-sqlite3": "^12.8.0",
     "electron-updater": "^6.8.3",
-    "node-fetch": "^2.7.0"
+    "node-fetch": "^2.7.0",
+    "pdfjs-dist": "^5.7.284"
   },
   "devDependencies": {
     "electron": "^41.0.3",
@@ -39,12 +40,14 @@
     "files": [
       "desktop-main.js",
       "desktop-preload.js",
+      "systemLocale.js",
       "updater.js",
       "startup.js",
       "scripts/write-release-notes.js",
       "tray.js",
       "shortcuts.js",
       "icon.png",
+      "icon.ico",
       "tray.png"
     ],
     "publish": [
@@ -61,6 +64,7 @@
     },
     "win": {
       "icon": "build/icon.ico",
+      "executableName": "Seenary",
       "target": [
         {
           "target": "nsis",

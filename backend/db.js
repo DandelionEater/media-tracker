@@ -2,6 +2,8 @@ const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 
+const HOSTED_PRODUCTION_DB_PATH = '/home/u145628270/domains/api.seenary.app/data/media.db';
+
 function getDefaultDbPath() {
   if (process.versions.electron) {
     try {
@@ -10,6 +12,10 @@ function getDefaultDbPath() {
     } catch {
       return path.join(__dirname, 'media.db');
     }
+  }
+
+  if (process.env.NODE_ENV === 'production') {
+    return HOSTED_PRODUCTION_DB_PATH;
   }
 
   return path.join(__dirname, 'media.db');
@@ -164,10 +170,13 @@ db.prepare(
     provider TEXT NOT NULL,
     external_id TEXT NOT NULL,
     anime_id INTEGER NOT NULL,
+    first_submitted_by_user_id INTEGER,
+    first_submitted_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (provider, external_id),
     UNIQUE(provider, anime_id),
+    FOREIGN KEY (first_submitted_by_user_id) REFERENCES users(id) ON DELETE SET NULL,
     FOREIGN KEY (anime_id) REFERENCES anime(id) ON DELETE CASCADE
   )
 `
@@ -176,6 +185,8 @@ db.prepare(
 addColumnIfMissing('user_anime_lists', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'repeat_count', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'is_rewatching', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('anime_external_ids', 'first_submitted_by_user_id', 'INTEGER');
+addColumnIfMissing('anime_external_ids', 'first_submitted_at', 'TEXT');
 
 db.prepare(
   `
@@ -952,10 +963,20 @@ const upsertAnimeExternalIdStmt = db.prepare(`
     provider,
     external_id,
     anime_id,
+    first_submitted_by_user_id,
+    first_submitted_at,
     updated_at
-  ) VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+  ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
   ON CONFLICT(provider, external_id) DO UPDATE SET
     anime_id = excluded.anime_id,
+    first_submitted_by_user_id = COALESCE(
+      anime_external_ids.first_submitted_by_user_id,
+      excluded.first_submitted_by_user_id
+    ),
+    first_submitted_at = COALESCE(
+      anime_external_ids.first_submitted_at,
+      excluded.first_submitted_at
+    ),
     updated_at = CURRENT_TIMESTAMP
 `);
 
@@ -1049,7 +1070,7 @@ const deleteAnimeStaffStmt = db.prepare(`
 `);
 
 const insertAnimeStaffStmt = db.prepare(`
-  INSERT INTO anime_staff (
+  INSERT OR IGNORE INTO anime_staff (
     anime_id,
     staff_id,
     name_full,
@@ -1237,16 +1258,26 @@ function getUserAnimeList(userId) {
   return getUserAnimeListStmt.all(userId);
 }
 
-function upsertAnimeExternalId({ provider, externalId, animeId }) {
+function upsertAnimeExternalId({ provider, externalId, animeId, submittedByUserId = null }) {
   const normalizedProvider = String(provider || '').trim().toLowerCase();
   const normalizedExternalId = String(externalId || '').trim();
   const numericAnimeId = Number(animeId);
+  const numericSubmittedByUserId = Number(submittedByUserId);
+  const safeSubmittedByUserId =
+    Number.isInteger(numericSubmittedByUserId) && numericSubmittedByUserId > 0
+      ? numericSubmittedByUserId
+      : null;
 
   if (!normalizedProvider || !normalizedExternalId || !Number.isInteger(numericAnimeId)) {
     return;
   }
 
-  upsertAnimeExternalIdStmt.run(normalizedProvider, normalizedExternalId, numericAnimeId);
+  upsertAnimeExternalIdStmt.run(
+    normalizedProvider,
+    normalizedExternalId,
+    numericAnimeId,
+    safeSubmittedByUserId
+  );
 }
 
 function getAnimeExternalId(provider, externalId) {

@@ -82,6 +82,16 @@
   }
 }
 
+@keyframes import-activity-bar {
+  from {
+    transform: translateX(-120%);
+  }
+
+  to {
+    transform: translateX(320%);
+  }
+}
+
 .animate-sync-toast-in {
   animation: sync-toast-in 180ms ease-out;
 }
@@ -102,4 +112,8 @@
 
 .carousel-loading-ring {
   animation: carousel-loading-ring 800ms linear infinite;
+}
+
+.import-activity-bar {
+  animation: import-activity-bar 1350ms ease-in-out infinite;
 }

@@ -4,12 +4,15 @@ const { setupTray } = require('./tray');
 const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
 const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
+const { registerSystemLocaleIpc } = require('./systemLocale');
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
 const APP_USER_MODEL_ID = 'app.seenary.desktop';
 let mainWindow = null;
 
 app.setAppUserModelId(APP_USER_MODEL_ID);
+app.setName('Seenary');
+registerSystemLocaleIpc();
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -22,7 +25,7 @@ function createWindow() {
     backgroundColor: '#00000000',
     resizable: true,
     hasShadow: true,
-    icon: path.join(__dirname, 'icon.png'),
+    icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     webPreferences: {
       preload: path.join(__dirname, 'desktop-preload.js'),
       contextIsolation: true,

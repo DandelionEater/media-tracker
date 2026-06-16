@@ -1,5 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function getSystemLocaleInfo() {
+  try {
+    return ipcRenderer.sendSync('system-locale:get');
+  } catch {
+    return { locale: null, locales: [] };
+  }
+}
+
 contextBridge.exposeInMainWorld('api', {
   searchAnime: (query, hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:search', { query, hideAdultContent }),
@@ -24,6 +32,8 @@ contextBridge.exposeInMainWorld('api', {
     }),
   previewTextImport: (text, hideAdultContent = true) =>
     ipcRenderer.invoke('text-import:preview', { text, hideAdultContent }),
+  previewPdfImport: (pdfBase64, hideAdultContent = true) =>
+    ipcRenderer.invoke('pdf-import:preview', { pdfBase64, hideAdultContent }),
   importTextList: (entries, selectedAnimeIds) =>
     ipcRenderer.invoke('text-import:import', { entries, selectedAnimeIds }),
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -94,3 +104,5 @@ contextBridge.exposeInMainWorld('desktopStartup', {
   getStartupSetting: () => ipcRenderer.invoke('startup:get'),
   setStartupSetting: (enabled) => ipcRenderer.invoke('startup:set', enabled),
 });
+
+contextBridge.exposeInMainWorld('systemLocale', getSystemLocaleInfo());

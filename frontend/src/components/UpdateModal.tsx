@@ -4,6 +4,7 @@ import {
   CheckCircleIcon,
   ClockIcon,
 } from "@heroicons/react/24/outline";
+import { formatLocalDate } from "../utils/dateFormat";
 
 type DesktopUpdateInfo = {
   version: string;
@@ -70,7 +71,7 @@ export function UpdateModal({
               <p className="text-sm font-semibold text-white">Changelog</p>
               {info.releaseDate && (
                 <p className="text-xs text-white/35">
-                  {new Date(info.releaseDate).toLocaleDateString()}
+                  {formatLocalDate(info.releaseDate)}
                 </p>
               )}
             </div>

@@ -76,6 +76,8 @@ type DesktopUpdateInfo = {
 };
 
 declare global {
+  const __APP_VERSION__: string;
+
   interface Window {
     api: {
       searchAnime: (query: string, hideAdultContent?: boolean) => Promise<any>;
@@ -192,6 +194,39 @@ declare global {
         };
       }>;
       previewTextImport: (text: string, hideAdultContent?: boolean) => Promise<{
+        ok: boolean;
+        message?: string;
+        preview?: {
+          totalFound: number;
+          unmatched?: string[];
+          groups: Array<{
+            status: string;
+            items: Array<{
+              animeId: number;
+              status: string;
+              progress: number;
+              score: number | null;
+              notes: string | null;
+              title: {
+                romaji?: string | null;
+                english?: string | null;
+                native?: string | null;
+                userPreferred?: string | null;
+              };
+              coverImage?: {
+                large?: string | null;
+              };
+              episodes?: number | null;
+              format?: string | null;
+              season?: string | null;
+              seasonYear?: number | null;
+              sourceTitle?: string;
+              media?: any;
+            }>;
+          }>;
+        };
+      }>;
+      previewPdfImport: (pdfBase64: string, hideAdultContent?: boolean) => Promise<{
         ok: boolean;
         message?: string;
         preview?: {
@@ -479,6 +514,14 @@ declare global {
         message: string;
         removedCount?: number;
       }>;
+
+      exportLocalBackup: () => Promise<any>;
+
+      importLocalBackup: (backup: any) => Promise<{
+        ok: boolean;
+        message: string;
+        imported?: number;
+      }>;
     };
     desktopUpdater?: {
       onUpdateAvailable: (callback: (info: DesktopUpdateInfo) => void) => () => void;
@@ -537,6 +580,22 @@ declare global {
         wasOpenedAtLogin?: boolean;
         message?: string;
       }>;
+    };
+    systemLocale?: {
+      locale: string | null;
+      locales: string[];
+      regionalFormat?: {
+        localeName?: string | null;
+        shortDate?: string | null;
+        longDate?: string | null;
+        shortTime?: string | null;
+        longTime?: string | null;
+        is24Hour?: boolean;
+        amDesignator?: string | null;
+        pmDesignator?: string | null;
+        dateSeparator?: string | null;
+        timeSeparator?: string | null;
+      } | null;
     };
   }
 }

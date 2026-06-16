@@ -93,7 +93,7 @@ function scoreMalCandidate(anime, candidate) {
   return score;
 }
 
-async function resolveMalAnimeIdForAnime(animeId, accessToken) {
+async function resolveMalAnimeIdForAnime(animeId, accessToken, options = {}) {
   const existing = getAnimeExternalIdByAnimeId('mal', animeId);
 
   if (existing?.external_id) {
@@ -135,6 +135,7 @@ async function resolveMalAnimeIdForAnime(animeId, accessToken) {
     provider: 'mal',
     externalId: best.candidate.id,
     animeId,
+    submittedByUserId: options.submittedByUserId,
   });
 
   return String(best.candidate.id);

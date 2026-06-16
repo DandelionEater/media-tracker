@@ -9,7 +9,7 @@ const path = require('path');
 const anilist = require('./anilist');
 const mal = require('./mal');
 const { previewMalImport, importMalEntries } = require('./malImport');
-const { previewTextImport, importTextEntries } = require('./textImport');
+const { previewTextImport, previewPdfImport, importTextEntries } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
   dbPath,
@@ -62,6 +62,8 @@ const {
   getSyncStatus,
   getSyncActivity,
   setAutoSyncEnabled,
+  getStatelessSyncStatus,
+  runStatelessSyncForUser,
 } = require('./sync');
 
 const PORT = Number(process.env.PORT || 3000);
@@ -816,6 +818,9 @@ function buildAniListImportPreview(collection) {
         progress: entry.progress ?? 0,
         score: entry.score ?? null,
         notes: entry.notes ?? null,
+        startedAt: mapAniListDate(entry.startedAt),
+        completedAt: mapAniListDate(entry.completedAt),
+        repeatCount: entry.repeat ?? 0,
         title: {
           romaji: media.title?.romaji ?? null,
           english: media.title?.english ?? null,
@@ -827,6 +832,7 @@ function buildAniListImportPreview(collection) {
         format: media.format ?? null,
         season: media.season ?? null,
         seasonYear: media.seasonYear ?? null,
+        media,
       });
     }
   }
@@ -840,12 +846,63 @@ function buildAniListImportPreview(collection) {
   };
 }
 
+function buildLocalImportResult(preview, selectedStatuses = [], selectedAnimeIds = [], sourceUsername) {
+  const allowedStatuses = new Set(
+    (Array.isArray(selectedStatuses) ? selectedStatuses : []).map((status) =>
+      sanitizeStatus(status)
+    )
+  );
+  const allowedAnimeIds = new Set(
+    (Array.isArray(selectedAnimeIds) ? selectedAnimeIds : [])
+      .map((animeId) => Number(animeId))
+      .filter((animeId) => Number.isInteger(animeId) && animeId > 0)
+  );
+  const hasStatusFilter = allowedStatuses.size > 0;
+  const hasAnimeFilter = allowedAnimeIds.size > 0;
+  const localEntries = [];
+  let skipped = 0;
+
+  for (const group of preview.groups || []) {
+    const status = sanitizeStatus(group.status);
+
+    for (const item of group.items || []) {
+      const animeId = Number(item?.animeId);
+
+      if (
+        !Number.isInteger(animeId) ||
+        animeId <= 0 ||
+        (hasStatusFilter && !allowedStatuses.has(status)) ||
+        (hasAnimeFilter && !allowedAnimeIds.has(animeId))
+      ) {
+        skipped += 1;
+        continue;
+      }
+
+      localEntries.push({ ...item, status });
+    }
+  }
+
+  return {
+    ok: true,
+    message: `Imported ${localEntries.length} entr${localEntries.length === 1 ? 'y' : 'ies'}.`,
+    localEntries,
+    summary: {
+      sourceUsername,
+      totalFound: preview.totalFound ?? localEntries.length + skipped,
+      selectedStatuses: Array.from(allowedStatuses),
+      selectedAnimeIds: Array.from(allowedAnimeIds),
+      imported: localEntries.length,
+      created: localEntries.length,
+      updated: 0,
+      skipped,
+    },
+  };
+}
+
 async function importAuthenticatedAniListList(accessToken, viewer, currentSession) {
   const collection = await anilist.getViewerAnimeCollection(accessToken, viewer.id);
-  const result = importAniListEntries(currentSession, collection, viewer.name, {
-    selectedStatuses: IMPORT_STATUS_ORDER,
-    selectedAnimeIds: [],
-  });
+  const preview = buildAniListImportPreview(collection);
+  const result = buildLocalImportResult(preview, IMPORT_STATUS_ORDER, [], viewer.name);
 
   if (result.ok) {
     updateAniListAccountImportTime(viewer.id);
@@ -1208,7 +1265,6 @@ async function fetchAnimeDetailsFromAniList(id) {
   const media = await anilist.getAnimeDetails
     ? await anilist.getAnimeDetails(id)
     : await fetchAnimeDetailsFallback(id);
-  saveAnime(mapAnimeForDb(media));
   return media;
 }
 
@@ -1385,10 +1441,8 @@ async function handleRpc(method, args, req, res) {
       const username = String(args[0] || '').trim();
       if (!username) return { ok: false, message: 'Enter an AniList username first.' };
       const collection = await anilist.getUserAnimeCollection(username);
-      return importAniListEntries(currentSession, collection, username, {
-        selectedStatuses: args[1],
-        selectedAnimeIds: args[2],
-      });
+      const preview = buildAniListImportPreview(collection);
+      return buildLocalImportResult(preview, args[1], args[2], username);
     }
     case 'previewMalImport': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
@@ -1402,7 +1456,9 @@ async function handleRpc(method, args, req, res) {
 
         return await mal.getViewerAnimeList(linkedAccount.access_token);
       });
-      const result = await previewMalImport(malList);
+      const result = await previewMalImport(malList, {
+        submittedByUserId: currentSession.user.id,
+      });
       return {
         ok: true,
         message: `Found ${result.preview.totalFound} MyAnimeList entries.`,
@@ -1421,39 +1477,62 @@ async function handleRpc(method, args, req, res) {
           throw new Error('Link a MyAnimeList account before importing.');
         }
 
-        linkedAccount = account;
+      linkedAccount = account;
         return await mal.getViewerAnimeList(account.access_token);
       });
-      const result = await importMalEntries(currentSession, malList, {
-        selectedStatuses: args[0],
-        selectedAnimeIds: args[1],
+      const result = await previewMalImport(malList, {
+        submittedByUserId: currentSession.user.id,
       });
+      const importResult = buildLocalImportResult(
+        result.preview,
+        args[0],
+        args[1],
+        result.username || linkedAccount?.mal_username || 'MyAnimeList'
+      );
 
-      if (result.ok) {
+      if (importResult.ok) {
         updateMalAccountImportTime(linkedAccount.mal_user_id);
       }
 
-      return result;
+      return importResult;
     }
     case 'previewTextImport':
       return await previewTextImport(args[0], { hideAdultContent: args[1] });
+    case 'previewPdfImport':
+      return await previewPdfImport(args[0], { hideAdultContent: args[1] });
     case 'importTextList':
-      return importTextEntries(currentSession, args[0], args[1]);
+      return buildLocalImportResult(
+        {
+          totalFound: Array.isArray(args[0]) ? args[0].length : 0,
+          groups: [
+            {
+              status: 'completed',
+              items: Array.isArray(args[0]) ? args[0] : [],
+            },
+          ],
+        },
+        [],
+        args[1],
+        'Text file'
+      );
     case 'getSettings':
-      return getAppPreferences();
+      return DEFAULT_APP_SETTINGS;
     case 'updateSettings':
-      return updateAppPreferences(args[0]);
+      return {
+        ...DEFAULT_APP_SETTINGS,
+        ...(args[0] && typeof args[0] === 'object' ? args[0] : {}),
+      };
     case 'getSyncStatus':
       return currentSession.authenticated
-        ? getSyncStatus(currentSession.user.id)
+        ? getStatelessSyncStatus(currentSession.user.id, args[0], args[1])
         : { ok: false, message: 'You must be logged in.' };
     case 'setAutoSync':
-      if (!currentSession.authenticated) return { ok: false, message: 'You must be logged in.' };
-      setAutoSyncEnabled(currentSession.user.id, Boolean(args[0]));
-      return getSyncStatus(currentSession.user.id);
+      return currentSession.authenticated
+        ? getStatelessSyncStatus(currentSession.user.id, args[1], args[0])
+        : { ok: false, message: 'You must be logged in.' };
     case 'runSyncNow':
       return currentSession.authenticated
-        ? await runSyncForUser(currentSession.user.id)
+        ? await runStatelessSyncForUser(currentSession.user.id, args[0])
         : { ok: false, message: 'You must be logged in.' };
     case 'pullFromAniList': {
       if (!currentSession.authenticated) return { ok: false, message: 'You must be logged in.' };
@@ -1465,26 +1544,14 @@ async function handleRpc(method, args, req, res) {
         linkedAccount.access_token,
         linkedAccount.anilist_user_id
       );
-      const result = importAniListEntries(currentSession, collection, linkedAccount.anilist_username, {
-        selectedStatuses: IMPORT_STATUS_ORDER,
-        selectedAnimeIds: [],
-      });
-
-      if (result.ok) {
-        updateAniListAccountImportTime(linkedAccount.anilist_user_id);
-        for (const change of result.summary?.changes || []) {
-          insertSyncHistory({
-            userId: currentSession.user.id,
-            animeId: change.animeId,
-            animeTitle: change.animeTitle,
-            operation: 'pull_from_anilist',
-            changedFields: change.changedFields,
-            status: 'completed',
-            message: 'Updated local entry from AniList.',
-          });
-        }
-      }
-
+      const preview = buildAniListImportPreview(collection);
+      const result = buildLocalImportResult(
+        preview,
+        IMPORT_STATUS_ORDER,
+        [],
+        linkedAccount.anilist_username
+      );
+      if (result.ok) updateAniListAccountImportTime(linkedAccount.anilist_user_id);
       return result;
     }
     case 'pullFromMal': {
@@ -1492,46 +1559,34 @@ async function handleRpc(method, args, req, res) {
         return { ok: false, message: 'You must be logged in.' };
       }
 
-      let linkedAccount = null;
+      const linkedAccount = getMalAccountByUserId(currentSession.user.id);
       const malList = await withFreshMalAccount(currentSession.user.id, async (account) => {
         if (!account?.access_token) {
           throw new Error('Link a MyAnimeList account before updating from MyAnimeList.');
         }
 
-        linkedAccount = account;
         return await mal.getViewerAnimeList(account.access_token);
       });
-      const result = await importMalEntries(currentSession, malList, {
-        selectedStatuses: IMPORT_STATUS_ORDER,
-        selectedAnimeIds: [],
+      const result = await previewMalImport(malList, {
+        submittedByUserId: currentSession.user.id,
       });
-
-      if (result.ok) {
+      const importResult = buildLocalImportResult(
+        result.preview,
+        IMPORT_STATUS_ORDER,
+        [],
+        result.username || linkedAccount?.mal_username || 'MyAnimeList'
+      );
+      if (importResult.ok && linkedAccount?.mal_user_id) {
         updateMalAccountImportTime(linkedAccount.mal_user_id);
-        for (const change of result.summary?.changes || []) {
-          insertSyncHistory({
-            userId: currentSession.user.id,
-            animeId: change.animeId,
-            animeTitle: change.animeTitle,
-            operation: 'pull_from_mal',
-            changedFields: change.changedFields,
-            status: 'completed',
-            message: 'Updated local entry from MyAnimeList.',
-          });
-        }
       }
-
-      return result;
+      return importResult;
     }
     case 'getSyncActivity':
-      return currentSession.authenticated
-        ? getSyncActivity(currentSession.user.id)
-        : { ok: false, message: 'You must be logged in.' };
+      return { ok: true, pending: [], completed: [], failed: [] };
     case 'getAnimeDetails':
       return await getAnimeDetails(args[0]);
     case 'cacheMinimalAnime':
       if (!args[0]?.id) return { ok: false, message: 'Invalid anime data.' };
-      saveAnimeSummary(buildMinimalAnimeForDb(args[0]));
       return { ok: true };
     case 'register': {
       const result = await registerUser(args[0], args[1]);
@@ -1554,15 +1609,21 @@ async function handleRpc(method, args, req, res) {
       updateTutorialDismissed(currentSession.user.id, Boolean(args[0]));
       return { ok: true, message: 'Tutorial preference updated.', user: getSafeUserById(currentSession.user.id) };
     case 'getMyList':
+      return { ok: true, entries: [] };
+    case 'exportLegacyMyList':
       return getMyAnimeList(currentSession);
     case 'getMyListEntry':
-      return getMyAnimeEntry(currentSession, args[0]);
+      return { ok: true, entry: null };
     case 'saveMyListEntry':
-      return saveMyAnimeEntry(currentSession, args[0], args[1]);
+      return { ok: false, message: 'List entries are saved locally in the browser.' };
     case 'removeMyListEntry':
-      return removeMyAnimeEntry(currentSession, args[0]);
+      return { ok: false, message: 'List entries are saved locally in the browser.' };
     case 'clearMyList':
-      return clearMyAnimeList(currentSession);
+      return {
+        ok: true,
+        message: 'Your browser-local list is managed on this device.',
+        removedCount: 0,
+      };
     case 'startAniListLogin': {
       const { flow, authUrl } = createAniListFlow({
         type: 'login',

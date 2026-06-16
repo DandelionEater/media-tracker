@@ -19,6 +19,7 @@ import {
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import { ListEntryModal } from "./ListEntryModal";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
+import { formatLocalDate } from "../utils/dateFormat";
 
 type AnimeDetailsProps = {
   animeId: number;
@@ -765,7 +766,7 @@ function PersonalListPanel({
         <ListStat label="Score" value={entry.score ?? "-"} icon={StarIcon} />
         <ListStat
           label="Updated"
-          value={entry.updated_at ? formatDate(entry.updated_at) : "-"}
+          value={formatLocalDate(entry.updated_at, { month: "short", day: "numeric" })}
           icon={ClockIcon}
         />
       </div>
@@ -1201,19 +1202,6 @@ function formatEnum(value: string) {
     .split("_")
     .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
     .join(" ");
-}
-
-function formatDate(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return "-";
-  }
-
-  return date.toLocaleDateString(undefined, {
-    month: "short",
-    day: "numeric",
-  });
 }
 
 function formatFuzzyDate(date: {

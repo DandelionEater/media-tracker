@@ -108,7 +108,7 @@ async function resolveAniListMediaForMalNode(malNode, cache) {
   return null;
 }
 
-async function buildAniListCollectionFromMalList(malList) {
+async function buildAniListCollectionFromMalList(malList, options = {}) {
   const cache = new Map();
   const listsByStatus = new Map(IMPORT_STATUS_ORDER.map((status) => [status, []]));
   let mapped = 0;
@@ -139,6 +139,7 @@ async function buildAniListCollectionFromMalList(malList) {
       provider: 'mal',
       externalId: node.id,
       animeId: media.id,
+      submittedByUserId: options.submittedByUserId,
     });
 
     const localStatus =
@@ -211,6 +212,7 @@ function buildMalImportPreview(mappedList) {
         format: entry.media.format ?? null,
         season: entry.media.season ?? null,
         seasonYear: entry.media.seasonYear ?? null,
+        media: entry.media,
         source: {
           provider: 'mal',
           animeId: entry.malAnimeId,
@@ -232,8 +234,8 @@ function buildMalImportPreview(mappedList) {
   };
 }
 
-async function previewMalImport(malList) {
-  const mappedList = await buildAniListCollectionFromMalList(malList);
+async function previewMalImport(malList, options = {}) {
+  const mappedList = await buildAniListCollectionFromMalList(malList, options);
   return {
     username: mappedList.sourceUsername,
     preview: buildMalImportPreview(mappedList),
@@ -241,7 +243,9 @@ async function previewMalImport(malList) {
 }
 
 async function importMalEntries(currentSession, malList, options = {}) {
-  const mappedList = await buildAniListCollectionFromMalList(malList);
+  const mappedList = await buildAniListCollectionFromMalList(malList, {
+    submittedByUserId: currentSession?.user?.id,
+  });
   const result = importAniListEntries(currentSession, mappedList.collection, mappedList.sourceUsername, {
     selectedStatuses: options.selectedStatuses,
     selectedAnimeIds: options.selectedAnimeIds,

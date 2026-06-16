@@ -57,6 +57,12 @@ type ClearListResult = {
   removedCount?: number;
 };
 
+type BackupImportResult = {
+  ok: boolean;
+  message: string;
+  imported?: number;
+};
+
 type AppView = "home" | "list" | "details" | "settings";
 
 type TrackedAnimeEntry = {
@@ -551,6 +557,37 @@ function App() {
     return result;
   };
 
+  const handleExportLocalBackup = async () => {
+    const backup = await window.api.exportLocalBackup();
+    const blob = new Blob([JSON.stringify(backup, null, 2)], {
+      type: "application/json",
+    });
+    const url = window.URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    const date = new Date().toISOString().slice(0, 10);
+
+    anchor.href = url;
+    anchor.download = `seenary-backup-${date}.json`;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.URL.revokeObjectURL(url);
+    showSyncToast("success", "Backup exported", "Your local Seenary backup was downloaded.");
+  };
+
+  const handleImportLocalBackup = async (backup: any): Promise<BackupImportResult> => {
+    const result = await window.api.importLocalBackup(backup);
+
+    if (result.ok) {
+      await loadTrackedEntries();
+      showSyncToast("success", "Backup imported", result.message);
+    } else {
+      showSyncToast("error", "Backup import failed", result.message);
+    }
+
+    return result;
+  };
+
   const handleAuthenticated = async (user: {
     id: number;
     username: string;
@@ -895,6 +932,8 @@ function App() {
                   onPullFromAniList={handlePullFromAniList}
                   onPullFromMal={handlePullFromMal}
                   onClearMyList={handleClearMyList}
+                  onExportLocalBackup={handleExportLocalBackup}
+                  onImportLocalBackup={handleImportLocalBackup}
                 />
               ) : (
                 <HomePage

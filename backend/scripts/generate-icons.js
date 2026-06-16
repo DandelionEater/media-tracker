@@ -5,6 +5,7 @@ const { spawnSync } = require('child_process');
 const repoRoot = path.resolve(__dirname, '..', '..');
 const sourcePng = path.join(repoRoot, 'icons', '1024x1024.png');
 const runtimePng = path.join(repoRoot, 'backend', 'icon.png');
+const runtimeIco = path.join(repoRoot, 'backend', 'icon.ico');
 const trayPng = path.join(repoRoot, 'backend', 'tray.png');
 const buildPng = path.join(repoRoot, 'backend', 'build', 'icon.png');
 const buildIco = path.join(repoRoot, 'backend', 'build', 'icon.ico');
@@ -36,9 +37,11 @@ const iconImages = pngSizes.map((size) => {
 });
 
 writeIco(buildIco, iconImages);
+fs.copyFileSync(buildIco, runtimeIco);
 fs.rmSync(tempDir, { recursive: true, force: true });
 
 console.log(`Generated ${runtimePng}`);
+console.log(`Generated ${runtimeIco}`);
 console.log(`Generated ${trayPng}`);
 console.log(`Generated ${buildPng}`);
 console.log(`Generated ${buildIco}`);

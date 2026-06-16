@@ -3,7 +3,7 @@ const path = require('path');
 
 function createWindow() {
   const debugWindow = !app.isPackaged && process.env.ELECTRON_DEBUG_WINDOW === '1';
-  const iconPath = path.join(__dirname, 'icon.png');
+  const iconPath = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
   const win = new BrowserWindow({
     width: 1280,
     height: 900,

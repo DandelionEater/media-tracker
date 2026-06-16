@@ -120,10 +120,18 @@ function clearFailedAttempts(usernameNormalized) {
 }
 
 function persistCurrentUserId(userId) {
+  if (process.env.NODE_ENV === 'production' && !process.versions.electron) {
+    return;
+  }
+
   setAppSetting(SESSION_USER_ID_KEY, userId);
 }
 
 function clearPersistedUserId() {
+  if (process.env.NODE_ENV === 'production' && !process.versions.electron) {
+    return;
+  }
+
   deleteAppSetting(SESSION_USER_ID_KEY);
 }
 

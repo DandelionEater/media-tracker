@@ -11,6 +11,7 @@ import {
   UserCircleIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
+import { formatLocalDateTime } from "../utils/dateFormat";
 
 type NotificationItem = {
   id: number;
@@ -301,7 +302,7 @@ export function TopNavbar({
                           )}
                         </div>
                         <p className="mt-2 text-[11px] text-white/30">
-                          {formatNotificationTime(notification.createdAt)}
+                          {formatLocalDateTime(notification.createdAt)}
                         </p>
                       </button>
                     ))}
@@ -378,17 +379,4 @@ export function TopNavbar({
       </div>
     </div>
   );
-}
-
-function formatNotificationTime(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
 }

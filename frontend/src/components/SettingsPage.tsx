@@ -20,6 +20,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
+import { formatLocalDateTime as formatDateTime } from "../utils/dateFormat";
 
 export type ThemeAccent = "cyan" | "violet" | "rose" | "amber" | "emerald";
 
@@ -67,6 +68,7 @@ type ImportPreviewResponse = {
   preview?: {
     totalFound: number;
     groups: ImportPreviewGroup[];
+    unmatched?: string[];
   };
 };
 
@@ -176,6 +178,12 @@ type SettingsPageProps = {
     ok: boolean;
     message: string;
     removedCount?: number;
+  }>;
+  onExportLocalBackup: () => Promise<void>;
+  onImportLocalBackup: (backup: any) => Promise<{
+    ok: boolean;
+    message: string;
+    imported?: number;
   }>;
   onLinkAniListAccount: () => Promise<{
     ok: boolean;
@@ -315,21 +323,22 @@ const SHORTCUT_PRESETS = [
   "Control+Alt+Space",
 ];
 
+const APP_VERSION = __APP_VERSION__;
 const SETTINGS_OPEN_SECTION_KEY = "seenary.settings.open-section";
 const SETTINGS_OPEN_SECTION_LEGACY_KEY = "media-tracker.settings.open-section";
 const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
+  "general",
   "appearance",
-  "home",
   "content",
+  "home",
   "account",
   "sync",
   "data",
-  "general",
 ];
 
 function readStoredSettingsSection(): SettingsSectionId {
   if (typeof window === "undefined") {
-    return "appearance";
+    return "general";
   }
 
   try {
@@ -348,9 +357,9 @@ function readStoredSettingsSection(): SettingsSectionId {
 
     return SETTINGS_SECTION_IDS.includes(migratedSection as SettingsSectionId)
       ? (migratedSection as SettingsSectionId)
-      : "appearance";
+      : "general";
   } catch {
-    return "appearance";
+    return "general";
   }
 }
 
@@ -364,6 +373,8 @@ export function SettingsPage({
   onImportMal,
   onImportTextList,
   onClearMyList,
+  onExportLocalBackup,
+  onImportLocalBackup,
   onLinkAniListAccount,
   onLinkMalAccount,
   onRunSyncNow,
@@ -372,13 +383,15 @@ export function SettingsPage({
 }: SettingsPageProps) {
   const sectionRefs = useRef<Partial<Record<SettingsSectionId, HTMLElement | null>>>({});
   const textImportInputRef = useRef<HTMLInputElement | null>(null);
+  const pdfImportInputRef = useRef<HTMLInputElement | null>(null);
+  const backupImportInputRef = useRef<HTMLInputElement | null>(null);
   const restoredSectionScroll = useRef(false);
   const [openSection, setOpenSection] = useState<SettingsSectionId | null>(
     readStoredSettingsSection
   );
   const [importUsername, setImportUsername] = useState(username);
   const [importPreviewUsername, setImportPreviewUsername] = useState(username);
-  const [importProvider, setImportProvider] = useState<"anilist" | "mal" | "txt">("anilist");
+  const [importProvider, setImportProvider] = useState<"anilist" | "mal" | "txt" | "pdf">("anilist");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
   const [isImporting, setIsImporting] = useState(false);
@@ -405,6 +418,12 @@ export function SettingsPage({
     kind: "success" | "error";
     message: string;
   } | null>(null);
+  const [backupFeedback, setBackupFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
+  const [isExportingBackup, setIsExportingBackup] = useState(false);
+  const [isImportingBackup, setIsImportingBackup] = useState(false);
   const [isClearArmed, setIsClearArmed] = useState(false);
   const [isClearingList, setIsClearingList] = useState(false);
   const [syncStatus, setSyncStatus] = useState({
@@ -1132,6 +1151,7 @@ export function SettingsPage({
       setPreviewError(null);
       setImportFeedback(null);
       setImportPreview(null);
+      setImportPreviewUsername(file.name);
       setSelectedImportIds([]);
       setOpenImportGroups({});
       setIsImportModalOpen(true);
@@ -1147,7 +1167,6 @@ export function SettingsPage({
         return;
       }
 
-      setImportPreviewUsername(file.name);
       setImportPreview(result.preview);
       setSelectedImportIds(
         result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
@@ -1166,6 +1185,81 @@ export function SettingsPage({
     }
   }
 
+  async function openPdfImportPreview(file: File | null) {
+    if (!file) {
+      return;
+    }
+
+    try {
+      setImportProvider("pdf");
+      setTextImportFileName(file.name);
+      setIsPreviewLoading(true);
+      setPreviewError(null);
+      setImportFeedback(null);
+      setImportPreview(null);
+      setImportPreviewUsername(file.name);
+      setSelectedImportIds([]);
+      setOpenImportGroups({});
+      setIsImportModalOpen(true);
+
+      const pdfBase64 = await fileToBase64(file);
+      const result = (await window.api.previewPdfImport(
+        pdfBase64,
+        settings.hideAdultContent
+      )) as ImportPreviewResponse;
+
+      if (!result.ok || !result.preview) {
+        setPreviewError(result.message || "Failed to preview PDF list.");
+        return;
+      }
+
+      setImportPreview(result.preview);
+      setSelectedImportIds(
+        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      );
+      setOpenImportGroups(
+        Object.fromEntries(
+          result.preview.groups.map((group, index) => [group.status, index < 2])
+        )
+      );
+    } finally {
+      setIsPreviewLoading(false);
+
+      if (pdfImportInputRef.current) {
+        pdfImportInputRef.current.value = "";
+      }
+    }
+  }
+
+  async function importBackupFile(file: File | null) {
+    if (!file || isImportingBackup) {
+      return;
+    }
+
+    try {
+      setIsImportingBackup(true);
+      setBackupFeedback(null);
+      const text = await file.text();
+      const backup = JSON.parse(text);
+      const result = await onImportLocalBackup(backup);
+
+      setBackupFeedback({
+        kind: result.ok ? "success" : "error",
+        message: result.message,
+      });
+    } catch {
+      setBackupFeedback({
+        kind: "error",
+        message: "Could not read this backup file.",
+      });
+    } finally {
+      setIsImportingBackup(false);
+      if (backupImportInputRef.current) {
+        backupImportInputRef.current.value = "";
+      }
+    }
+  }
+
   return (
     <div className="scroll-container h-full overflow-y-auto px-6 py-24 text-white">
       <div className="mx-auto max-w-5xl space-y-8">
@@ -1178,8 +1272,8 @@ export function SettingsPage({
               Settings
             </h1>
             <p className="mt-2 max-w-2xl text-sm leading-6 text-white/50">
-              Organize the app around your taste, your home page rhythm, and how
-              much onboarding you want around.
+              Organize the app around general behavior, visual customization,
+              content preferences, accounts, sync, and local data.
             </p>
           </div>
 
@@ -1194,12 +1288,193 @@ export function SettingsPage({
         </header>
 
         <div className="space-y-4">
+          <div ref={rememberSectionRef("general")} className="scroll-mt-24">
+            <AccordionSection
+              icon={SparklesIcon}
+              title="General"
+              description="App information, startup behavior, shortcuts, and welcome screen access."
+              summary={[
+                `Version ${APP_VERSION}`,
+                ...(window.desktopStartup
+                  ? [desktopStartup.openAtLogin ? "Launches at login" : "Manual launch"]
+                  : []),
+                "Welcome replay",
+              ]}
+              open={openSection === "general"}
+              onToggle={() => toggleSection("general")}
+            >
+            <div className="space-y-5">
+              <div>
+                <SectionHeading
+                  icon={SparklesIcon}
+                  title="About Seenary"
+                  description="Quick app information for this install."
+                />
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <InfoCard label="Version" value={APP_VERSION} />
+                  <InfoCard label="Profile" value={username} />
+                </div>
+              </div>
+
+              {window.desktopStartup && (
+                <div>
+                  <SectionHeading
+                    icon={RocketLaunchIcon}
+                    title="Startup"
+                    description="Choose whether Seenary should open when you sign in."
+                  />
+
+                  <div className="space-y-3">
+                    <ToggleSetting
+                      icon={RocketLaunchIcon}
+                      title="Launch Seenary at login"
+                      description={
+                        desktopStartup.available
+                          ? "Open the desktop app automatically after you sign in to your computer."
+                          : "This option is available after installing the desktop app."
+                      }
+                      checked={desktopStartup.openAtLogin}
+                      disabled={!desktopStartup.available || desktopStartup.loading}
+                      onChange={saveDesktopStartup}
+                    />
+
+                    {desktopStartup.feedback && (
+                      <p
+                        className={`rounded-2xl border px-3 py-2 text-sm ${
+                          desktopStartup.feedback.kind === "success"
+                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                            : "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                        }`}
+                      >
+                        {desktopStartup.feedback.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {desktopShortcut.available && (
+                <div>
+                  <SectionHeading
+                    icon={CommandLineIcon}
+                    title="Desktop shortcut"
+                    description="Choose the global shortcut that hides or shows the desktop app."
+                  />
+
+                  <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                      <div>
+                        <p className="font-semibold text-white">Hide/show Seenary</p>
+                        <p className="mt-2 max-w-2xl text-sm leading-6 text-white/45">
+                          Use Electron accelerator format, such as Control+Shift+Space or Alt+Space.
+                          Turn it off if the shortcut conflicts with another app.
+                        </p>
+                      </div>
+
+                      <button
+                        type="button"
+                        disabled={desktopShortcut.loading}
+                        onClick={() => saveDesktopShortcut({ enabled: !desktopShortcut.enabled })}
+                        className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                          desktopShortcut.enabled
+                            ? "border border-white/10 bg-white/[0.04] text-white/75 hover:bg-white/8"
+                            : "border border-white/10 bg-white text-black hover:opacity-90"
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        {desktopShortcut.enabled ? "Disable shortcut" : "Enable shortcut"}
+                      </button>
+                    </div>
+
+                    <div className="mt-5 flex flex-col gap-3 md:flex-row">
+                      <input
+                        value={desktopShortcut.draftAccelerator}
+                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                        onChange={(event) =>
+                          setDesktopShortcut((current) => ({
+                            ...current,
+                            draftAccelerator: event.target.value,
+                          }))
+                        }
+                        className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/25 disabled:cursor-not-allowed disabled:opacity-50"
+                        placeholder="Control+Shift+Space"
+                      />
+                      <button
+                        type="button"
+                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                        onClick={() => saveDesktopShortcut({ enabled: true })}
+                        className="rounded-2xl border border-white/10 bg-white px-5 py-3 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Save shortcut
+                      </button>
+                    </div>
+
+                    <div className="mt-4 flex flex-wrap gap-2">
+                      {SHORTCUT_PRESETS.map((accelerator) => (
+                        <button
+                          key={accelerator}
+                          type="button"
+                          disabled={desktopShortcut.loading}
+                          onClick={() =>
+                            setDesktopShortcut((current) => ({
+                              ...current,
+                              enabled: true,
+                              draftAccelerator: accelerator,
+                            }))
+                          }
+                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+                            desktopShortcut.draftAccelerator === accelerator
+                              ? "border-white/25 bg-white/12 text-white"
+                              : "border-white/10 bg-white/[0.04] text-white/55 hover:bg-white/8 hover:text-white"
+                          } disabled:cursor-not-allowed disabled:opacity-50`}
+                        >
+                          {accelerator}
+                        </button>
+                      ))}
+                    </div>
+
+                    {desktopShortcut.feedback && (
+                      <p
+                        className={`mt-4 rounded-2xl border px-3 py-2 text-sm ${
+                          desktopShortcut.feedback.kind === "success"
+                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
+                            : "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                        }`}
+                      >
+                        {desktopShortcut.feedback.message}
+                      </p>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                <ActionCard
+                  icon={SparklesIcon}
+                  title="Show welcome screen again"
+                  description="Reopen onboarding whenever you want to revisit the welcome flow."
+                  actionLabel="Open welcome"
+                  onAction={onShowWelcomeScreen}
+                />
+
+                <ActionCard
+                  icon={ArrowPathIcon}
+                  title="Reset preferences"
+                  description="Return the settings panel to the default app behavior and visual style."
+                  actionLabel="Reset defaults"
+                  onAction={onResetSettings}
+                />
+              </div>
+            </div>
+            </AccordionSection>
+          </div>
+
           <div ref={rememberSectionRef("appearance")} className="scroll-mt-24">
             <AccordionSection
               icon={PaintBrushIcon}
               title="Appearance"
-              description="Theme color and title presentation across the app."
-              summary={[`Accent ${capitalize(settings.themeAccent)}`, titleLabel]}
+              description="Visual customization for the app."
+              summary={[`Accent ${capitalize(settings.themeAccent)}`]}
               open={openSection === "appearance"}
               onToggle={() => toggleSection("appearance")}
             >
@@ -1248,7 +1523,23 @@ export function SettingsPage({
                   })}
                 </div>
               </div>
+            </div>
+            </AccordionSection>
+          </div>
 
+          <div ref={rememberSectionRef("content")} className="scroll-mt-24">
+            <AccordionSection
+              icon={EyeSlashIcon}
+              title="Content"
+              description="Control anime title display and what appears in discovery surfaces."
+              summary={[
+                titleLabel,
+                settings.hideAdultContent ? "18+ hidden" : "18+ visible",
+              ]}
+              open={openSection === "content"}
+              onToggle={() => toggleSection("content")}
+            >
+            <div className="space-y-6">
               <div>
                 <SectionHeading
                   icon={LanguageIcon}
@@ -1287,6 +1578,26 @@ export function SettingsPage({
                       </button>
                     );
                   })}
+                </div>
+              </div>
+
+              <div>
+                <SectionHeading
+                  icon={EyeSlashIcon}
+                  title="Discovery filters"
+                  description="Choose which AniList content can appear while browsing."
+                />
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <ToggleSetting
+                    icon={EyeSlashIcon}
+                    title="Hide 18+ content"
+                    description="Hide adult anime from search results and trending picks."
+                    checked={settings.hideAdultContent}
+                    onChange={(checked) =>
+                      onUpdateSettings({ hideAdultContent: checked })
+                    }
+                  />
                 </div>
               </div>
             </div>
@@ -1357,37 +1668,6 @@ export function SettingsPage({
                 </p>
               </div>
             </div>
-            </AccordionSection>
-          </div>
-
-          <div ref={rememberSectionRef("content")} className="scroll-mt-24">
-            <AccordionSection
-              icon={EyeSlashIcon}
-              title="Content & Discovery"
-              description="Control what appears in search results and discovery surfaces."
-              summary={[settings.hideAdultContent ? "18+ hidden" : "18+ visible"]}
-              open={openSection === "content"}
-              onToggle={() => toggleSection("content")}
-            >
-              <div>
-                <SectionHeading
-                  icon={EyeSlashIcon}
-                  title="Discovery filters"
-                  description="Choose which AniList content can appear while browsing."
-                />
-
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                  <ToggleSetting
-                    icon={EyeSlashIcon}
-                    title="Hide 18+ content"
-                    description="Hide adult anime from search results and trending picks."
-                    checked={settings.hideAdultContent}
-                    onChange={(checked) =>
-                      onUpdateSettings({ hideAdultContent: checked })
-                    }
-                  />
-                </div>
-              </div>
             </AccordionSection>
           </div>
 
@@ -1788,6 +2068,79 @@ export function SettingsPage({
               onToggle={() => toggleSection("data")}
             >
             <div className="space-y-6">
+              <div className="rounded-3xl border border-cyan-300/15 bg-cyan-300/8 p-5">
+                <p className="font-semibold text-white">Local data and backups</p>
+                <p className="mt-2 text-sm leading-6 text-white/70">
+                  Your web list is saved on this browser and device. Link AniList or MyAnimeList
+                  for sync, or export a backup file if you want to move your Seenary data to another PC.
+                </p>
+
+                <div className="mt-5 flex flex-wrap gap-3">
+                  <button
+                    type="button"
+                    disabled={isExportingBackup}
+                    onClick={async () => {
+                      try {
+                        setIsExportingBackup(true);
+                        setBackupFeedback(null);
+                        await onExportLocalBackup();
+                        setBackupFeedback({
+                          kind: "success",
+                          message: "Backup exported.",
+                        });
+                      } catch {
+                        setBackupFeedback({
+                          kind: "error",
+                          message: "Failed to export backup.",
+                        });
+                      } finally {
+                        setIsExportingBackup(false);
+                      }
+                    }}
+                    className={`rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                      isExportingBackup
+                        ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                        : "border border-white/10 bg-white text-black hover:opacity-90"
+                    }`}
+                  >
+                    {isExportingBackup ? "Exporting..." : "Export backup"}
+                  </button>
+
+                  <input
+                    ref={backupImportInputRef}
+                    type="file"
+                    accept=".json,application/json"
+                    className="hidden"
+                    onChange={(event) => importBackupFile(event.target.files?.[0] ?? null)}
+                  />
+
+                  <button
+                    type="button"
+                    disabled={isImportingBackup}
+                    onClick={() => backupImportInputRef.current?.click()}
+                    className={`rounded-2xl border px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                      isImportingBackup
+                        ? "cursor-not-allowed border-white/5 bg-white/[0.03] text-white/35"
+                        : "border-white/10 bg-white/[0.04] text-white/80 hover:bg-white/8 hover:text-white"
+                    }`}
+                  >
+                    {isImportingBackup ? "Importing..." : "Import backup"}
+                  </button>
+                </div>
+
+                {backupFeedback && (
+                  <div
+                    className={`mt-5 rounded-3xl border p-4 ${
+                      backupFeedback.kind === "success"
+                        ? "border-emerald-400/20 bg-emerald-400/10"
+                        : "border-rose-400/20 bg-rose-400/10"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-white">{backupFeedback.message}</p>
+                  </div>
+                )}
+              </div>
+
               <div>
                 <SectionHeading
                   icon={CloudArrowDownIcon}
@@ -1881,8 +2234,8 @@ export function SettingsPage({
                 />
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
-                    <div>
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0 flex-1">
                       <p className="font-semibold text-white">
                         {malLink.linked
                           ? `Ready to import ${malLink.account?.malUsername ?? "your MAL list"}`
@@ -1933,6 +2286,9 @@ export function SettingsPage({
                       <p className="mt-2 text-sm leading-6 text-white/45">
                         Lines without progress are imported as completed. Lines like 3/12 are imported with that progress.
                       </p>
+                      <p className="mt-2 text-sm leading-6 text-amber-100/75">
+                        Larger files can still take a moment, but Seenary now matches titles in faster batches before showing the import preview.
+                      </p>
                     </div>
 
                     <input
@@ -1947,7 +2303,7 @@ export function SettingsPage({
                       type="button"
                       disabled={isPreviewLoading}
                       onClick={() => textImportInputRef.current?.click()}
-                      className={`rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                      className={`inline-flex w-full items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 md:w-auto md:shrink-0 ${
                         isPreviewLoading
                           ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
                           : "border border-white/10 bg-white text-black hover:opacity-90"
@@ -1962,6 +2318,59 @@ export function SettingsPage({
                   <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
                     <p className="text-sm leading-6 text-white/70">
                       Text imports use best-effort AniList matching. Review the preview before importing.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <SectionHeading
+                  icon={DocumentTextIcon}
+                  title="Import from PDF"
+                  description="Extract anime titles from a text-based PDF, then review matched titles before importing."
+                />
+
+                <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0 flex-1">
+                      <p className="font-semibold text-white">
+                        Choose a .pdf file
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-white/45">
+                        Best for browser-exported pages and other PDFs with selectable text.
+                      </p>
+                      <p className="mt-2 text-sm leading-6 text-amber-100/75">
+                        PDF import is experimental. Scanned image PDFs may not contain readable titles.
+                      </p>
+                    </div>
+
+                    <input
+                      ref={pdfImportInputRef}
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      className="hidden"
+                      onChange={(event) => openPdfImportPreview(event.target.files?.[0] ?? null)}
+                    />
+
+                    <button
+                      type="button"
+                      disabled={isPreviewLoading}
+                      onClick={() => pdfImportInputRef.current?.click()}
+                      className={`inline-flex w-full items-center justify-center rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 md:w-auto md:shrink-0 ${
+                        isPreviewLoading
+                          ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                          : "border border-white/10 bg-white text-black hover:opacity-90"
+                      }`}
+                    >
+                      {isPreviewLoading && importProvider === "pdf"
+                        ? "Reading PDF..."
+                        : "Choose PDF"}
+                    </button>
+                  </div>
+
+                  <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
+                    <p className="text-sm leading-6 text-white/70">
+                      Seenary extracts readable PDF text, matches likely title lines through AniList, and lets you confirm every matched anime.
                     </p>
                   </div>
                 </div>
@@ -2060,174 +2469,6 @@ export function SettingsPage({
             </div>
             </AccordionSection>
           </div>
-
-          <div ref={rememberSectionRef("general")} className="scroll-mt-24">
-            <AccordionSection
-              icon={SparklesIcon}
-              title="General"
-              description="Welcome screen and small quality-of-life recovery actions."
-              summary={[
-                ...(window.desktopStartup
-                  ? [desktopStartup.openAtLogin ? "Launches at login" : "Manual launch"]
-                  : []),
-                "Welcome replay",
-                "Recovery actions",
-              ]}
-              open={openSection === "general"}
-              onToggle={() => toggleSection("general")}
-            >
-            <div className="space-y-5">
-              {window.desktopStartup && (
-                <div>
-                  <SectionHeading
-                    icon={RocketLaunchIcon}
-                    title="Startup"
-                    description="Choose whether Seenary should open when you sign in."
-                  />
-
-                  <div className="space-y-3">
-                    <ToggleSetting
-                      icon={RocketLaunchIcon}
-                      title="Launch Seenary at login"
-                      description={
-                        desktopStartup.available
-                          ? "Open the desktop app automatically after you sign in to your computer."
-                          : "This option is available after installing the desktop app."
-                      }
-                      checked={desktopStartup.openAtLogin}
-                      disabled={!desktopStartup.available || desktopStartup.loading}
-                      onChange={saveDesktopStartup}
-                    />
-
-                    {desktopStartup.feedback && (
-                      <p
-                        className={`rounded-2xl border px-3 py-2 text-sm ${
-                          desktopStartup.feedback.kind === "success"
-                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-                            : "border-rose-400/20 bg-rose-400/10 text-rose-100"
-                        }`}
-                      >
-                        {desktopStartup.feedback.message}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {desktopShortcut.available && (
-                <div>
-                  <SectionHeading
-                    icon={CommandLineIcon}
-                    title="Desktop shortcut"
-                    description="Choose the global shortcut that hides or shows the desktop app."
-                  />
-
-                  <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-                    <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                      <div>
-                        <p className="font-semibold text-white">Hide/show Seenary</p>
-                        <p className="mt-2 max-w-2xl text-sm leading-6 text-white/45">
-                          Use Electron accelerator format, such as Control+Shift+Space or Alt+Space.
-                          Turn it off if the shortcut conflicts with another app.
-                        </p>
-                      </div>
-
-                      <button
-                        type="button"
-                        disabled={desktopShortcut.loading}
-                        onClick={() => saveDesktopShortcut({ enabled: !desktopShortcut.enabled })}
-                        className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                          desktopShortcut.enabled
-                            ? "border border-white/10 bg-white/[0.04] text-white/75 hover:bg-white/8"
-                            : "border border-white/10 bg-white text-black hover:opacity-90"
-                        } disabled:cursor-not-allowed disabled:opacity-50`}
-                      >
-                        {desktopShortcut.enabled ? "Disable shortcut" : "Enable shortcut"}
-                      </button>
-                    </div>
-
-                    <div className="mt-5 flex flex-col gap-3 md:flex-row">
-                      <input
-                        value={desktopShortcut.draftAccelerator}
-                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
-                        onChange={(event) =>
-                          setDesktopShortcut((current) => ({
-                            ...current,
-                            draftAccelerator: event.target.value,
-                          }))
-                        }
-                        className="min-w-0 flex-1 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm text-white outline-none placeholder:text-white/30 focus:border-white/25 disabled:cursor-not-allowed disabled:opacity-50"
-                        placeholder="Control+Shift+Space"
-                      />
-                      <button
-                        type="button"
-                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
-                        onClick={() => saveDesktopShortcut({ enabled: true })}
-                        className="rounded-2xl border border-white/10 bg-white px-5 py-3 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                      >
-                        Save shortcut
-                      </button>
-                    </div>
-
-                    <div className="mt-4 flex flex-wrap gap-2">
-                      {SHORTCUT_PRESETS.map((accelerator) => (
-                        <button
-                          key={accelerator}
-                          type="button"
-                          disabled={desktopShortcut.loading}
-                          onClick={() =>
-                            setDesktopShortcut((current) => ({
-                              ...current,
-                              enabled: true,
-                              draftAccelerator: accelerator,
-                            }))
-                          }
-                          className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
-                            desktopShortcut.draftAccelerator === accelerator
-                              ? "border-white/25 bg-white/12 text-white"
-                              : "border-white/10 bg-white/[0.04] text-white/55 hover:bg-white/8 hover:text-white"
-                          } disabled:cursor-not-allowed disabled:opacity-50`}
-                        >
-                          {accelerator}
-                        </button>
-                      ))}
-                    </div>
-
-                    {desktopShortcut.feedback && (
-                      <p
-                        className={`mt-4 rounded-2xl border px-3 py-2 text-sm ${
-                          desktopShortcut.feedback.kind === "success"
-                            ? "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
-                            : "border-rose-400/20 bg-rose-400/10 text-rose-100"
-                        }`}
-                      >
-                        {desktopShortcut.feedback.message}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-                <ActionCard
-                  icon={SparklesIcon}
-                  title="Show welcome screen again"
-                  description="Reopen the intro screen whenever you want a fresh walkthrough."
-                  actionLabel="Open welcome"
-                  onAction={onShowWelcomeScreen}
-                />
-
-                <ActionCard
-                  icon={ArrowPathIcon}
-                  title="Reset preferences"
-                  description="Return the settings panel to the default app behavior and visual style."
-                  actionLabel="Reset defaults"
-                  onAction={onResetSettings}
-                />
-              </div>
-            </div>
-            </AccordionSection>
-          </div>
         </div>
       </div>
 
@@ -2279,7 +2520,7 @@ export function SettingsPage({
           try {
             setIsImporting(true);
             const result =
-              importProvider === "txt"
+              importProvider === "txt" || importProvider === "pdf"
                 ? await onImportTextList(
                     importPreview?.groups.flatMap((group) => group.items) ?? [],
                     selectedImportIds
@@ -2502,6 +2743,17 @@ function ActionCard({
   );
 }
 
+function InfoCard({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/35">
+        {label}
+      </p>
+      <p className="mt-3 text-lg font-semibold text-white">{value}</p>
+    </div>
+  );
+}
+
 function ImportStat({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-black/15 px-3 py-3">
@@ -2668,6 +2920,84 @@ function SyncActivityModal({
   );
 }
 
+function getImportModalCopy(
+  provider: "anilist" | "mal" | "txt" | "pdf",
+  username: string,
+  preview: ImportPreviewResponse["preview"] | null,
+  isPreviewLoading: boolean
+) {
+  const sourceName =
+    username ||
+    (provider === "txt"
+      ? "your text file"
+      : provider === "pdf"
+        ? "your PDF"
+      : provider === "mal"
+        ? "your MyAnimeList account"
+        : "your AniList account");
+
+  if (provider === "txt" || provider === "pdf") {
+    const matchedCount =
+      preview?.groups.reduce((sum, group) => sum + group.items.length, 0) ?? 0;
+    const totalFound = preview?.totalFound ?? 0;
+    const sourceType = provider === "pdf" ? "PDF" : "text file";
+
+    return {
+      title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
+      description: isPreviewLoading
+        ? `Reading ${sourceName} and matching extracted title lines to AniList anime records.`
+        : preview
+          ? `Matched ${matchedCount} of ${totalFound} line${totalFound === 1 ? "" : "s"} from ${sourceName}. Review the matches, then import only the titles you want.`
+          : `Previewing ${sourceName}. Review the matches, then import only the titles you want.`,
+      loadingTitle: `Matching titles from your ${sourceType}`,
+      loadingDescription:
+        `Seenary checks each extracted line against AniList so the preview can show covers, episodes, and the exact anime that will be imported. Larger ${sourceType}s can take a few minutes.`,
+    };
+  }
+
+  if (provider === "mal") {
+    return {
+      title: isPreviewLoading ? "Loading MyAnimeList import preview" : "Choose exact anime to import",
+      description: `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
+      loadingTitle: "Loading MyAnimeList preview",
+      loadingDescription:
+        "Seenary is reading your linked MyAnimeList account and preparing the review list.",
+    };
+  }
+
+  return {
+    title: isPreviewLoading ? "Loading AniList import preview" : "Choose exact anime to import",
+    description: `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
+    loadingTitle: "Loading AniList preview",
+    loadingDescription:
+      "Seenary is reading the public AniList list and preparing the review list.",
+  };
+}
+
+function formatElapsedSeconds(seconds: number) {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = seconds % 60;
+
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function fileToBase64(file: File) {
+  return new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const result = String(reader.result || "");
+      resolve(result.includes(",") ? result.split(",").pop() || "" : result);
+    };
+    reader.onerror = () => reject(reader.error || new Error("Failed to read file."));
+    reader.readAsDataURL(file);
+  });
+}
+
 function ImportSelectionModal({
   isOpen,
   provider,
@@ -2689,7 +3019,7 @@ function ImportSelectionModal({
   onConfirm,
 }: {
   isOpen: boolean;
-  provider: "anilist" | "mal" | "txt";
+  provider: "anilist" | "mal" | "txt" | "pdf";
   username: string;
   preview: ImportPreviewResponse["preview"] | null;
   previewError: string | null;
@@ -2707,7 +3037,25 @@ function ImportSelectionModal({
   onDeselectGroup: (status: string) => void;
   onConfirm: () => void | Promise<void>;
 }) {
+  const [loadingSeconds, setLoadingSeconds] = useState(0);
+
+  useEffect(() => {
+    if (!isOpen || !isPreviewLoading) {
+      setLoadingSeconds(0);
+      return;
+    }
+
+    const startedAt = Date.now();
+    const intervalId = window.setInterval(() => {
+      setLoadingSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+
+    return () => window.clearInterval(intervalId);
+  }, [isOpen, isPreviewLoading]);
+
   if (!isOpen) return null;
+
+  const copy = getImportModalCopy(provider, username, preview, isPreviewLoading);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-6 py-10">
@@ -2724,25 +3072,17 @@ function ImportSelectionModal({
             <p className="text-sm uppercase tracking-[0.3em] text-white/35">
               {provider === "txt"
                 ? "Text file import"
+                : provider === "pdf"
+                  ? "PDF import"
                 : provider === "mal"
                   ? "MyAnimeList import"
                   : "AniList import"}
             </p>
             <h2 className="mt-3 text-2xl font-bold tracking-tight text-white">
-              Choose exact anime to import
+              {copy.title}
             </h2>
             <p className="mt-2 max-w-3xl text-sm leading-6 text-white/50">
-              Previewing{" "}
-              <span className="text-white">
-                {username ||
-                  (provider === "txt"
-                    ? "your text file"
-                    : provider === "mal"
-                      ? "your MyAnimeList account"
-                      : "your AniList account")}
-              </span>
-              .
-              Expand a group, tick the titles you want, then import only those.
+              {copy.description}
             </p>
           </div>
 
@@ -2757,8 +3097,20 @@ function ImportSelectionModal({
 
         <div className="scroll-container min-h-0 flex-1 overflow-y-auto px-6 py-5">
           {isPreviewLoading ? (
-            <div className="flex h-full items-center justify-center text-white/65">
-              Loading AniList preview...
+            <div className="flex h-full flex-col items-center justify-center px-6 text-center text-white/65">
+              <ArrowPathIcon className="h-7 w-7 animate-spin text-white/35" />
+              <p className="mt-5 text-sm font-semibold text-white/75">
+                {copy.loadingTitle}
+              </p>
+              <p className="mt-2 max-w-md text-sm leading-6 text-white/42">
+                {copy.loadingDescription}
+              </p>
+              <div className="mt-6 w-full max-w-sm overflow-hidden rounded-full bg-white/10">
+                <div className="import-activity-bar h-2 w-1/3 rounded-full bg-[var(--app-accent)] shadow-[0_0_18px_var(--app-accent)]" />
+              </div>
+              <p className="mt-3 text-xs text-white/35">
+                Still matching titles - {formatElapsedSeconds(loadingSeconds)} elapsed
+              </p>
             </div>
           ) : previewError ? (
             <div className="rounded-3xl border border-rose-400/20 bg-rose-400/10 p-5 text-sm text-white/80">
@@ -2782,6 +3134,32 @@ function ImportSelectionModal({
                   Deselect all
                 </button>
               </div>
+
+              {(provider === "txt" || provider === "pdf") && preview.unmatched?.length ? (
+                <div className="rounded-3xl border border-amber-300/20 bg-amber-300/10 p-4">
+                  <p className="text-sm font-semibold text-white">
+                    {preview.unmatched.length} line{preview.unmatched.length === 1 ? "" : "s"} skipped
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-white/65">
+                    These lines could not be matched confidently. You can import the matched titles now and add the skipped ones manually later.
+                  </p>
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {preview.unmatched.slice(0, 12).map((line) => (
+                      <span
+                        key={line}
+                        className="rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-white/70"
+                      >
+                        {line}
+                      </span>
+                    ))}
+                    {preview.unmatched.length > 12 && (
+                      <span className="rounded-full border border-white/10 bg-black/20 px-3 py-1.5 text-xs text-white/45">
+                        +{preview.unmatched.length - 12} more
+                      </span>
+                    )}
+                  </div>
+                </div>
+              ) : null}
 
               {preview.groups.map((group) => {
                 const groupSelectedCount = group.items.filter((item) =>
@@ -2872,7 +3250,7 @@ function ImportSelectionModal({
                                 <p className="line-clamp-2 text-sm font-semibold text-white">
                                   {title}
                                 </p>
-                                {provider === "txt" && item.sourceTitle && item.sourceTitle !== title && (
+                                {(provider === "txt" || provider === "pdf") && item.sourceTitle && item.sourceTitle !== title && (
                                   <p className="mt-1 line-clamp-1 text-xs text-white/35">
                                     From: {item.sourceTitle}
                                   </p>
@@ -3034,14 +3412,4 @@ function formatValue(value: unknown) {
   }
 
   return String(value);
-}
-
-function formatDateTime(value: string) {
-  const date = new Date(value);
-
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleString();
 }

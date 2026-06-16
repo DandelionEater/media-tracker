@@ -1,5 +1,13 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
+function getSystemLocaleInfo() {
+  try {
+    return ipcRenderer.sendSync('system-locale:get');
+  } catch {
+    return { locale: null, locales: [] };
+  }
+}
+
 contextBridge.exposeInMainWorld('desktopUpdater', {
   onUpdateAvailable: (callback) => {
     const handler = (_event, payload) => callback(payload);
@@ -36,3 +44,5 @@ contextBridge.exposeInMainWorld('desktopStartup', {
   getStartupSetting: () => ipcRenderer.invoke('startup:get'),
   setStartupSetting: (enabled) => ipcRenderer.invoke('startup:set', enabled),
 });
+
+contextBridge.exposeInMainWorld('systemLocale', getSystemLocaleInfo());
