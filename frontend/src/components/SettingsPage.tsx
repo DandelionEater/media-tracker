@@ -2177,13 +2177,18 @@ export function SettingsPage({
                       type="button"
                       disabled={isPreviewLoading || !importUsername.trim()}
                       onClick={openImportPreview}
-                      className={`mt-7 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                      className={`mt-7 inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
                         isPreviewLoading || !importUsername.trim()
                           ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
                           : "border border-white/10 bg-white text-black hover:opacity-90"
                       }`}
                     >
-                      {isPreviewLoading ? "Loading preview..." : "Choose what to import"}
+                      {isPreviewLoading && importProvider === "anilist" && (
+                        <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                      )}
+                      {isPreviewLoading && importProvider === "anilist"
+                        ? "Matching titles..."
+                        : "Choose what to import"}
                     </button>
                   </div>
 
@@ -2250,14 +2255,17 @@ export function SettingsPage({
                       type="button"
                       disabled={isPreviewLoading || !malLink.linked}
                       onClick={openMalImportPreview}
-                      className={`rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                      className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
                         isPreviewLoading || !malLink.linked
                           ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
                           : "border border-white/10 bg-white text-black hover:opacity-90"
                       }`}
                     >
+                      {isPreviewLoading && importProvider === "mal" && (
+                        <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                      )}
                       {isPreviewLoading && importProvider === "mal"
-                        ? "Loading preview..."
+                        ? "Matching titles..."
                         : "Choose what to import"}
                     </button>
                   </div>
@@ -2957,20 +2965,24 @@ function getImportModalCopy(
 
   if (provider === "mal") {
     return {
-      title: isPreviewLoading ? "Loading MyAnimeList import preview" : "Choose exact anime to import",
-      description: `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
-      loadingTitle: "Loading MyAnimeList preview",
+      title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
+      description: isPreviewLoading
+        ? `Reading ${sourceName} and matching list entries to AniList anime records.`
+        : `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
+      loadingTitle: "Matching titles from your MyAnimeList account",
       loadingDescription:
-        "Seenary is reading your linked MyAnimeList account and preparing the review list.",
+        "Seenary checks your linked MyAnimeList entries against AniList so the preview can show covers, episodes, and the exact anime that will be imported.",
     };
   }
 
   return {
-    title: isPreviewLoading ? "Loading AniList import preview" : "Choose exact anime to import",
-    description: `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
-    loadingTitle: "Loading AniList preview",
+    title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
+    description: isPreviewLoading
+      ? `Reading ${sourceName} and preparing matched AniList anime records.`
+      : `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
+    loadingTitle: "Matching titles from your AniList account",
     loadingDescription:
-      "Seenary is reading the public AniList list and preparing the review list.",
+      "Seenary is reading the public AniList list so the preview can show covers, episodes, and the exact anime that will be imported.",
   };
 }
 

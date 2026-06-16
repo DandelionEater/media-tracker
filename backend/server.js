@@ -793,6 +793,16 @@ function sanitizeImportStatus(status) {
   }
 }
 
+function mapAniListDate(date) {
+  if (!date?.year) {
+    return null;
+  }
+
+  const month = String(date.month || 1).padStart(2, '0');
+  const day = String(date.day || 1).padStart(2, '0');
+  return `${date.year}-${month}-${day}`;
+}
+
 function buildAniListImportPreview(collection) {
   const lists = Array.isArray(collection?.lists) ? collection.lists : [];
   const grouped = {
