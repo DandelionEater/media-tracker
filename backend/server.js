@@ -793,6 +793,11 @@ function sanitizeImportStatus(status) {
   }
 }
 
+function sanitizeStatus(status) {
+  const value = String(status || '').trim().toLowerCase();
+  return IMPORT_STATUS_ORDER.includes(value) ? value : 'planned';
+}
+
 function mapAniListDate(date) {
   if (!date?.year) {
     return null;
