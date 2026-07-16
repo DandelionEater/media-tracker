@@ -8,16 +8,14 @@ const path = require('path');
 
 const anilist = require('./anilist');
 const mal = require('./mal');
-const { previewMalImport, importMalEntries } = require('./malImport');
-const { previewTextImport, previewPdfImport, importTextEntries } = require('./textImport');
+const { previewMalImport } = require('./malImport');
+const { previewTextImport, previewPdfImport } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
   dbPath,
-  saveAnime,
-  saveAnimeSummary,
   getAnimeById,
-  getAppSetting,
-  setAppSetting,
+  getPersonDetails,
+  savePersonDetails,
   getSafeUserById,
   getUserByNormalizedUsername,
   getAniListAccountByAniListUserId,
@@ -32,14 +30,13 @@ const {
   upsertMalAccount,
   updateMalAccountImportTime,
   updateTutorialDismissed,
-  insertSyncHistory,
   createWebSessionRecord,
   getWebSessionByHash,
   updateWebSessionExpiry,
   deleteWebSession,
   deleteExpiredWebSessions,
 } = require('./db');
-const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
+const { mapDbAnimeForFrontend } = require('./animeMapper');
 const {
   registerUser,
   loginUser,
@@ -51,23 +48,16 @@ const {
 } = require('./auth');
 const {
   getMyAnimeList,
-  getMyAnimeEntry,
-  saveMyAnimeEntry,
-  removeMyAnimeEntry,
-  clearMyAnimeList,
-  importAniListEntries,
 } = require('./lists');
 const {
-  runSyncForUser,
-  getSyncStatus,
-  getSyncActivity,
-  setAutoSyncEnabled,
   getStatelessSyncStatus,
   runStatelessSyncForUser,
 } = require('./sync');
 
 const PORT = Number(process.env.PORT || 3000);
 const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const MAX_RPC_BODY_BYTES = Number(process.env.MAX_RPC_BODY_BYTES || 40 * 1024 * 1024);
 const DEFAULT_WEB_ORIGIN = 'https://web.seenary.app';
 const ALLOWED_ORIGINS = new Set(
   (process.env.WEB_ORIGINS || process.env.WEB_ORIGIN || DEFAULT_WEB_ORIGIN)
@@ -99,16 +89,26 @@ const DESKTOP_UPDATES_DIR =
   process.env.DESKTOP_UPDATES_DIR || path.join(path.dirname(dbPath), 'desktop-updates');
 
 const DEFAULT_APP_SETTINGS = {
-  themeAccent: 'cyan',
+  themeAccent: 'violet',
+  customAccentColor: '#a78bfa',
   titleLanguage: 'userPreferred',
   showTrendingCarousel: true,
   autoRotateTrending: true,
   autoScrollHomeShelves: true,
   hideAdultContent: true,
+  overlayOpacity: 100,
+  overlayBackground: 'solid',
+  navbarStyle: 'integrated',
+  browseCardStyle: 'default',
+  backgroundDim: 65,
+  animationLevel: 'full',
+  compactMode: false,
+  discoverDensity: 'balanced',
+  homeDensity: 'balanced',
+  myListDensity: 'balanced',
+  startView: 'home',
 };
 
-const ALLOWED_THEME_ACCENTS = ['cyan', 'violet', 'rose', 'amber', 'emerald'];
-const ALLOWED_TITLE_LANGUAGES = ['userPreferred', 'english', 'romaji', 'native'];
 const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
 const pendingAniListFlows = new Map();
 const pendingAniListSignupByFlowId = new Map();
@@ -636,14 +636,30 @@ function sendDesktopUpdateFile(req, res) {
 function readJson(req) {
   return new Promise((resolve, reject) => {
     let body = '';
+    let bodyTooLarge = false;
     req.on('data', (chunk) => {
+      if (bodyTooLarge) {
+        return;
+      }
+
       body += chunk;
-      if (body.length > 1024 * 1024) {
-        req.destroy();
-        reject(new Error('Request body is too large.'));
+      if (body.length > MAX_RPC_BODY_BYTES) {
+        bodyTooLarge = true;
+        body = '';
+        reject(
+          new Error(
+            `Request body is too large. Import files must stay under ${Math.floor(
+              MAX_RPC_BODY_BYTES / 1024 / 1024
+            )} MB.`
+          )
+        );
       }
     });
     req.on('end', () => {
+      if (bodyTooLarge) {
+        return;
+      }
+
       if (!body) {
         resolve({});
         return;
@@ -656,120 +672,6 @@ function readJson(req) {
       }
     });
     req.on('error', reject);
-  });
-}
-
-function getAppPreferences() {
-  const themeAccent = getAppSetting('preferences.themeAccent');
-  const titleLanguage = getAppSetting('preferences.titleLanguage');
-  const showTrendingCarousel = getAppSetting('preferences.showTrendingCarousel');
-  const autoRotateTrending = getAppSetting('preferences.autoRotateTrending');
-  const autoScrollHomeShelves = getAppSetting('preferences.autoScrollHomeShelves');
-  const hideAdultContent = getAppSetting('preferences.hideAdultContent');
-
-  return {
-    themeAccent: ALLOWED_THEME_ACCENTS.includes(themeAccent)
-      ? themeAccent
-      : DEFAULT_APP_SETTINGS.themeAccent,
-    titleLanguage: ALLOWED_TITLE_LANGUAGES.includes(titleLanguage)
-      ? titleLanguage
-      : DEFAULT_APP_SETTINGS.titleLanguage,
-    showTrendingCarousel:
-      showTrendingCarousel === null
-        ? DEFAULT_APP_SETTINGS.showTrendingCarousel
-        : showTrendingCarousel === 'true',
-    autoRotateTrending:
-      autoRotateTrending === null
-        ? DEFAULT_APP_SETTINGS.autoRotateTrending
-        : autoRotateTrending === 'true',
-    autoScrollHomeShelves:
-      autoScrollHomeShelves === null
-        ? DEFAULT_APP_SETTINGS.autoScrollHomeShelves
-        : autoScrollHomeShelves === 'true',
-    hideAdultContent:
-      hideAdultContent === null
-        ? DEFAULT_APP_SETTINGS.hideAdultContent
-        : hideAdultContent === 'true',
-  };
-}
-
-function updateAppPreferences(payload = {}) {
-  const current = getAppPreferences();
-  const next = {
-    themeAccent: ALLOWED_THEME_ACCENTS.includes(payload.themeAccent)
-      ? payload.themeAccent
-      : current.themeAccent,
-    titleLanguage: ALLOWED_TITLE_LANGUAGES.includes(payload.titleLanguage)
-      ? payload.titleLanguage
-      : current.titleLanguage,
-    showTrendingCarousel:
-      typeof payload.showTrendingCarousel === 'boolean'
-        ? payload.showTrendingCarousel
-        : current.showTrendingCarousel,
-    autoRotateTrending:
-      typeof payload.autoRotateTrending === 'boolean'
-        ? payload.autoRotateTrending
-        : current.autoRotateTrending,
-    autoScrollHomeShelves:
-      typeof payload.autoScrollHomeShelves === 'boolean'
-        ? payload.autoScrollHomeShelves
-        : current.autoScrollHomeShelves,
-    hideAdultContent:
-      typeof payload.hideAdultContent === 'boolean'
-        ? payload.hideAdultContent
-        : current.hideAdultContent,
-  };
-
-  setAppSetting('preferences.themeAccent', next.themeAccent);
-  setAppSetting('preferences.titleLanguage', next.titleLanguage);
-  setAppSetting('preferences.showTrendingCarousel', next.showTrendingCarousel);
-  setAppSetting('preferences.autoRotateTrending', next.autoRotateTrending);
-  setAppSetting('preferences.autoScrollHomeShelves', next.autoScrollHomeShelves);
-  setAppSetting('preferences.hideAdultContent', next.hideAdultContent);
-
-  return next;
-}
-
-function buildMinimalAnimeForDb(media) {
-  return mapAnimeForDb({
-    id: media.id,
-    title: {
-      romaji: media.title?.romaji ?? null,
-      english: media.title?.english ?? null,
-      native: null,
-      userPreferred:
-        media.title?.userPreferred ?? media.title?.english ?? media.title?.romaji ?? null,
-    },
-    coverImage: { large: media.coverImage?.large ?? null },
-    bannerImage: null,
-    episodes: media.episodes ?? null,
-    format: media.format ?? null,
-    status: null,
-    season: media.season ?? null,
-    seasonYear: media.seasonYear ?? null,
-    averageScore: media.averageScore ?? null,
-    meanScore: null,
-    popularity: null,
-    favourites: null,
-    duration: null,
-    source: null,
-    countryOfOrigin: null,
-    startDate: null,
-    endDate: null,
-    trailer: null,
-    siteUrl: null,
-    description: null,
-    genres: [],
-    synonyms: [],
-    nextAiringEpisode: null,
-    studios: { nodes: [] },
-    tags: [],
-    staff: { edges: [] },
-    characters: { edges: [] },
-    relations: { edges: [] },
-    recommendations: { nodes: [] },
-    externalLinks: [],
-    streamingEpisodes: [],
   });
 }
 
@@ -914,7 +816,7 @@ function buildLocalImportResult(preview, selectedStatuses = [], selectedAnimeIds
   };
 }
 
-async function importAuthenticatedAniListList(accessToken, viewer, currentSession) {
+async function importAuthenticatedAniListList(accessToken, viewer) {
   const collection = await anilist.getViewerAnimeCollection(accessToken, viewer.id);
   const preview = buildAniListImportPreview(collection);
   const result = buildLocalImportResult(preview, IMPORT_STATUS_ORDER, [], viewer.name);
@@ -951,10 +853,7 @@ async function finishAniListLogin({ accessToken, viewer, userId, res }) {
   let importResult;
 
   try {
-    importResult = await importAuthenticatedAniListList(accessToken, viewer, {
-      authenticated: true,
-      user: loginResult.user,
-    });
+    importResult = await importAuthenticatedAniListList(accessToken, viewer);
   } catch (error) {
     console.error('AniList authenticated import error:', error);
     importResult = {
@@ -984,11 +883,7 @@ async function linkAniListToUser({ accessToken, viewer, userId }) {
     accessToken,
   });
 
-  const user = getSafeUserById(userId);
-  const importResult = await importAuthenticatedAniListList(accessToken, viewer, {
-    authenticated: Boolean(user),
-    user,
-  }).catch((error) => {
+  const importResult = await importAuthenticatedAniListList(accessToken, viewer).catch((error) => {
     console.error('AniList link import error:', error);
     return {
       ok: false,
@@ -1294,7 +1189,7 @@ function hasFreshAnimeDetailsCache(row) {
     Boolean(row.relations && row.relations !== '[]') ||
     Boolean(row.recommendations && row.recommendations !== '[]');
 
-  if (!hasFullDetails) return false;
+  if (!hasFullDetails || !row.franchise_start_date) return false;
 
   const cachedAt = Date.parse(row.cached_at);
   return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
@@ -1308,6 +1203,40 @@ async function getAnimeDetails(id) {
   }
 
   return await fetchAnimeDetailsFromAniList(id);
+}
+
+function hasFreshPersonDetailsCache(row) {
+  if (!row?.details) return false;
+
+  const cachedAt = Date.parse(row.cachedAt);
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < PERSON_DETAILS_CACHE_TTL_MS;
+}
+
+async function getCachedPersonDetails(kind, id) {
+  const cachedDetails = getPersonDetails(kind, id);
+
+  if (hasFreshPersonDetailsCache(cachedDetails)) {
+    return cachedDetails.details;
+  }
+
+  const details =
+    kind === 'character'
+      ? await anilist.getCharacterDetails(Number(id))
+      : await anilist.getStaffDetails(Number(id));
+
+  if (details?.id) {
+    savePersonDetails(kind, details.id, details);
+  }
+
+  return details;
+}
+
+async function getCharacterDetails(id) {
+  return await getCachedPersonDetails('character', id);
+}
+
+async function getStaffDetails(id) {
+  return await getCachedPersonDetails('staff', id);
 }
 
 async function fetchAnimeDetailsFallback(id) {
@@ -1363,6 +1292,7 @@ async function fetchAnimeDetailsFallback(id) {
             relationType
             node {
               id
+              type
               title { romaji english native userPreferred }
               coverImage { large }
               episodes
@@ -1600,6 +1530,10 @@ async function handleRpc(method, args, req, res) {
       return { ok: true, pending: [], completed: [], failed: [] };
     case 'getAnimeDetails':
       return await getAnimeDetails(args[0]);
+    case 'getCharacterDetails':
+      return await getCharacterDetails(args[0]);
+    case 'getStaffDetails':
+      return await getStaffDetails(args[0]);
     case 'cacheMinimalAnime':
       if (!args[0]?.id) return { ok: false, message: 'Invalid anime data.' };
       return { ok: true };

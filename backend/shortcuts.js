@@ -6,6 +6,8 @@ const DEFAULT_HIDE_SHOW_SHORTCUT = 'Control+Space';
 const SETTINGS_FILE = 'desktop-shortcuts.json';
 
 let activeHideShowAccelerator = null;
+let gamingModeEnabled = false;
+let shortcutRecordingActive = false;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), SETTINGS_FILE);
@@ -97,11 +99,50 @@ function registerShortcuts(win) {
 
   const settings = readShortcutSettings();
 
-  if (!settings.hideShowEnabled) {
+  if (!settings.hideShowEnabled || gamingModeEnabled || shortcutRecordingActive) {
     return;
   }
 
   registerHideShowShortcut(win, settings.hideShowAccelerator);
+}
+
+function setGamingModeEnabled(win, enabled) {
+  gamingModeEnabled = Boolean(enabled);
+
+  if (gamingModeEnabled) {
+    unregisterHideShowShortcut();
+
+    return {
+      enabled: true,
+      message: 'Gaming mode enabled. Hide/show shortcut paused.',
+    };
+  }
+
+  registerShortcuts(win);
+
+  return {
+    enabled: false,
+    message: 'Gaming mode disabled. Hide/show shortcut restored.',
+  };
+}
+
+function getGamingModeEnabled() {
+  return gamingModeEnabled;
+}
+
+function setShortcutRecordingActive(win, active) {
+  shortcutRecordingActive = Boolean(active);
+
+  if (shortcutRecordingActive) {
+    unregisterHideShowShortcut();
+  } else {
+    registerShortcuts(win);
+  }
+
+  return {
+    ok: true,
+    active: shortcutRecordingActive,
+  };
 }
 
 function updateHideShowShortcutSetting(win, payload = {}) {
@@ -138,9 +179,7 @@ function updateHideShowShortcutSetting(win, payload = {}) {
   if (!registered) {
     const current = readShortcutSettings();
 
-    if (current.hideShowEnabled) {
-      registerHideShowShortcut(win, current.hideShowAccelerator);
-    }
+    registerShortcuts(win);
 
     return {
       ok: false,
@@ -155,11 +194,17 @@ function updateHideShowShortcutSetting(win, payload = {}) {
     hideShowAccelerator: accelerator,
   });
 
+  if (gamingModeEnabled || shortcutRecordingActive) {
+    unregisterHideShowShortcut();
+  }
+
   return {
     ok: true,
     enabled: true,
     accelerator,
-    message: `Hide/show shortcut set to ${accelerator}.`,
+    message: gamingModeEnabled
+      ? `Hide/show shortcut set to ${accelerator}. Gaming mode is still pausing it.`
+      : `Hide/show shortcut set to ${accelerator}.`,
   };
 }
 
@@ -182,9 +227,27 @@ function registerShortcutIpc(getWindow) {
       return updateHideShowShortcutSetting(win, payload);
     });
   }
+
+  if (ipcMain.listenerCount('shortcuts:set-recording-active') === 0) {
+    ipcMain.handle('shortcuts:set-recording-active', (_event, active) => {
+      const win = getWindow();
+
+      if (!win || win.isDestroyed()) {
+        return {
+          ok: false,
+          active: false,
+          message: 'Seenary window is not ready.',
+        };
+      }
+
+      return setShortcutRecordingActive(win, active);
+    });
+  }
 }
 
 module.exports = {
+  getGamingModeEnabled,
   registerShortcuts,
   registerShortcutIpc,
+  setGamingModeEnabled,
 };

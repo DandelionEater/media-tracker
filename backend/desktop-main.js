@@ -1,10 +1,21 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
 const { setupTray } = require('./tray');
-const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
+const {
+  getGamingModeEnabled,
+  registerShortcuts,
+  registerShortcutIpc,
+  setGamingModeEnabled,
+} = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
 const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
 const { registerSystemLocaleIpc } = require('./systemLocale');
+const { registerLayoutConfigIpc } = require('./layoutConfig');
+const {
+  attachWindowState,
+  getInitialWindowOptions,
+  registerWindowStateIpc,
+} = require('./windowState');
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
 const APP_USER_MODEL_ID = 'app.seenary.desktop';
@@ -12,12 +23,41 @@ let mainWindow = null;
 
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.setName('Seenary');
+
+const singleInstanceLock = app.requestSingleInstanceLock();
+
+if (!singleInstanceLock) {
+  app.quit();
+  return;
+}
+
+app.on('second-instance', () => {
+  if (!mainWindow) {
+    return;
+  }
+
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore();
+  }
+
+  mainWindow.show();
+  mainWindow.focus();
+});
+
 registerSystemLocaleIpc();
 
+function getTrayOptions(win) {
+  return {
+    isGamingModeEnabled: getGamingModeEnabled,
+    onToggleGamingMode: (enabled) => setGamingModeEnabled(win, enabled),
+    onCheckForUpdates: app.isPackaged ? () => checkForUpdates(win, { manual: true }) : null,
+  };
+}
+
 function createWindow() {
+  const initialWindowOptions = getInitialWindowOptions();
   const win = new BrowserWindow({
-    width: 1280,
-    height: 900,
+    ...initialWindowOptions,
     minWidth: 900,
     minHeight: 600,
     frame: false,
@@ -32,6 +72,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  attachWindowState(win);
 
   win.setMenuBarVisibility(false);
   win.loadURL(APP_URL);
@@ -54,23 +95,19 @@ app.whenReady().then(() => {
   const win = createWindow();
   mainWindow = win;
 
-  setupTray(win, {
-    onCheckForUpdates: app.isPackaged ? () => checkForUpdates(win, { manual: true }) : null,
-  });
+  setupTray(win, getTrayOptions(win));
   registerShortcuts(win);
   registerShortcutIpc(() => mainWindow);
   registerStartupIpc();
+  registerWindowStateIpc(() => mainWindow);
+  registerLayoutConfigIpc();
   setupAutoUpdates(win);
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       const nextWin = createWindow();
       mainWindow = nextWin;
-      setupTray(nextWin, {
-        onCheckForUpdates: app.isPackaged
-          ? () => checkForUpdates(nextWin, { manual: true })
-          : null,
-      });
+      setupTray(nextWin, getTrayOptions(nextWin));
       registerShortcuts(nextWin);
     }
   });

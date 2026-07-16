@@ -43,8 +43,15 @@ contextBridge.exposeInMainWorld('api', {
   runSyncNow: () => ipcRenderer.invoke('sync:run-now'),
   pullFromAniList: () => ipcRenderer.invoke('sync:pull-from-anilist'),
   pullFromMal: () => ipcRenderer.invoke('sync:pull-from-mal'),
+  onSyncProgress: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('sync:progress', handler);
+    return () => ipcRenderer.removeListener('sync:progress', handler);
+  },
   getSyncActivity: () => ipcRenderer.invoke('sync:get-activity'),
   getAnimeDetails: (id) => ipcRenderer.invoke('anime:get-details', id),
+  getCharacterDetails: (id) => ipcRenderer.invoke('anime:get-character-details', id),
+  getStaffDetails: (id) => ipcRenderer.invoke('anime:get-staff-details', id),
   cacheMinimalAnime: (media) => ipcRenderer.invoke('anime:cache-minimal', media),
 
   register: (username, password) => ipcRenderer.invoke('auth:register', { username, password }),
@@ -98,11 +105,30 @@ contextBridge.exposeInMainWorld('api', {
 contextBridge.exposeInMainWorld('desktopShortcuts', {
   getHideShowShortcut: () => ipcRenderer.invoke('shortcuts:get-hide-show'),
   setHideShowShortcut: (payload) => ipcRenderer.invoke('shortcuts:set-hide-show', payload),
+  setShortcutRecordingActive: (active) =>
+    ipcRenderer.invoke('shortcuts:set-recording-active', active),
 });
 
 contextBridge.exposeInMainWorld('desktopStartup', {
   getStartupSetting: () => ipcRenderer.invoke('startup:get'),
   setStartupSetting: (enabled) => ipcRenderer.invoke('startup:set', enabled),
+});
+
+contextBridge.exposeInMainWorld('desktopWindow', {
+  getWindowState: () => ipcRenderer.invoke('window-state:get'),
+  setWindowPreset: (preset) => ipcRenderer.invoke('window-state:set-preset', preset),
+  setCustomBounds: (bounds) => ipcRenderer.invoke('window-state:set-custom-bounds', bounds),
+  onWindowStateChanged: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('window-state:changed', handler);
+    return () => ipcRenderer.removeListener('window-state:changed', handler);
+  },
+});
+
+contextBridge.exposeInMainWorld('desktopConfig', {
+  getLayoutOrders: (userId) => ipcRenderer.invoke('layout-config:get', userId),
+  setLayoutOrders: (userId, layouts) =>
+    ipcRenderer.sendSync('layout-config:set', userId, layouts),
 });
 
 contextBridge.exposeInMainWorld('systemLocale', getSystemLocaleInfo());

@@ -6,41 +6,59 @@ let tray;
 function setupTray(win, options = {}) {
   const iconPath = path.join(__dirname, 'tray.png');
 
-  tray = new Tray(iconPath);
+  if (!tray) {
+    tray = new Tray(iconPath);
+  }
 
-  // ✅ Context menu (RMB)
-  const contextMenu = Menu.buildFromTemplate([
-    {
-      label: 'Show / Hide',
-      click: () => {
-        win.isVisible() ? win.hide() : win.show();
+  function refreshContextMenu() {
+    const contextMenu = Menu.buildFromTemplate([
+      {
+        label: 'Show / Hide',
+        click: () => {
+          win.isVisible() ? win.hide() : win.show();
+        },
       },
-    },
-    ...(options.onCheckForUpdates
-      ? [
-          {
-            label: 'Check for Updates',
-            click: () => {
-              options.onCheckForUpdates();
+      ...(options.onToggleGamingMode
+        ? [
+            {
+              label: Boolean(options.isGamingModeEnabled?.())
+                ? 'Gaming mode: On'
+                : 'Gaming mode: Off',
+              click: () => {
+                options.onToggleGamingMode(!Boolean(options.isGamingModeEnabled?.()));
+                refreshContextMenu();
+              },
             },
-          },
-        ]
-      : []),
-    {
-      type: 'separator',
-    },
-    {
-      label: 'Exit',
-      click: () => {
-        app.quit();
+          ]
+        : []),
+      ...(options.onCheckForUpdates
+        ? [
+            {
+              label: 'Check for Updates',
+              click: () => {
+                options.onCheckForUpdates();
+              },
+            },
+          ]
+        : []),
+      {
+        type: 'separator',
       },
-    },
-  ]);
+      {
+        label: 'Exit',
+        click: () => {
+          app.quit();
+        },
+      },
+    ]);
+
+    tray.setContextMenu(contextMenu);
+  }
 
   tray.setToolTip('Seenary');
-  tray.setContextMenu(contextMenu);
+  refreshContextMenu();
 
-  // ✅ KEEP your existing behavior (LMB toggle)
+  tray.removeAllListeners('click');
   tray.on('click', () => {
     win.isVisible() ? win.hide() : win.show();
   });

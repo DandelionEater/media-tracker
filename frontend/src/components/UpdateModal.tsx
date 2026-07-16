@@ -37,11 +37,11 @@ export function UpdateModal({
   const releaseNoteBlocks = parseReleaseNotes(info.releaseNotes);
 
   return (
-    <div className="no-drag absolute inset-0 z-[80] flex items-center justify-center bg-black/55 px-5 backdrop-blur-sm">
+    <div className="no-drag absolute inset-0 z-[80] flex items-center justify-center bg-black/82 px-5">
       <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-white/10 bg-[#121212] text-white shadow-2xl">
         <div className="border-b border-white/10 bg-white/[0.04] px-6 py-5">
           <div className="flex items-start gap-4">
-            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[var(--app-accent-soft)] text-[var(--app-accent)]">
+            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[var(--app-accent-soft)] text-white/85">
               {isDownloaded ? (
                 <CheckCircleIcon className="h-7 w-7" />
               ) : (

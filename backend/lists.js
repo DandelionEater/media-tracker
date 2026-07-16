@@ -489,19 +489,31 @@ function valuesDiffer(left, right) {
   return (left ?? null) !== (right ?? null);
 }
 
+function buildStoredImportEntry(existingEntry, nextEntry) {
+  return {
+    ...nextEntry,
+    startedAt: nextEntry.startedAt ?? existingEntry?.started_at ?? null,
+    completedAt: ['completed', 'dropped'].includes(nextEntry.status)
+      ? nextEntry.completedAt ?? existingEntry?.completed_at ?? null
+      : null,
+  };
+}
+
 function entryDiffersFromAniList(existingEntry, nextEntry) {
   if (!existingEntry) {
     return true;
   }
 
+  const storedEntry = buildStoredImportEntry(existingEntry, nextEntry);
+
   return (
-    valuesDiffer(existingEntry.status, nextEntry.status) ||
-    valuesDiffer(existingEntry.progress, nextEntry.progress) ||
-    valuesDiffer(existingEntry.score, nextEntry.score) ||
-    valuesDiffer(existingEntry.notes, nextEntry.notes) ||
-    valuesDiffer(existingEntry.started_at, nextEntry.startedAt) ||
-    valuesDiffer(existingEntry.completed_at, nextEntry.completedAt) ||
-    valuesDiffer(existingEntry.repeat_count, nextEntry.repeatCount) ||
+    valuesDiffer(existingEntry.status, storedEntry.status) ||
+    valuesDiffer(existingEntry.progress, storedEntry.progress) ||
+    valuesDiffer(existingEntry.score, storedEntry.score) ||
+    valuesDiffer(existingEntry.notes, storedEntry.notes) ||
+    valuesDiffer(existingEntry.started_at, storedEntry.startedAt) ||
+    valuesDiffer(existingEntry.completed_at, storedEntry.completedAt) ||
+    valuesDiffer(existingEntry.repeat_count, storedEntry.repeatCount) ||
     Boolean(existingEntry.is_rewatching)
   );
 }
@@ -539,24 +551,43 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
   let updated = 0;
   let skipped = 0;
   const changes = [];
+  const emitProgress =
+    typeof options.onProgress === 'function' ? options.onProgress : () => {};
+  let processed = 0;
+
+  function reportImportProgress(media, fallbackAnimeId) {
+    emitProgress({
+      current: processed,
+      total: allEntries.length,
+      entryTitle:
+        media?.title?.userPreferred ||
+        media?.title?.english ||
+        media?.title?.romaji ||
+        `Anime #${fallbackAnimeId || processed}`,
+    });
+  }
 
   for (const entry of allEntries) {
+    processed += 1;
     const media = entry?.media;
     const animeId = Number(media?.id);
     const status = sanitizeImportStatus(entry?.status);
 
     if (!Number.isInteger(animeId) || animeId <= 0 || !status || !media) {
       skipped += 1;
+      reportImportProgress(media, animeId);
       continue;
     }
 
     if (hasStatusFilter && !allowedStatuses.has(status)) {
       skipped += 1;
+      reportImportProgress(media, animeId);
       continue;
     }
 
     if (hasAnimeFilter && !allowedAnimeIds.has(animeId)) {
       skipped += 1;
+      reportImportProgress(media, animeId);
       continue;
     }
 
@@ -609,35 +640,36 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
         ].filter((change) => change.to !== null && change.to !== undefined),
       });
     } else {
+      const storedEntry = buildStoredImportEntry(existingEntry, nextEntry);
+
       if (!entryDiffersFromAniList(existingEntry, nextEntry)) {
         skipped += 1;
+        reportImportProgress(media, animeId);
         continue;
       }
 
       const changedFields = [
-        { field: 'status', from: existingEntry.status ?? null, to: status },
-        { field: 'progress', from: existingEntry.progress ?? null, to: progress },
-        { field: 'score', from: existingEntry.score ?? null, to: score },
-        { field: 'notes', from: existingEntry.notes ?? null, to: notes },
-        { field: 'startedAt', from: existingEntry.started_at ?? null, to: startedAt },
-        { field: 'completedAt', from: existingEntry.completed_at ?? null, to: completedAt },
-        { field: 'repeatCount', from: existingEntry.repeat_count ?? null, to: repeatCount },
-      ].filter((change) => change.from !== change.to);
+        { field: 'status', from: existingEntry.status ?? null, to: storedEntry.status },
+        { field: 'progress', from: existingEntry.progress ?? null, to: storedEntry.progress },
+        { field: 'score', from: existingEntry.score ?? null, to: storedEntry.score },
+        { field: 'notes', from: existingEntry.notes ?? null, to: storedEntry.notes },
+        { field: 'startedAt', from: existingEntry.started_at ?? null, to: storedEntry.startedAt },
+        { field: 'completedAt', from: existingEntry.completed_at ?? null, to: storedEntry.completedAt },
+        { field: 'repeatCount', from: existingEntry.repeat_count ?? null, to: storedEntry.repeatCount },
+      ].filter((change) => valuesDiffer(change.from, change.to));
 
       updateUserAnimeEntry({
         userId: auth.user.id,
         animeId,
-        status,
+        status: storedEntry.status,
         isFavorite: Boolean(existingEntry.is_favorite),
-        repeatCount,
+        repeatCount: storedEntry.repeatCount,
         isRewatching: false,
-        progress,
-        score,
-        notes,
-        startedAt: startedAt ?? existingEntry.started_at ?? null,
-        completedAt: ['completed', 'dropped'].includes(status)
-          ? completedAt ?? existingEntry.completed_at ?? null
-          : null,
+        progress: storedEntry.progress,
+        score: storedEntry.score,
+        notes: storedEntry.notes,
+        startedAt: storedEntry.startedAt,
+        completedAt: storedEntry.completedAt,
       });
       updated += 1;
       changes.push({
@@ -649,6 +681,7 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
     }
 
     imported += 1;
+    reportImportProgress(media, animeId);
   }
 
   return {

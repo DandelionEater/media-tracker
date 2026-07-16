@@ -55,6 +55,7 @@ db.prepare(
     source TEXT,
     country_of_origin TEXT,
     start_date TEXT,
+    franchise_start_date TEXT,
     end_date TEXT,
     trailer_id TEXT,
     trailer_site TEXT,
@@ -97,6 +98,7 @@ const animeColumnMigrations = [
   ['source', 'TEXT'],
   ['country_of_origin', 'TEXT'],
   ['start_date', 'TEXT'],
+  ['franchise_start_date', 'TEXT'],
   ['end_date', 'TEXT'],
   ['trailer_id', 'TEXT'],
   ['trailer_site', 'TEXT'],
@@ -336,6 +338,20 @@ db.prepare(
 `
 ).run();
 
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS person_details (
+    kind TEXT NOT NULL,
+    anilist_id INTEGER NOT NULL,
+    payload_json TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cached_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (kind, anilist_id)
+  )
+`
+).run();
+
 const upsertAnimeStmt = db.prepare(`
   INSERT INTO anime (
     id,
@@ -358,6 +374,7 @@ const upsertAnimeStmt = db.prepare(`
     source,
     country_of_origin,
     start_date,
+    franchise_start_date,
     end_date,
     trailer_id,
     trailer_site,
@@ -396,6 +413,7 @@ const upsertAnimeStmt = db.prepare(`
     @source,
     @country_of_origin,
     @start_date,
+    @franchise_start_date,
     @end_date,
     @trailer_id,
     @trailer_site,
@@ -434,6 +452,7 @@ const upsertAnimeStmt = db.prepare(`
     source = excluded.source,
     country_of_origin = excluded.country_of_origin,
     start_date = excluded.start_date,
+    franchise_start_date = excluded.franchise_start_date,
     end_date = excluded.end_date,
     trailer_id = excluded.trailer_id,
     trailer_site = excluded.trailer_site,
@@ -861,6 +880,20 @@ const getDueSyncQueueJobsStmt = db.prepare(`
   LIMIT ?
 `);
 
+const getRunnableSyncQueueJobsStmt = db.prepare(`
+  SELECT
+    q.*,
+    a.title_preferred,
+    a.title_english,
+    a.title_romaji
+  FROM sync_queue q
+  LEFT JOIN anime a ON a.id = q.anime_id
+  WHERE q.user_id = ?
+    AND (q.status = 'pending' OR q.status = 'failed')
+  ORDER BY q.updated_at ASC
+  LIMIT ?
+`);
+
 const getSyncQueueItemsStmt = db.prepare(`
   SELECT
     q.*,
@@ -950,6 +983,8 @@ const getUserAnimeListStmt = db.prepare(`
     a.country_of_origin,
     a.start_date,
     a.end_date,
+    a.next_airing_episode,
+    a.next_airing_at,
     a.genres,
     a.recommendations
   FROM user_anime_lists l
@@ -1126,6 +1161,34 @@ const getAnimeCharactersStmt = db.prepare(`
   ORDER BY sort_order ASC
 `);
 
+const getPersonDetailsStmt = db.prepare(`
+  SELECT kind, anilist_id, payload_json, cached_at, updated_at
+  FROM person_details
+  WHERE kind = ? AND anilist_id = ?
+`);
+
+const upsertPersonDetailsStmt = db.prepare(`
+  INSERT INTO person_details (
+    kind,
+    anilist_id,
+    payload_json,
+    created_at,
+    updated_at,
+    cached_at
+  ) VALUES (
+    @kind,
+    @anilist_id,
+    @payload_json,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP,
+    CURRENT_TIMESTAMP
+  )
+  ON CONFLICT(kind, anilist_id) DO UPDATE SET
+    payload_json = excluded.payload_json,
+    updated_at = CURRENT_TIMESTAMP,
+    cached_at = CURRENT_TIMESTAMP
+`);
+
 const saveAnimeTransaction = db.transaction((anime) => {
   upsertAnimeStmt.run(anime);
 
@@ -1227,6 +1290,47 @@ function getAnimeById(id) {
   }));
 
   return anime;
+}
+
+function getPersonDetails(kind, anilistId) {
+  const normalizedKind = normalizePersonKind(kind);
+  const numericId = Number(anilistId);
+
+  if (!normalizedKind || !Number.isInteger(numericId) || numericId <= 0) {
+    return null;
+  }
+
+  const row = getPersonDetailsStmt.get(normalizedKind, numericId);
+  if (!row) return null;
+
+  return {
+    kind: row.kind,
+    anilistId: row.anilist_id,
+    details: safeJsonParse(row.payload_json, null),
+    cachedAt: row.cached_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function savePersonDetails(kind, anilistId, details) {
+  const normalizedKind = normalizePersonKind(kind);
+  const numericId = Number(anilistId);
+
+  if (!normalizedKind || !Number.isInteger(numericId) || numericId <= 0 || !details) {
+    return null;
+  }
+
+  upsertPersonDetailsStmt.run({
+    kind: normalizedKind,
+    anilist_id: numericId,
+    payload_json: JSON.stringify(details),
+  });
+
+  return getPersonDetails(normalizedKind, numericId);
+}
+
+function normalizePersonKind(kind) {
+  return kind === 'character' || kind === 'staff' ? kind : null;
 }
 
 function createUser({ username, usernameNormalized, passwordHash }) {
@@ -1544,8 +1648,11 @@ function getSyncQueueJob(userId, animeId, operation) {
   return row ? mapSyncQueueRow(row) : null;
 }
 
-function getDueSyncQueueJobs(userId, limit = 10) {
-  return getDueSyncQueueJobsStmt.all(userId, limit).map(mapSyncQueueRow);
+function getDueSyncQueueJobs(userId, limit = 10, options = {}) {
+  const stmt = options.includeFutureRetries
+    ? getRunnableSyncQueueJobsStmt
+    : getDueSyncQueueJobsStmt;
+  return stmt.all(userId, limit).map(mapSyncQueueRow);
 }
 
 function getSyncQueueItems(userId, limit = 50) {
@@ -1569,9 +1676,15 @@ function deleteSyncQueueJobByEntry(userId, animeId, operation) {
 }
 
 function insertSyncHistory({ userId, animeId, animeTitle, operation, changedFields, status, message }) {
+  const numericAnimeId = Number(animeId);
+  const safeAnimeId =
+    Number.isInteger(numericAnimeId) && getAnimeByIdStmt.get(numericAnimeId)
+      ? numericAnimeId
+      : null;
+
   insertSyncHistoryStmt.run(
     userId,
-    animeId,
+    safeAnimeId,
     animeTitle,
     operation,
     JSON.stringify(changedFields || []),
@@ -1602,6 +1715,8 @@ module.exports = {
   saveAnime,
   saveAnimeSummary,
   getAnimeById,
+  getPersonDetails,
+  savePersonDetails,
   createUser,
   updateUsername,
   getUserByNormalizedUsername,

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { FocusEvent } from "react";
 import {
   ArrowRightStartOnRectangleIcon,
@@ -12,6 +12,7 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { formatLocalDateTime } from "../utils/dateFormat";
+import type { NavbarStyle } from "./SettingsPage";
 
 type NotificationItem = {
   id: number;
@@ -29,12 +30,15 @@ type TopNavbarProps = {
   username: string;
   notifications: NotificationItem[];
   onReadNotification: (id: number) => void;
+  onDismissNotification: (id: number) => void;
   onClearNotifications: () => void;
   onLogout: () => void;
   currentView: "home" | "list" | "details" | "settings";
   onOpenHome: () => void;
   onOpenMyList: () => void;
   onOpenSettings: () => void;
+  focusSearchOnMount?: boolean;
+  navbarStyle: NavbarStyle;
 };
 
 export function TopNavbar({
@@ -44,44 +48,51 @@ export function TopNavbar({
   username,
   notifications,
   onReadNotification,
+  onDismissNotification,
   onClearNotifications,
   onLogout,
   currentView,
   onOpenHome,
   onOpenMyList,
   onOpenSettings,
+  focusSearchOnMount = false,
+  navbarStyle,
 }: TopNavbarProps) {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
+  const [isSearchFocused, setIsSearchFocused] = useState(false);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const notificationsRef = useRef<HTMLDivElement | null>(null);
+  const searchInputRef = useRef<HTMLInputElement | null>(null);
   const accountCloseTimerRef = useRef<number | null>(null);
   const notificationsCloseTimerRef = useRef<number | null>(null);
   const unreadCount = notifications.filter((notification) => !notification.read).length;
+  const isFloating = navbarStyle === "floating";
+  const isMinimal = navbarStyle === "minimal";
 
-  const clearAccountCloseTimer = () => {
+  const clearAccountCloseTimer = useCallback(() => {
     if (accountCloseTimerRef.current !== null) {
       window.clearTimeout(accountCloseTimerRef.current);
       accountCloseTimerRef.current = null;
     }
-  };
+  }, []);
 
-  const clearNotificationsCloseTimer = () => {
+  const clearNotificationsCloseTimer = useCallback(() => {
     if (notificationsCloseTimerRef.current !== null) {
       window.clearTimeout(notificationsCloseTimerRef.current);
       notificationsCloseTimerRef.current = null;
     }
-  };
+  }, []);
 
-  const closeAccountMenu = () => {
+  const closeAccountMenu = useCallback(() => {
     clearAccountCloseTimer();
     setIsAccountMenuOpen(false);
-  };
+  }, [clearAccountCloseTimer]);
 
-  const closeNotifications = () => {
+  const closeNotifications = useCallback(() => {
     clearNotificationsCloseTimer();
     setIsNotificationsOpen(false);
-  };
+  }, [clearNotificationsCloseTimer]);
 
   const openAccountMenu = () => {
     clearAccountCloseTimer();
@@ -127,6 +138,35 @@ export function TopNavbar({
     scheduleCloseNotifications();
   };
 
+  const focusSearchInput = (selectExistingText = true) => {
+    const input = searchInputRef.current;
+    if (!input) return;
+
+    input.focus();
+
+    if (selectExistingText && input.value) {
+      window.requestAnimationFrame(() => {
+        input.select();
+      });
+    }
+  };
+
+  const handleClearSearch = () => {
+    onClear();
+    window.requestAnimationFrame(() => {
+      focusSearchInput(false);
+    });
+  };
+
+  const handleSearchCloseOrClear = () => {
+    if (query.trim()) {
+      handleClearSearch();
+      return;
+    }
+
+    searchInputRef.current?.blur();
+  };
+
   useEffect(() => {
     const handleWindowBlur = () => {
       closeAccountMenu();
@@ -170,14 +210,88 @@ export function TopNavbar({
       document.removeEventListener("pointerdown", handlePointerDown);
       document.removeEventListener("keydown", handleKeyDown);
     };
-  }, []);
+  }, [
+    clearAccountCloseTimer,
+    clearNotificationsCloseTimer,
+    closeAccountMenu,
+    closeNotifications,
+  ]);
+
+  useEffect(() => {
+    if (!focusSearchOnMount) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      focusSearchInput(false);
+    });
+  }, [focusSearchOnMount]);
+
+  useEffect(() => {
+    function handleGlobalSearchFocus(event: KeyboardEvent) {
+      if (event.key === "Delete") {
+        const input = searchInputRef.current;
+        const target = event.target as HTMLElement | null;
+        const isSearchInput = target === input;
+
+        if (
+          !input ||
+          !query.trim() ||
+          (!isSearchInput && isKeyboardInputTarget(target)) ||
+          document.querySelector('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')
+        ) {
+          return;
+        }
+
+        event.preventDefault();
+        onClear();
+        return;
+      }
+
+      if (!shouldFocusSearchFromKey(event)) {
+        return;
+      }
+
+      const input = searchInputRef.current;
+      if (!input || document.activeElement === input) {
+        return;
+      }
+
+      event.preventDefault();
+
+      if (event.key !== "Enter") {
+        onSearch(event.key);
+      }
+
+      window.requestAnimationFrame(() => {
+        focusSearchInput(event.key === "Enter");
+      });
+    }
+
+    document.addEventListener("keydown", handleGlobalSearchFocus);
+    return () => document.removeEventListener("keydown", handleGlobalSearchFocus);
+  }, [onClear, onSearch, query]);
 
   return (
-    <div className="drag-region absolute inset-x-0 top-0 z-40 flex h-16 items-center justify-center px-4">
-      <div className="absolute inset-0 bg-[#0f0f0f]/45 backdrop-blur-md" />
+    <div
+      className={`drag-region absolute z-40 flex items-center justify-center transition-[inset,background-color,border-color,border-radius,box-shadow] duration-300 ${
+        isFloating
+          ? "inset-x-3 top-3 h-14 rounded-2xl border border-white/10 bg-[#111111]/62 px-3 shadow-[0_18px_50px_rgba(0,0,0,0.32)] backdrop-blur-xl"
+          : "inset-x-0 top-0 h-16 px-4"
+      }`}
+    >
+      {!isFloating && !isMinimal && (
+        <div className="absolute inset-0 bg-[#0f0f0f]/45 backdrop-blur-md" />
+      )}
 
       <div className="relative flex w-full items-center justify-center">
-        <div className="absolute left-0 flex items-center gap-2">
+        <div
+          className={`absolute left-0 flex items-center gap-2 transition ${
+            isMinimal
+              ? "rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
+              : ""
+          }`}
+        >
           <button
             onClick={onOpenHome}
             className={`no-drag inline-flex items-center justify-center rounded-xl border p-2 text-sm transition-all duration-200 ease-out active:scale-95 ${
@@ -204,29 +318,77 @@ export function TopNavbar({
           </button>
         </div>
 
-        <div className="no-drag mx-auto flex w-full max-w-xl items-center gap-2 rounded-2xl border border-white/10 bg-white/6 px-3 py-2 shadow-lg">
+        <div
+          className={`no-drag mx-auto flex w-full items-center gap-2 rounded-2xl border px-3 py-2 shadow-lg transition-[max-width,border-color,background-color,box-shadow] duration-300 ${
+            isFloating ? "max-w-lg" : "max-w-xl"
+          } ${
+            isSearchFocused
+              ? "border-white/20 bg-white/9 shadow-[0_10px_35px_rgba(0,0,0,0.32)]"
+              : isMinimal
+                ? "border-white/10 bg-[#111111]/62 backdrop-blur-xl"
+                : "border-white/10 bg-white/6"
+          }`}
+        >
           <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-white/45" />
 
           <input
+            ref={searchInputRef}
             type="text"
             value={query}
             placeholder="Search anime..."
             onChange={(e) => onSearch(e.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") {
+                event.preventDefault();
+                event.currentTarget.blur();
+              }
+            }}
+            onFocus={(event) => {
+              setIsSearchFocused(true);
+              if (event.currentTarget.value) {
+                event.currentTarget.select();
+              }
+            }}
+            onBlur={() => setIsSearchFocused(false)}
             className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/35"
           />
 
-          {query.trim() && (
-            <button
-              onClick={onClear}
-              className="no-drag rounded-full p-1 text-white/45 transition-all duration-200 ease-out hover:scale-105 hover:bg-white/10 hover:text-white active:scale-95"
-              title="Clear search"
-            >
-              <XMarkIcon className="h-4 w-4" />
-            </button>
+          {!query.trim() && !isSearchFocused && (
+            <kbd className="hidden shrink-0 items-center rounded-lg border border-white/10 bg-white/[0.06] px-2 py-1 text-[10px] font-medium tracking-wide text-white/38 sm:inline-flex">
+              Enter
+            </kbd>
+          )}
+
+          {(query.trim() || isSearchFocused) && (
+            <>
+              <kbd
+                className={`hidden shrink-0 items-center rounded-lg border border-white/10 bg-white/[0.06] px-2 py-1 text-[10px] font-medium tracking-wide sm:inline-flex ${
+                  query.trim() ? "text-white/38" : "text-white/25"
+                }`}
+              >
+                Del
+              </kbd>
+              <button
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={handleSearchCloseOrClear}
+                className="no-drag rounded-full p-1 text-white/45 transition-all duration-200 ease-out hover:scale-105 hover:bg-white/10 hover:text-white active:scale-95"
+                title={query.trim() ? "Clear search" : "Unfocus search"}
+                aria-label={query.trim() ? "Clear search" : "Unfocus search"}
+              >
+                <XMarkIcon className="h-4 w-4" />
+              </button>
+            </>
           )}
         </div>
 
-        <div className="no-drag absolute right-0 top-0 flex items-start gap-2">
+        <div
+          className={`no-drag absolute right-0 top-0 flex items-start gap-2 transition ${
+            isMinimal
+              ? "rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
+              : ""
+          }`}
+        >
           <div
             ref={notificationsRef}
             className="relative"
@@ -282,7 +444,7 @@ export function TopNavbar({
                         key={notification.id}
                         type="button"
                         onClick={() => onReadNotification(notification.id)}
-                        className={`w-full rounded-xl border px-3 py-2.5 text-left transition ${
+                        className={`group/notification w-full rounded-xl border py-2.5 pl-3 pr-2 text-left transition ${
                           notification.read
                             ? "border-transparent bg-transparent hover:bg-white/[0.05]"
                             : "border-[var(--app-accent)] bg-[var(--app-accent-soft)]"
@@ -297,9 +459,33 @@ export function TopNavbar({
                               {notification.message}
                             </p>
                           </div>
-                          {!notification.read && (
-                            <span className="mt-1 h-2 w-2 shrink-0 rounded-full bg-[var(--app-accent)]" />
-                          )}
+                          <div className="flex h-6 w-7 shrink-0 items-center justify-end">
+                            {!notification.read && (
+                              <span className="h-2 w-2 rounded-full bg-[var(--app-accent)] transition-transform duration-200 ease-out group-hover/notification:-translate-x-4 group-focus-within/notification:-translate-x-4" />
+                            )}
+                            <span
+                              role="button"
+                              tabIndex={0}
+                              aria-label={`Dismiss ${notification.title}`}
+                              title="Dismiss notification"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                onDismissNotification(notification.id);
+                              }}
+                              onKeyDown={(event) => {
+                                if (event.key !== "Enter" && event.key !== " ") {
+                                  return;
+                                }
+
+                                event.preventDefault();
+                                event.stopPropagation();
+                                onDismissNotification(notification.id);
+                              }}
+                              className="-ml-1 translate-x-1 rounded-full p-1 text-white/35 opacity-0 transition duration-200 ease-out hover:bg-white/10 hover:text-white/75 focus:translate-x-0 focus:opacity-100 focus:outline-none focus:ring-2 focus:ring-white/45 group-hover/notification:translate-x-0 group-hover/notification:opacity-100"
+                            >
+                              <XMarkIcon className="h-3.5 w-3.5" />
+                            </span>
+                          </div>
                         </div>
                         <p className="mt-2 text-[11px] text-white/30">
                           {formatLocalDateTime(notification.createdAt)}
@@ -378,5 +564,53 @@ export function TopNavbar({
         </div>
       </div>
     </div>
+  );
+}
+
+function shouldFocusSearchFromKey(event: KeyboardEvent) {
+  const isEnterShortcut = event.key === "Enter";
+  const isTypeToSearchShortcut = event.key.length === 1;
+
+  if (
+    event.defaultPrevented ||
+    event.repeat ||
+    event.ctrlKey ||
+    event.metaKey ||
+    event.altKey ||
+    (!isEnterShortcut && !isTypeToSearchShortcut)
+  ) {
+    return false;
+  }
+
+  const target = event.target as HTMLElement | null;
+
+  if (isKeyboardInputTarget(target)) {
+    return false;
+  }
+
+  if (
+    isEnterShortcut &&
+    target?.closest("button, a, [role='button'], [role='menuitem'], [role='option']")
+  ) {
+    return false;
+  }
+
+  if (document.querySelector('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')) {
+    return false;
+  }
+
+  return true;
+}
+
+function isKeyboardInputTarget(element: HTMLElement | null) {
+  if (!element) return false;
+
+  const tagName = element.tagName.toLowerCase();
+  return (
+    tagName === "input" ||
+    tagName === "textarea" ||
+    tagName === "select" ||
+    element.isContentEditable ||
+    Boolean(element.closest("input, textarea, select, [contenteditable='true']"))
   );
 }

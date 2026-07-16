@@ -1,12 +1,22 @@
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeftIcon,
+  ArrowPathIcon,
+  ArrowRightIcon,
+  ArrowTopRightOnSquareIcon,
+  ArrowsPointingOutIcon,
   BookmarkIcon,
   CalendarDaysIcon,
   CheckCircleIcon,
+  ChevronDownIcon,
   ClockIcon,
+  DocumentTextIcon,
+  ExclamationTriangleIcon,
   HeartIcon,
   LinkIcon,
+  MagnifyingGlassMinusIcon,
+  MagnifyingGlassPlusIcon,
   PencilSquareIcon,
   PlayCircleIcon,
   PlusIcon,
@@ -15,35 +25,80 @@ import {
   TvIcon,
   UserGroupIcon,
   UsersIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import { ListEntryModal } from "./ListEntryModal";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { formatLocalDate } from "../utils/dateFormat";
+import type {
+  AnimeMedia,
+  EditableListEntry,
+  ExternalLink,
+  Person,
+  PersonDetails,
+  PersonEdge,
+  RecommendationMedia,
+  StreamingEpisode,
+} from "../types/domain";
 
 type AnimeDetailsProps = {
   animeId: number;
   onBack: () => void;
   onSelectAnime?: (animeId: number) => void;
   onListChanged?: () => void | Promise<void>;
+  onNotify?: (kind: "success" | "error" | "warning", title: string, message: string) => void;
   titleLanguage: TitleLanguage;
 };
 
-type ListEntry = {
-  status: "planned" | "watching" | "completed" | "paused" | "dropped";
-  is_favorite?: number | boolean;
-  progress: number;
-  score: number | null;
-  notes: string | null;
-  started_at?: string | null;
-  completed_at?: string | null;
-  updated_at?: string | null;
-};
+type ListEntry = EditableListEntry;
 
 type MetaItem = {
   label: string;
   value: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+};
+
+type ExpandedArtwork = {
+  src: string;
+  alt: string;
+  label: string;
+};
+
+type RelatedMedia = {
+  id?: number | string | null;
+  type?: "ANIME" | "MANGA" | string | null;
+  title?: {
+    userPreferred?: string | null;
+    english?: string | null;
+    romaji?: string | null;
+    native?: string | null;
+  } | null;
+  coverImage?: { large?: string | null } | null;
+  format?: string | null;
+  episodes?: number | null;
+  averageScore?: number | null;
+};
+
+type RelatedAnimeEdge = {
+  relationType?: string | null;
+  node?: RelatedMedia | null;
+};
+
+type PeopleModalItem = {
+  id?: number | null;
+  kind: "character" | "staff";
+  title: string;
+  name: string;
+  nativeName?: string | null;
+  image?: string | null;
+  role?: string | null;
+  voiceActor?: {
+    name: string;
+    nativeName?: string | null;
+    image?: string | null;
+    language?: string | null;
+  } | null;
 };
 
 const STATUS_LABELS: Record<ListEntry["status"], string> = {
@@ -59,15 +114,23 @@ export default function AnimeDetails({
   onBack,
   onSelectAnime,
   onListChanged,
+  onNotify,
   titleLanguage,
 }: AnimeDetailsProps) {
-  const [anime, setAnime] = useState<any>(null);
+  const [anime, setAnime] = useState<AnimeMedia | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [listEntry, setListEntry] = useState<ListEntry | null>(null);
   const [listBusy, setListBusy] = useState(false);
   const [listMessage, setListMessage] = useState<string | null>(null);
   const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [selectedPerson, setSelectedPerson] = useState<PeopleModalItem | null>(null);
+  const [expandedArtwork, setExpandedArtwork] = useState<ExpandedArtwork | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
+
+  function notifyListChange(title: string, message: string) {
+    onNotify?.("success", title, message);
+  }
 
   async function loadListEntry(currentAnimeId: number) {
     try {
@@ -112,7 +175,7 @@ export default function AnimeDetails({
     return () => {
       mounted = false;
     };
-  }, [animeId]);
+  }, [animeId, retryKey]);
 
   async function handleAddToList() {
     if (listBusy) return;
@@ -134,9 +197,14 @@ export default function AnimeDetails({
         return;
       }
 
-      setListEntry(result.entry ?? { status: "planned", progress: 0 });
+      setListEntry(
+        result.entry ?? { status: "planned", progress: 0, score: null, notes: null }
+      );
       await onListChanged?.();
-      setListMessage(result.message);
+      notifyListChange(
+        "List updated",
+        `${title || "This anime"} was added to your list as Planned.`
+      );
     } catch (err) {
       console.error(err);
       setListMessage("Failed to add anime to your list.");
@@ -201,11 +269,24 @@ export default function AnimeDetails({
       await onListChanged?.();
 
       if (!listEntry) {
-        setListMessage("Anime added to your list and progress updated.");
+        notifyListChange(
+          "Progress updated",
+          `${title || "This anime"} was added to your list with ${nextProgress} episode watched.`
+        );
       } else if (nextStatus === "completed") {
-        setListMessage("Progress updated. Anime marked as completed.");
+        notifyListChange(
+          "Progress updated",
+          `${title || "This anime"} was marked completed at ${nextProgress} episode${
+            nextProgress === 1 ? "" : "s"
+          } watched.`
+        );
       } else {
-        setListMessage("Progress updated.");
+        notifyListChange(
+          "Progress updated",
+          `${title || "This anime"} is now at ${nextProgress} episode${
+            nextProgress === 1 ? "" : "s"
+          } watched.`
+        );
       }
     } catch (err) {
       console.error(err);
@@ -222,7 +303,7 @@ export default function AnimeDetails({
       setListBusy(true);
       setListMessage(null);
 
-      const nextFavorite = !Boolean(listEntry?.is_favorite);
+      const nextFavorite = !listEntry?.is_favorite;
       const fallbackStatus = listEntry?.status ?? "planned";
       const fallbackProgress = Number(listEntry?.progress ?? 0);
 
@@ -241,12 +322,13 @@ export default function AnimeDetails({
 
       setListEntry(result.entry ?? null);
       await onListChanged?.();
-      setListMessage(
+      notifyListChange(
+        nextFavorite ? "Favorite added" : "Favorite removed",
         nextFavorite
-          ? listEntry
-            ? "Added to favorites."
-            : "Added to your list and marked as favorite."
-          : "Removed from favorites."
+          ? `${title || "This anime"} was ${
+              listEntry ? "added to favorites" : "added to your list and marked as favorite"
+            }.`
+          : `${title || "This anime"} was removed from favorites.`
       );
     } catch (err) {
       console.error(err);
@@ -266,14 +348,35 @@ export default function AnimeDetails({
 
   if (error) {
     return (
-      <div className="p-6 text-white">
-        <button
-          onClick={onBack}
-          className="mb-4 rounded-xl bg-white/10 px-4 py-2 transition hover:bg-white/20"
-        >
-          Back
-        </button>
-        <p className="text-red-300">{error}</p>
+      <div className="flex h-full items-center justify-center p-6 text-white">
+        <section className="w-full max-w-xl rounded-3xl border border-white/10 bg-white/4 p-6 text-center shadow-xl">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-300/20 bg-amber-300/10 text-amber-100">
+            <ExclamationTriangleIcon className="h-7 w-7" />
+          </div>
+          <h2 className="mt-5 text-lg font-semibold">
+            There was a problem loading details.
+          </h2>
+          <p className="mt-2 text-sm leading-6 text-white/55">{error}</p>
+
+          <div className="mt-6 flex flex-col-reverse items-stretch justify-center gap-3 sm:flex-row">
+            <button
+              type="button"
+              onClick={onBack}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/4 px-4 py-2.5 text-sm font-medium text-white/75 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/55"
+            >
+              <ArrowLeftIcon className="h-4 w-4" />
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={() => setRetryKey((current) => current + 1)}
+              className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-white/55"
+            >
+              <ArrowPathIcon className="h-4 w-4" />
+              Retry
+            </button>
+          </div>
+        </section>
       </div>
     );
   }
@@ -295,62 +398,31 @@ export default function AnimeDetails({
   const title = getPreferredTitle(anime.title, titleLanguage);
 
   const studios =
-    anime.studios?.nodes?.map((studio: any) => studio.name).join(", ") || null;
-
-  const metaItems: MetaItem[] = [
-    anime.format
-      ? { label: "Format", value: anime.format, icon: TvIcon }
-      : null,
-    anime.status
-      ? { label: "Status", value: formatEnum(anime.status), icon: CheckCircleIcon }
-      : null,
-    anime.episodes
-      ? { label: "Episodes", value: `${anime.episodes}`, icon: PlayCircleIcon }
-      : null,
-    anime.averageScore
-      ? { label: "Avg score", value: `${anime.averageScore}%`, icon: StarIcon }
-      : null,
-    anime.duration
-      ? { label: "Duration", value: `${anime.duration} min`, icon: ClockIcon }
-      : null,
-    anime.source
-      ? { label: "Source", value: formatEnum(anime.source), icon: BookmarkIcon }
-      : null,
-    anime.season && anime.seasonYear
-      ? {
-          label: "Season",
-          value: `${formatEnum(anime.season)} ${anime.seasonYear}`,
-          icon: CalendarDaysIcon,
-        }
-      : null,
-  ].filter(Boolean) as MetaItem[];
-
-  const titleRows = [
-    anime.title?.romaji ? { label: "Romaji", value: anime.title.romaji } : null,
-    anime.title?.english
-      ? { label: "English", value: anime.title.english }
-      : null,
-    anime.title?.native ? { label: "Native", value: anime.title.native } : null,
-  ].filter(Boolean) as Array<{ label: string; value: string }>;
+    anime.studios?.nodes?.map((studio) => studio.name).join(", ") || null;
 
   const safeTags = (anime.tags ?? [])
-    .filter((tag: any) => !tag.isMediaSpoiler && !tag.isGeneralSpoiler)
-    .sort((a: any, b: any) => (b.rank ?? 0) - (a.rank ?? 0))
+    .filter((tag) => !tag.isMediaSpoiler && !tag.isGeneralSpoiler)
+    .sort((a, b) => (b.rank ?? 0) - (a.rank ?? 0))
     .slice(0, 12);
 
   const characterEdges = anime.characters?.edges?.slice(0, 12) ?? [];
   const staffEdges = anime.staff?.edges?.slice(0, 12) ?? [];
-  const relationEdges = anime.relations?.edges ?? [];
+  const relationEdges: RelatedAnimeEdge[] = anime.relations?.edges ?? [];
   const recommendations = anime.recommendations?.nodes ?? [];
-  const externalLinks = (anime.externalLinks ?? []).filter((link: any) => !link.isDisabled);
+  const externalLinks = (anime.externalLinks ?? []).filter((link) => !link.isDisabled);
   const streamingEpisodes = anime.streamingEpisodes ?? [];
   const trailerUrl = getTrailerUrl(anime.trailer);
+  const sourceLabel = typeof anime.source === "string" ? anime.source : null;
   const primaryLinks = [
     anime.siteUrl ? { label: "AniList", url: anime.siteUrl, accent: "bg-sky-400/15 text-sky-100" } : null,
     trailerUrl ? { label: "Trailer", url: trailerUrl, accent: "bg-red-400/15 text-red-100" } : null,
   ].filter(Boolean) as Array<{ label: string; url: string; accent: string }>;
 
   const isFavorite = Boolean(listEntry?.is_favorite);
+  const isUpcoming = anime.status === "NOT_YET_RELEASED";
+  const hasDistinctEndDate = Boolean(
+    anime.endDate && !areMediaDatesEqual(anime.startDate, anime.endDate)
+  );
 
   return (
     <>
@@ -358,72 +430,133 @@ export default function AnimeDetails({
         <div className="scroll-container h-full overflow-y-auto">
           <div className="relative h-56 w-full overflow-hidden rounded-t-3xl">
             {anime.bannerImage ? (
-              <img
-                src={anime.bannerImage}
-                alt={`${title} banner`}
-                className="h-full w-full object-cover"
-              />
+              <button
+                type="button"
+                onClick={() =>
+                  setExpandedArtwork({
+                    src: anime.bannerImage!,
+                    alt: `${title} banner`,
+                    label: "Banner artwork",
+                  })
+                }
+                className="group absolute inset-0 h-full w-full cursor-zoom-in focus:outline-none focus:ring-2 focus:ring-inset focus:ring-white/55"
+                aria-label={`Enlarge ${title} banner`}
+              >
+                <img
+                  src={anime.bannerImage}
+                  alt={`${title} banner`}
+                  className="h-full w-full object-cover transition duration-500 group-hover:scale-[1.02]"
+                />
+                <span className="absolute right-5 top-5 z-10 inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/45 px-3 py-2 text-xs font-medium text-white/75 opacity-0 backdrop-blur-md transition group-hover:opacity-100 group-focus:opacity-100">
+                  <ArrowsPointingOutIcon className="h-4 w-4" />
+                  Enlarge
+                </span>
+              </button>
             ) : (
               <div className="h-full w-full bg-white/5" />
             )}
 
-            <div className="absolute inset-0 bg-linear-to-t from-[#0f0f0f] via-[#0f0f0f]/60 to-[#0f0f0f]/10" />
-            <div className="absolute inset-0 bg-linear-to-r from-[#0f0f0f]/80 via-transparent to-[#0f0f0f]/40" />
+            <div className="pointer-events-none absolute inset-0 bg-linear-to-t from-[#0f0f0f] via-[#0f0f0f]/60 to-[#0f0f0f]/10" />
+            <div className="pointer-events-none absolute inset-0 bg-linear-to-r from-[#0f0f0f]/80 via-transparent to-[#0f0f0f]/40" />
           </div>
 
           <div className="relative px-6 pb-28 pl-8">
             <section className="-mt-20 grid grid-cols-1 gap-6 lg:grid-cols-[10rem_1fr]">
               <div>
-                <img
-                  src={anime.coverImage?.large}
-                  alt={title}
-                  className="h-64 w-40 rounded-2xl object-cover shadow-2xl ring-1 ring-white/10"
-                />
+                {anime.coverImage?.large && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setExpandedArtwork({
+                        src: anime.coverImage.large,
+                        alt: `${title} cover`,
+                        label: "Cover artwork",
+                      })
+                    }
+                    className="group relative block h-64 w-40 cursor-zoom-in overflow-hidden rounded-2xl shadow-2xl ring-1 ring-white/10 transition hover:-translate-y-1 hover:ring-white/25 focus:outline-none focus:ring-2 focus:ring-white/55"
+                    aria-label={`Enlarge ${title} cover`}
+                  >
+                    <img
+                      src={anime.coverImage.large}
+                      alt={`${title} cover`}
+                      className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
+                    />
+                    <span className="absolute inset-x-3 bottom-3 inline-flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-black/60 px-3 py-2 text-xs font-medium text-white/85 opacity-0 backdrop-blur-md transition group-hover:opacity-100 group-focus:opacity-100">
+                      <ArrowsPointingOutIcon className="h-4 w-4" />
+                      Enlarge
+                    </span>
+                  </button>
+                )}
               </div>
 
-              <div className="min-w-0 self-end rounded-3xl border border-white/10 bg-[#0f0f0f]/70 p-5 shadow-2xl backdrop-blur-md">
-                <h1 className="max-w-3xl text-3xl font-bold leading-tight tracking-tight text-white">
-                  {title}
-                </h1>
+              <div className="relative min-w-0 self-end overflow-hidden rounded-[2rem] border border-white/10 bg-[#111111] p-6 shadow-2xl">
+                <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_top_right,var(--app-accent-soft),transparent_42%)] opacity-70" />
+                <div className="relative">
+                  <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-white/55">
+                    {anime.status && (
+                      <HeroBadge
+                        value={getAiringStatusLabel(anime.status)}
+                        emphasized={anime.status === "RELEASING"}
+                      />
+                    )}
+                    {anime.format && <HeroBadge value={formatEnum(anime.format)} />}
+                    {anime.season && anime.seasonYear && (
+                      <HeroBadge value={`${formatEnum(anime.season)} ${anime.seasonYear}`} />
+                    )}
+                    {anime.episodes && <HeroBadge value={`${anime.episodes} episodes`} />}
+                  </div>
 
-                <div className="mt-4 flex flex-wrap gap-2">
-                  {metaItems.map((item) => (
-                    <MetaPill key={`${item.label}-${item.value}`} item={item} />
-                  ))}
-                </div>
+                  <h1 className="mt-4 max-w-4xl text-3xl font-bold leading-tight tracking-tight text-white">
+                    {title}
+                  </h1>
 
-                <div className="mt-5 grid max-w-3xl grid-cols-1 gap-x-6 gap-y-2 text-sm md:grid-cols-2">
-                  {titleRows.map((row) => (
-                    <InfoLine key={row.label} label={row.label} value={row.value} />
-                  ))}
+                  <AlternateTitles
+                    animeTitle={anime.title}
+                    displayedTitle={title}
+                    synonyms={anime.synonyms ?? []}
+                  />
 
-                  {anime.source && (
-                    <InfoLine label="Source" value={formatEnum(anime.source)} />
-                  )}
+                  <WatchOverview
+                    episodes={anime.episodes ?? null}
+                    duration={anime.duration ?? null}
+                    animeStatus={anime.status ?? null}
+                    franchiseStartDate={anime.franchiseStartDate ?? anime.startDate ?? null}
+                    nextAiringEpisode={anime.nextAiringEpisode ?? null}
+                    entry={listEntry}
+                    relations={relationEdges}
+                  />
 
-                  {anime.countryOfOrigin && (
-                    <InfoLine label="Origin" value={anime.countryOfOrigin} />
-                  )}
+                  <div className="mt-5 grid grid-cols-1 gap-3 border-t border-white/8 pt-5 sm:grid-cols-2 xl:grid-cols-4">
+                    {sourceLabel && (
+                      <HeroDetail label="Based on" value={formatEnum(sourceLabel)} />
+                    )}
+                    {anime.countryOfOrigin && (
+                      <HeroDetail label="Origin" value={anime.countryOfOrigin} />
+                    )}
+                    {anime.startDate && (
+                      <HeroDetail
+                        label={
+                          isUpcoming
+                            ? "Premiere date"
+                            : anime.status === "RELEASING"
+                              ? "Began airing"
+                              : "First aired"
+                        }
+                        value={formatFuzzyDate(anime.startDate)}
+                      />
+                    )}
+                    {anime.endDate &&
+                      anime.status !== "RELEASING" &&
+                      (!isUpcoming || hasDistinctEndDate) && (
+                      <HeroDetail
+                        label={isUpcoming ? "Expected end" : "Finished airing"}
+                        value={formatFuzzyDate(anime.endDate)}
+                      />
+                    )}
+                    {studios && <HeroDetail label="Made by" value={studios} wide />}
+                  </div>
 
-                  {anime.startDate && (
-                    <InfoLine label="Started" value={formatFuzzyDate(anime.startDate)} />
-                  )}
-
-                  {anime.endDate && (
-                    <InfoLine label="Ended" value={formatFuzzyDate(anime.endDate)} />
-                  )}
-
-                  {studios && <InfoLine label="Studios" value={studios} wide />}
-
-                  {anime.nextAiringEpisode && (
-                    <InfoLine
-                      label="Next airing"
-                      value={`Episode ${anime.nextAiringEpisode.episode}`}
-                    />
-                  )}
-                </div>
-
-                {primaryLinks.length > 0 && (
+                  {primaryLinks.length > 0 && (
                   <div className="mt-5 flex flex-wrap gap-2">
                     {primaryLinks.map((link) => (
                       <a
@@ -438,13 +571,14 @@ export default function AnimeDetails({
                       </a>
                     ))}
                   </div>
-                )}
+                  )}
 
-                {listMessage && (
-                  <div className="mt-5 w-fit rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
+                  {listMessage && (
+                  <div className="mt-5 w-fit rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
                     {listMessage}
                   </div>
-                )}
+                  )}
+                </div>
               </div>
             </section>
 
@@ -458,66 +592,38 @@ export default function AnimeDetails({
                   busy={listBusy}
                 />
 
-                {anime.genres?.length > 0 && (
-                  <ContentSection title="Genres" icon={TagIcon}>
-                    <div className="flex flex-wrap gap-2">
-                      {anime.genres.map((genre: string) => (
-                        <span
-                          key={genre}
-                          className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-sm text-white/80"
-                        >
-                          {genre}
-                        </span>
-                      ))}
-                    </div>
-                  </ContentSection>
-                )}
-
-                {safeTags.length > 0 && (
-                  <ContentSection title="Tags" icon={TagIcon}>
-                    <div className="flex flex-wrap gap-2">
-                      {safeTags.map((tag: any) => (
-                        <span
-                          key={tag.id}
-                          className="rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-sm text-white/80"
-                          title={tag.description || tag.name}
-                        >
-                          {tag.name}
-                          {tag.rank ? (
-                            <span className="ml-2 text-white/35">{tag.rank}%</span>
-                          ) : null}
-                        </span>
-                      ))}
-                    </div>
-                  </ContentSection>
-                )}
-
-                {anime.description && (
-                  <ContentSection title="Description" icon={BookmarkIcon}>
-                    <div
-                      className="max-w-4xl text-sm leading-7 text-white/75 [&_br]:hidden"
-                      dangerouslySetInnerHTML={{ __html: anime.description }}
-                    />
-                  </ContentSection>
+                {(anime.description || (anime.genres?.length ?? 0) > 0 || safeTags.length > 0) && (
+                  <StoryAndTaxonomy
+                    description={anime.description ?? null}
+                    genres={anime.genres ?? []}
+                    tags={safeTags}
+                  />
                 )}
 
                 {characterEdges.length > 0 && (
-                  <PeopleShelf title="Characters" icon={UsersIcon} edges={characterEdges} />
+                  <PeopleShelf
+                    title="Characters"
+                    icon={UsersIcon}
+                    kind="character"
+                    edges={characterEdges}
+                    onSelect={setSelectedPerson}
+                  />
                 )}
 
                 {staffEdges.length > 0 && (
-                  <PeopleShelf title="Staff" icon={UserGroupIcon} edges={staffEdges} />
+                  <PeopleShelf
+                    title="Staff"
+                    icon={UserGroupIcon}
+                    kind="staff"
+                    edges={staffEdges}
+                    onSelect={setSelectedPerson}
+                  />
                 )}
 
                 {relationEdges.length > 0 && (
-                  <MediaShelf
-                    title="Related Anime"
-                    icon={LinkIcon}
+                  <RelatedAnimeShelf
+                    edges={relationEdges}
                     onSelectAnime={onSelectAnime}
-                    items={relationEdges.map((edge: any) => ({
-                      label: formatEnum(edge.relationType || "Related"),
-                      media: edge.node,
-                    }))}
                   />
                 )}
 
@@ -527,8 +633,11 @@ export default function AnimeDetails({
                     icon={StarIcon}
                     onSelectAnime={onSelectAnime}
                     items={recommendations
-                      .filter((item: any) => item.mediaRecommendation)
-                      .map((item: any) => ({
+                      .filter(
+                        (item): item is typeof item & { mediaRecommendation: RecommendationMedia } =>
+                          Boolean(item.mediaRecommendation)
+                      )
+                      .map((item) => ({
                         label: item.rating ? `${item.rating} votes` : "Recommended",
                         media: item.mediaRecommendation,
                       }))}
@@ -542,13 +651,6 @@ export default function AnimeDetails({
                   />
                 )}
 
-                {anime.synonyms?.length > 0 && (
-                  <ContentSection title="Synonyms" icon={TagIcon}>
-                    <p className="text-sm leading-7 text-white/60">
-                      {anime.synonyms.join(", ")}
-                    </p>
-                  </ContentSection>
-                )}
               </div>
 
               <div className="space-y-5">
@@ -560,7 +662,7 @@ export default function AnimeDetails({
                   popularity={anime.popularity ?? null}
                   favourites={anime.favourites ?? null}
                   duration={anime.duration ?? null}
-                  source={anime.source ?? null}
+                  source={sourceLabel}
                   countryOfOrigin={anime.countryOfOrigin ?? null}
                   startDate={anime.startDate ?? null}
                   endDate={anime.endDate ?? null}
@@ -632,31 +734,113 @@ export default function AnimeDetails({
         onSaved={(updatedEntry) => {
           setListEntry(updatedEntry);
           onListChanged?.();
-          setListMessage("List entry updated.");
+          setListMessage(null);
+          notifyListChange("List entry updated", `${title || "This anime"} was updated.`);
         }}
         onRemoved={() => {
           setListEntry(null);
           onListChanged?.();
-          setListMessage("Anime removed from your list.");
+          setListMessage(null);
+          notifyListChange("Removed from list", `${title || "This anime"} was removed from your list.`);
         }}
       />
+
+      {selectedPerson && (
+        <PeopleDetailModal
+          item={selectedPerson}
+          onClose={() => setSelectedPerson(null)}
+        />
+      )}
+
+      {expandedArtwork && (
+        <ArtworkLightbox
+          artwork={expandedArtwork}
+          onClose={() => setExpandedArtwork(null)}
+        />
+      )}
     </>
   );
 }
 
-function MetaPill({ item }: { item: MetaItem }) {
-  const Icon = item.icon;
-
+function HeroBadge({ value, emphasized = false }: { value: string; emphasized?: boolean }) {
   return (
-    <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/8 px-3 py-1.5 text-xs text-white/80 shadow-lg">
-      <Icon className="h-3.5 w-3.5 text-white/45" />
-      <span className="text-white/40">{item.label}</span>
-      <span className="font-medium text-white/85">{item.value}</span>
+    <span
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 ${
+        emphasized
+          ? "border-(--app-accent)/30 bg-(--app-accent-soft) text-white/85"
+          : "border-white/10 bg-white/[0.05] text-white/55"
+      }`}
+    >
+      <span
+        className={`h-1.5 w-1.5 rounded-full ${
+          emphasized ? "bg-(--app-accent) shadow-[0_0_12px_var(--app-accent)]" : "bg-white/30"
+        }`}
+      />
+      {value}
     </span>
   );
 }
 
-function InfoLine({
+function AlternateTitles({
+  animeTitle,
+  displayedTitle,
+  synonyms,
+}: {
+  animeTitle?: {
+    romaji?: string | null;
+    english?: string | null;
+    native?: string | null;
+  } | null;
+  displayedTitle: string;
+  synonyms: string[];
+}) {
+  const alternatives = [animeTitle?.english, animeTitle?.romaji, animeTitle?.native]
+    .filter((value): value is string => Boolean(value?.trim()))
+    .filter(
+      (value, index, values) =>
+        value.toLocaleLowerCase() !== displayedTitle.toLocaleLowerCase() &&
+        values.findIndex((candidate) => candidate.toLocaleLowerCase() === value.toLocaleLowerCase()) ===
+          index
+    );
+  const usedTitles = new Set(
+    [displayedTitle, ...alternatives].map((value) => value.trim().toLocaleLowerCase())
+  );
+  const uniqueSynonyms = synonyms
+    .map((value) => value.trim())
+    .filter(Boolean)
+    .filter((value) => {
+      const normalized = value.toLocaleLowerCase();
+      if (usedTitles.has(normalized)) return false;
+      usedTitles.add(normalized);
+      return true;
+    });
+
+  if (!alternatives.length && !uniqueSynonyms.length) return null;
+
+  const fullText = [
+    alternatives.join(" · "),
+    uniqueSynonyms.length ? `Also known as: ${uniqueSynonyms.join(" · ")}` : "",
+  ]
+    .filter(Boolean)
+    .join(" | ");
+
+  return (
+    <p className="mt-2 max-w-4xl line-clamp-2 text-sm leading-6 text-white/42" title={fullText}>
+      {alternatives.join(" · ")}
+      {alternatives.length > 0 && uniqueSynonyms.length > 0 && (
+        <span className="mx-2 text-white/20">|</span>
+      )}
+      {uniqueSynonyms.length > 0 && (
+        <span>
+          <span className="text-white/30">Also known as:</span>{" "}
+          {uniqueSynonyms.join(" · ")}
+        </span>
+      )}
+    </p>
+  );
+}
+
+function HeroDetail({
   label,
   value,
   wide = false,
@@ -666,11 +850,382 @@ function InfoLine({
   wide?: boolean;
 }) {
   return (
-    <p className={`min-w-0 text-white/65 ${wide ? "md:col-span-2" : ""}`}>
-      <span className="text-white/35">{label}</span>
-      <span className="mx-2 text-white/20">/</span>
-      <span className="text-white/75">{value}</span>
-    </p>
+    <div className={`min-w-0 ${wide ? "sm:col-span-2 xl:col-span-2" : ""}`}>
+      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/28">
+        {label}
+      </p>
+      <p className="mt-1 line-clamp-2 text-sm leading-5 text-white/68" title={value}>
+        {value}
+      </p>
+    </div>
+  );
+}
+
+type WatchInsight = {
+  label: string;
+  value: string;
+  context: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  accent?: boolean;
+};
+
+function WatchOverview({
+  episodes,
+  duration,
+  animeStatus,
+  franchiseStartDate,
+  nextAiringEpisode,
+  entry,
+  relations,
+}: {
+  episodes: number | null;
+  duration: number | null;
+  animeStatus: string | null;
+  franchiseStartDate: {
+    year?: number | null;
+    month?: number | null;
+    day?: number | null;
+  } | null;
+  nextAiringEpisode: { episode?: number | null; airingAt?: number | null } | null;
+  entry: ListEntry | null;
+  relations: RelatedAnimeEdge[];
+}) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (!nextAiringEpisode?.airingAt) return;
+
+    const interval = window.setInterval(() => setNow(Date.now()), 60_000);
+    return () => window.clearInterval(interval);
+  }, [nextAiringEpisode?.airingAt]);
+
+  const episodeCount = positiveNumberOrNull(episodes);
+  const episodeDuration = positiveNumberOrNull(duration);
+  const progress = Math.max(0, Number(entry?.progress ?? 0));
+  const isAiring = animeStatus === "RELEASING";
+  const totalMinutes = episodeCount && episodeDuration ? episodeCount * episodeDuration : null;
+  const watchedMinutes = entry && episodeDuration ? progress * episodeDuration : null;
+  const episodesRemaining =
+    entry && episodeCount ? Math.max(0, episodeCount - Math.min(progress, episodeCount)) : null;
+  const remainingMinutes =
+    episodesRemaining !== null && episodeDuration ? episodesRemaining * episodeDuration : null;
+  const completion =
+    entry && episodeCount ? Math.min(100, Math.round((progress / episodeCount) * 100)) : null;
+  const airedEpisodes = nextAiringEpisode?.episode
+    ? Math.max(0, Number(nextAiringEpisode.episode) - 1)
+    : null;
+  const directRelations = summarizeDirectRelations(relations);
+  const seriesTiming = getSeriesTiming(franchiseStartDate, now);
+  const countdown = formatAiringCountdown(nextAiringEpisode?.airingAt, now);
+  const nextEpisodeDate = nextAiringEpisode?.airingAt
+    ? new Intl.DateTimeFormat(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      }).format(new Date(nextAiringEpisode.airingAt * 1000))
+    : null;
+  const nextEpisodeContext = nextAiringEpisode?.episode
+    ? `Episode ${nextAiringEpisode.episode}${
+        countdown ? ` ${countdown.toLocaleLowerCase()}` : " is next"
+      }${nextEpisodeDate ? ` · ${nextEpisodeDate}` : ""}`
+    : "More episodes are coming";
+
+  const insights: WatchInsight[] = [
+    totalMinutes
+      ? {
+          label: isAiring ? "Projected runtime" : "Total runtime",
+          value: formatRuntime(totalMinutes),
+          context: `${episodeCount} ${episodeCount === 1 ? "episode" : "episodes"}${
+            isAiring ? " · still airing" : ""
+          }`,
+          icon: ClockIcon,
+          accent: true,
+        }
+      : episodeDuration
+        ? {
+            label: "Episode length",
+            value: formatRuntime(episodeDuration),
+            context: isAiring ? "Total episode count unknown · still airing" : "Per episode",
+            icon: ClockIcon,
+            accent: true,
+          }
+        : null,
+    watchedMinutes !== null
+      ? {
+          label: "Time watched",
+          value: formatRuntime(watchedMinutes),
+          context: `${progress} ${progress === 1 ? "episode" : "episodes"} watched`,
+          icon: PlayCircleIcon,
+        }
+      : null,
+    remainingMinutes !== null && episodesRemaining !== null
+      ? {
+          label: "Time remaining",
+          value: formatRuntime(remainingMinutes),
+          context: `${episodesRemaining} of ${episodeCount} left`,
+          icon: ClockIcon,
+        }
+      : null,
+    completion !== null
+      ? {
+          label: "Completion",
+          value: `${completion}% complete`,
+          context: `${Math.min(progress, episodeCount ?? progress)} of ${episodeCount} watched`,
+          icon: CheckCircleIcon,
+          accent: completion === 100,
+        }
+      : null,
+    seriesTiming
+      ? {
+          label: seriesTiming.label,
+          value: seriesTiming.value,
+          context: seriesTiming.context,
+          icon: CalendarDaysIcon,
+        }
+      : null,
+    isAiring && airedEpisodes !== null
+      ? {
+          label: "Airing progress",
+          value: episodeCount
+            ? `${Math.min(airedEpisodes, episodeCount)} of ${episodeCount} aired`
+            : `${airedEpisodes} ${airedEpisodes === 1 ? "episode" : "episodes"} aired`,
+          context: nextEpisodeContext,
+          icon: TvIcon,
+          accent: true,
+        }
+      : null,
+    directRelations
+      ? {
+          label: "Direct connections",
+          value: `${directRelations.total} linked ${directRelations.total === 1 ? "title" : "titles"}`,
+          context: directRelations.summary,
+          icon: LinkIcon,
+        }
+      : null,
+  ].filter(Boolean) as WatchInsight[];
+
+  if (!insights.length) return null;
+
+  return (
+    <section className="mt-6" aria-label="Series at a glance">
+      <div className="mb-3 flex items-end justify-between gap-4">
+        <div>
+          <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/30">
+            Series at a glance
+          </p>
+          <p className="mt-1 text-xs text-white/40">The useful numbers and the fun ones.</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+        {insights.map((insight) => (
+          <WatchInsightCard key={insight.label} insight={insight} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function WatchInsightCard({ insight }: { insight: WatchInsight }) {
+  const Icon = insight.icon;
+
+  return (
+    <div
+      className={`group relative min-w-0 overflow-hidden rounded-2xl border p-4 transition hover:-translate-y-0.5 hover:border-white/18 ${
+        insight.accent
+          ? "border-(--app-accent)/22 bg-(--app-accent-soft)"
+          : "border-white/8 bg-black/18"
+      }`}
+    >
+      <div className="flex items-start justify-between gap-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.16em] text-white/32">
+          {insight.label}
+        </p>
+        <Icon className="h-4 w-4 shrink-0 text-white/28 transition group-hover:text-white/48" />
+      </div>
+      <p className="mt-3 truncate text-lg font-semibold tracking-tight text-white/88">
+        {insight.value}
+      </p>
+      <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/38" title={insight.context}>
+        {insight.context}
+      </p>
+    </div>
+  );
+}
+
+function ArtworkLightbox({
+  artwork,
+  onClose,
+}: {
+  artwork: ExpandedArtwork;
+  onClose: () => void;
+}) {
+  const imageRef = useRef<HTMLImageElement | null>(null);
+  const dragRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    originX: number;
+    originY: number;
+  } | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  function clampPosition(nextPosition: { x: number; y: number }, nextZoom = zoom) {
+    const image = imageRef.current;
+    if (!image || nextZoom <= 1) return { x: 0, y: 0 };
+
+    const maxX = (image.offsetWidth * (nextZoom - 1)) / 2;
+    const maxY = (image.offsetHeight * (nextZoom - 1)) / 2;
+
+    return {
+      x: Math.max(-maxX, Math.min(maxX, nextPosition.x)),
+      y: Math.max(-maxY, Math.min(maxY, nextPosition.y)),
+    };
+  }
+
+  function changeZoom(amount: number) {
+    const nextZoom = Math.max(1, Math.min(4, Number((zoom + amount).toFixed(2))));
+    setZoom(nextZoom);
+    setPosition((current) => clampPosition(current, nextZoom));
+  }
+
+  function resetView() {
+    setZoom(1);
+    setPosition({ x: 0, y: 0 });
+  }
+
+  function handlePointerDown(event: React.PointerEvent<HTMLImageElement>) {
+    if (zoom <= 1) return;
+
+    event.preventDefault();
+    event.currentTarget.setPointerCapture(event.pointerId);
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      originX: position.x,
+      originY: position.y,
+    };
+    setIsDragging(true);
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLImageElement>) {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+
+    setPosition(
+      clampPosition({
+        x: drag.originX + event.clientX - drag.startX,
+        y: drag.originY + event.clientY - drag.startY,
+      })
+    );
+  }
+
+  function finishDragging(event: React.PointerEvent<HTMLImageElement>) {
+    if (dragRef.current?.pointerId !== event.pointerId) return;
+
+    dragRef.current = null;
+    setIsDragging(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-[90] flex items-center justify-center overflow-hidden rounded-3xl bg-black/82 p-5"
+      role="dialog"
+      aria-modal="true"
+      aria-label={artwork.label}
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        className="absolute right-5 top-5 z-20 rounded-full border border-white/15 bg-black/80 p-2.5 text-white/75 shadow-xl backdrop-blur-md transition hover:bg-white/15 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/55"
+        aria-label="Close enlarged artwork"
+      >
+        <XMarkIcon className="h-5 w-5" />
+      </button>
+      <div className="relative flex max-h-full max-w-6xl flex-col items-center">
+        <img
+          ref={imageRef}
+          src={artwork.src}
+          alt={artwork.alt}
+          draggable={false}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={finishDragging}
+          onPointerCancel={finishDragging}
+          onWheel={(event) => {
+            event.preventDefault();
+            changeZoom(event.deltaY < 0 ? 0.25 : -0.25);
+          }}
+          className={`select-none rounded-2xl object-contain shadow-2xl ${
+            artwork.label === "Banner artwork"
+              ? "h-auto max-h-[70vh] w-[90vw] max-w-6xl"
+              : "h-[70vh] w-auto max-w-[90vw]"
+          } ${
+            zoom > 1 ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-zoom-in"
+          } ${isDragging ? "" : "transition-transform duration-200 ease-out"}`}
+          style={{
+            transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${zoom})`,
+          }}
+          onDoubleClick={() => (zoom > 1 ? resetView() : changeZoom(1))}
+        />
+        <div className="relative z-10 mt-4 flex flex-wrap items-center justify-center gap-3 rounded-full border border-white/10 bg-[#171717]/95 px-3 py-2 text-xs text-white/55 shadow-xl">
+          <span className="px-1">{artwork.label}</span>
+          <span className="h-1 w-1 rounded-full bg-white/25" />
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => changeZoom(-0.25)}
+              disabled={zoom <= 1}
+              className="rounded-full p-1.5 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30"
+              title="Zoom out"
+              aria-label="Zoom out"
+            >
+              <MagnifyingGlassMinusIcon className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              onClick={resetView}
+              disabled={zoom === 1 && position.x === 0 && position.y === 0}
+              className="min-w-12 rounded-full px-2 py-1 text-center font-semibold text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-50"
+              title="Reset zoom and position"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button
+              type="button"
+              onClick={() => changeZoom(0.25)}
+              disabled={zoom >= 4}
+              className="rounded-full p-1.5 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30"
+              title="Zoom in"
+              aria-label="Zoom in"
+            >
+              <MagnifyingGlassPlusIcon className="h-4 w-4" />
+            </button>
+          </div>
+          <span className="h-1 w-1 rounded-full bg-white/25" />
+          <span className="px-1">Scroll to zoom · Drag to pan · Double-click to reset</span>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -689,7 +1244,7 @@ function PersonalListPanel({
 }) {
   if (!entry) {
     return (
-      <aside className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+      <aside className="rounded-3xl border border-white/10 bg-white/3 p-5">
         <div className="flex items-center gap-3">
           <div className="rounded-2xl border border-white/10 bg-white/8 p-2.5 text-white/65">
             <BookmarkIcon className="h-5 w-5" />
@@ -724,7 +1279,7 @@ function PersonalListPanel({
       : null;
 
   return (
-    <aside className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+    <aside className="rounded-3xl border border-white/10 bg-white/3 p-5">
       <div className="flex items-center justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.22em] text-white/35">
@@ -771,12 +1326,74 @@ function PersonalListPanel({
         />
       </div>
 
-      {entry.notes?.trim() && (
-        <p className="mt-4 line-clamp-3 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-sm leading-6 text-white/60">
-          {entry.notes.trim()}
-        </p>
-      )}
+      {entry.notes?.trim() && <ExpandableNotes notes={entry.notes.trim()} />}
     </aside>
+  );
+}
+
+function ExpandableNotes({ notes }: { notes: string }) {
+  const textRef = useRef<HTMLParagraphElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+  const [expandedHeight, setExpandedHeight] = useState(72);
+
+  useLayoutEffect(() => {
+    const text = textRef.current;
+    if (!text) return;
+
+    const measureNotes = () => {
+      const nextHeight = text.scrollHeight;
+      setExpandedHeight(nextHeight);
+      setCanExpand(nextHeight > 73);
+    };
+
+    measureNotes();
+    const observer = new ResizeObserver(measureNotes);
+    observer.observe(text);
+
+    return () => observer.disconnect();
+  }, [notes]);
+
+  return (
+    <div className="mt-4 grid grid-cols-1 gap-3 rounded-2xl border border-white/10 bg-black/20 p-4 sm:grid-cols-[minmax(7rem,1fr)_minmax(0,3fr)] sm:gap-4">
+      <div className="flex items-start gap-2.5 sm:border-r sm:border-white/8 sm:pr-4">
+        <DocumentTextIcon className="mt-0.5 h-4 w-4 shrink-0 text-white/40" />
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-white/55">
+            Notes
+          </p>
+          <p className="mt-1 text-xs text-white/30">Personal note</p>
+        </div>
+      </div>
+
+      <div className="min-w-0">
+        <div
+          className="overflow-hidden transition-[max-height] duration-500 ease-in-out"
+          style={{ maxHeight: expanded ? `${expandedHeight}px` : "4.5rem" }}
+        >
+          <p
+            ref={textRef}
+            className="whitespace-pre-wrap break-words text-sm leading-6 text-white/60 [overflow-wrap:anywhere]"
+          >
+            {notes}
+          </p>
+        </div>
+
+        {(canExpand || expanded) && (
+          <button
+            type="button"
+            onClick={() => setExpanded((current) => !current)}
+            className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-(--app-accent) transition hover:brightness-125 focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+            aria-expanded={expanded}
+          >
+            {expanded ? "Show less" : "Show more"}
+            <ChevronDownIcon
+              className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+            />
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -820,27 +1437,160 @@ function ContentSection({
   );
 }
 
+function StoryAndTaxonomy({
+  description,
+  genres,
+  tags,
+}: {
+  description: string | null;
+  genres: string[];
+  tags: Array<{
+    id?: number | string | null;
+    name?: string | null;
+    description?: string | null;
+    rank?: number | null;
+  }>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const hasTaxonomy = genres.length > 0 || tags.length > 0;
+  const hasMore = Boolean(description && getPlainText(description).length > 420);
+
+  return (
+    <section
+      className={`grid grid-cols-1 gap-4 ${
+        description && hasTaxonomy ? "lg:grid-cols-[minmax(0,2fr)_minmax(15rem,1fr)]" : ""
+      }`}
+      aria-label="Story, genres, and tags"
+    >
+      {description && (
+        <article className="relative overflow-hidden rounded-3xl border border-white/8 bg-white/[0.025] p-5 lg:min-h-[23rem]">
+          <div className="flex items-center gap-2 text-white/55">
+            <BookmarkIcon className="h-4 w-4" />
+            <h2 className="text-sm font-semibold uppercase tracking-[0.2em]">Description</h2>
+          </div>
+
+          <div className="relative mt-5">
+            <div
+              className={`overflow-hidden transition-[max-height] duration-700 ease-in-out ${
+                expanded ? "max-h-[100rem]" : "max-h-80"
+              }`}
+            >
+              <div
+                className="text-sm leading-7 text-white/72 [&_br]:block"
+                dangerouslySetInnerHTML={{ __html: description }}
+              />
+            </div>
+
+            {hasMore && !expanded && (
+              <div className="pointer-events-none absolute inset-x-0 bottom-0 h-28 bg-linear-to-t from-[#151515] via-[#151515]/90 to-transparent" />
+            )}
+          </div>
+
+          {hasMore && (
+            <button
+              type="button"
+              onClick={() => setExpanded((current) => !current)}
+              aria-expanded={expanded}
+              className="relative mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-semibold text-white/65 transition hover:border-white/20 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+            >
+              {expanded ? "Show less" : "Read full description"}
+              <ChevronDownIcon
+                className={`h-4 w-4 transition-transform duration-500 ${expanded ? "rotate-180" : ""}`}
+              />
+            </button>
+          )}
+        </article>
+      )}
+
+      {hasTaxonomy && (
+        <aside className="rounded-3xl border border-white/8 bg-white/[0.025] p-5 lg:min-h-[23rem] lg:self-start">
+          {genres.length > 0 && (
+            <div>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-white/55">
+                  <TagIcon className="h-4 w-4" />
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em]">Genres</h2>
+                </div>
+                <span className="text-[10px] font-medium text-white/25">{genres.length}</span>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {genres.map((genre) => (
+                  <span
+                    key={genre}
+                    className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-xs text-white/75"
+                  >
+                    {genre}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tags.length > 0 && (
+            <div className={genres.length > 0 ? "mt-7 border-t border-white/8 pt-6" : ""}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 text-white/55">
+                  <TagIcon className="h-4 w-4" />
+                  <h2 className="text-sm font-semibold uppercase tracking-[0.2em]">Tags</h2>
+                </div>
+                <span className="text-[10px] font-medium text-white/25">{tags.length}</span>
+              </div>
+              <div className="mt-4 flex flex-wrap gap-2">
+                {tags.map((tag, index) => (
+                  <span
+                    key={tag.id ?? `${tag.name ?? "tag"}-${index}`}
+                    className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-xs text-white/72"
+                    title={tag.description || tag.name || "Tag"}
+                  >
+                    {tag.name || "Tag"}
+                    {tag.rank ? (
+                      <span className="ml-1.5 text-white/32">{tag.rank}%</span>
+                    ) : null}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+        </aside>
+      )}
+    </section>
+  );
+}
+
 function PeopleShelf({
   title,
   icon: Icon,
+  kind,
   edges,
+  onSelect,
 }: {
   title: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  edges: any[];
+  kind: PeopleModalItem["kind"];
+  edges: PersonEdge[];
+  onSelect: (item: PeopleModalItem) => void;
 }) {
   return (
     <ContentSection title={title} icon={Icon}>
       <div className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4">
         {edges.map((edge, index) => {
-          const person = edge.node;
-          const voiceActor = edge.voiceActors?.[0];
+          const person = getPersonFromEdge(edge, kind);
+          const voiceActor = getVoiceActorFromEdge(edge);
           const name = getPersonName(person);
+          const modalItem = buildPeopleModalItem({
+            edge,
+            kind,
+            title,
+            person,
+            voiceActor,
+          });
 
           return (
-            <div
+            <button
               key={`${title}-${person?.id ?? index}-${edge.role}`}
-              className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]"
+              type="button"
+              onClick={() => onSelect(modalItem)}
+              className="overflow-hidden rounded-3xl border border-white/10 bg-white/3 text-left transition hover:border-(--app-accent)/30 hover:bg-(--app-accent-soft) focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
             >
               <div className="flex gap-3 p-3">
                 <PersonImage src={person?.image?.large} name={name} />
@@ -860,7 +1610,404 @@ function PeopleShelf({
                   )}
                 </div>
               </div>
+            </button>
+          );
+        })}
+      </div>
+    </ContentSection>
+  );
+}
+
+function PeopleDetailModal({
+  item,
+  onClose,
+}: {
+  item: PeopleModalItem | null;
+  onClose: () => void;
+}) {
+  const [detailRequest, setDetailRequest] = useState<{
+    key: string;
+    status: "ready" | "error";
+    details: PersonDetails | null;
+  } | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!item?.id) {
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    const requestKey = getPersonDetailRequestKey(item);
+
+    const loadDetails =
+      item.kind === "character"
+        ? window.api.getCharacterDetails(item.id)
+        : window.api.getStaffDetails(item.id);
+
+    loadDetails
+      .then(async (result) => {
+        await preloadPersonImages(result, item);
+        if (!cancelled) {
+          setDetailRequest({ key: requestKey, status: "ready", details: result });
+        }
+      })
+      .catch((error) => {
+        console.error("Failed to load person details:", error);
+        if (!cancelled) {
+          setDetailRequest({ key: requestKey, status: "error", details: null });
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [item]);
+
+  if (!item) return null;
+
+  const requestKey = getPersonDetailRequestKey(item);
+  const isLoadingProfile =
+    Boolean(item.id) && detailRequest?.key !== requestKey;
+  const details = detailRequest?.key === requestKey ? detailRequest.details : null;
+  const detailError =
+    detailRequest?.key === requestKey && detailRequest.status === "error"
+      ? "Profile details could not be loaded."
+      : null;
+  const displayName = getPersonName(details) || item.name;
+  const nativeName = details?.name?.native ?? item.nativeName;
+  const image = details?.image?.large ?? item.image;
+  const descriptionSegments = parseAniListDescription(details?.description);
+  const facts = buildPersonFacts(details, item.kind);
+
+  if (isLoadingProfile) {
+    return (
+      <PersonDetailsLoadingModal
+        kind={item.kind}
+        onClose={onClose}
+      />
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center overflow-hidden rounded-3xl bg-black/82 p-4">
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default"
+        aria-label="Close person details"
+        onClick={onClose}
+      />
+      <section className="relative flex max-h-[calc(100vh-2rem)] w-full max-w-3xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#111111] text-white shadow-2xl">
+        <div className="border-b border-white/10 bg-white/3 px-5 py-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-xs uppercase tracking-[0.24em] text-white/35">
+                {item.kind === "character" ? "Character" : "Staff"}
+              </p>
+              <h2 className="mt-2 text-2xl font-semibold text-white">{displayName}</h2>
+              {nativeName && nativeName !== displayName && (
+                <p className="mt-1 text-sm text-white/45">{nativeName}</p>
+              )}
             </div>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+              title="Close"
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+
+        <div className="scroll-container min-h-0 flex-1 overscroll-contain overflow-y-auto p-5">
+          <div className="grid gap-5 md:grid-cols-[9rem_1fr]">
+            <PersonImage src={image} name={displayName} size="large" />
+
+            <div className="space-y-4">
+              <InfoPanel label="Appears as" value={item.title} />
+              {item.role && <InfoPanel label="Role" value={formatEnum(item.role)} />}
+
+              {facts.length > 0 && (
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {facts.map((fact) => (
+                    <InfoPanel key={fact.label} label={fact.label} value={fact.value} />
+                  ))}
+                </div>
+              )}
+
+              {detailError && <InfoPanel label="Profile" value={detailError} />}
+
+              {item.voiceActor && (
+                <div className="rounded-3xl border border-white/10 bg-white/3 p-4">
+                  <p className="text-xs uppercase tracking-[0.2em] text-white/35">
+                    Japanese voice
+                  </p>
+                  <div className="mt-3 flex items-center gap-3">
+                    <PersonImage
+                      src={item.voiceActor.image}
+                      name={item.voiceActor.name}
+                    />
+                    <div className="min-w-0">
+                      <p className="truncate text-sm font-semibold text-white/85">
+                        {item.voiceActor.name}
+                      </p>
+                      {item.voiceActor.nativeName &&
+                        item.voiceActor.nativeName !== item.voiceActor.name && (
+                          <p className="mt-1 truncate text-xs text-white/45">
+                            {item.voiceActor.nativeName}
+                          </p>
+                        )}
+                      {item.voiceActor.language && (
+                        <p className="mt-1 text-xs text-white/35">
+                          {formatEnum(item.voiceActor.language)}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="mt-5 space-y-4">
+            {descriptionSegments.length > 0 && (
+              <PersonDescription segments={descriptionSegments} />
+            )}
+          </div>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PersonDetailsLoadingModal({
+  kind,
+  onClose,
+}: {
+  kind: PeopleModalItem["kind"];
+  onClose: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 z-60 flex items-center justify-center overflow-hidden rounded-3xl bg-black/82 p-4">
+      <button
+        type="button"
+        className="absolute inset-0 cursor-default"
+        aria-label="Close person details"
+        onClick={onClose}
+      />
+      <section className="relative flex h-72 w-full max-w-lg items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-[#111111] text-white shadow-2xl">
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute right-5 top-5 rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+          title="Close"
+        >
+          <XMarkIcon className="h-5 w-5" />
+        </button>
+
+        <div className="flex flex-col items-center text-center">
+          <div className="h-12 w-12 rounded-full border border-(--app-accent)/25 border-t-(--app-accent) animate-spin" />
+          <p className="mt-5 text-xs uppercase tracking-[0.24em] text-white/35">
+            Loading {kind === "character" ? "character" : "staff"}
+          </p>
+          <p className="mt-2 text-sm text-white/65">Preparing profile details...</p>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PersonDescription({
+  segments,
+}: {
+  segments: Array<{ type: "text" | "spoiler"; text: string }>;
+}) {
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  const [canExpand, setCanExpand] = useState(false);
+  const [expandedHeight, setExpandedHeight] = useState(240);
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+
+    const measureDescription = () => {
+      const nextHeight = content.scrollHeight;
+      setExpandedHeight(nextHeight);
+      setCanExpand(nextHeight > 241);
+    };
+
+    measureDescription();
+    const observer = new ResizeObserver(measureDescription);
+    observer.observe(content);
+
+    return () => observer.disconnect();
+  }, [segments]);
+
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/3 p-4">
+      <p className="text-xs uppercase tracking-[0.2em] text-white/35">
+        Description
+      </p>
+
+      <div className="relative mt-3">
+        <div
+          className="overflow-hidden transition-[max-height] duration-500 ease-in-out"
+          style={{ maxHeight: expanded ? `${expandedHeight}px` : "15rem" }}
+        >
+          <div ref={contentRef} className="space-y-3 text-sm leading-6 text-white/65">
+            {segments.map((segment, index) =>
+              segment.type === "spoiler" ? (
+                <SpoilerBlock key={`${segment.type}-${index}`} text={segment.text} />
+              ) : (
+                <p key={`${segment.type}-${index}`} className="whitespace-pre-line">
+                  {segment.text}
+                </p>
+              )
+            )}
+          </div>
+        </div>
+
+        {canExpand && !expanded && (
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-12 bg-linear-to-t from-[#171717] to-transparent" />
+        )}
+      </div>
+
+      {(canExpand || expanded) && (
+        <button
+          type="button"
+          onClick={() => setExpanded((current) => !current)}
+          className="mt-3 inline-flex items-center gap-1 text-xs font-semibold text-(--app-accent) transition hover:brightness-125 focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+          aria-expanded={expanded}
+        >
+          {expanded ? "Show less" : "Show more"}
+          <ChevronDownIcon
+            className={`h-3.5 w-3.5 transition-transform ${expanded ? "rotate-180" : ""}`}
+          />
+        </button>
+      )}
+    </div>
+  );
+}
+
+function SpoilerBlock({ text }: { text: string }) {
+  const [revealed, setRevealed] = useState(false);
+
+  return (
+    <div className="rounded-2xl border border-(--app-accent)/25 bg-(--app-accent-soft) p-3">
+      <button
+        type="button"
+        onClick={() => setRevealed((current) => !current)}
+        className="text-xs font-semibold uppercase tracking-[0.18em] text-white/75 transition hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+      >
+        {revealed ? "Hide spoiler" : "Spoiler, click to view"}
+      </button>
+      {revealed && (
+        <p className="mt-3 whitespace-pre-line text-sm leading-6 text-white/65">
+          {text}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function InfoPanel({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-3xl border border-white/10 bg-white/3 p-4">
+      <p className="text-xs uppercase tracking-[0.2em] text-white/35">{label}</p>
+      <p className="mt-2 text-sm font-medium text-white/80">{value}</p>
+    </div>
+  );
+}
+
+function RelatedAnimeShelf({
+  edges,
+  onSelectAnime,
+}: {
+  edges: RelatedAnimeEdge[];
+  onSelectAnime?: (animeId: number) => void;
+}) {
+  const items = [...edges]
+    .sort((a, b) => getRelationPriority(a?.relationType) - getRelationPriority(b?.relationType))
+    .slice(0, 10);
+
+  return (
+    <ContentSection title="Related titles" icon={LinkIcon}>
+      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+        {items.map((edge, index) => {
+          const media = edge.node;
+          const relation = getRelationDetails(edge.relationType);
+          const titleText = getMediaTitle(media);
+          const mediaId = Number(media?.id);
+          const isAnime = isAnimeRelatedMedia(media);
+          const canOpen = isAnime && Number.isInteger(mediaId) && mediaId > 0 && Boolean(onSelectAnime);
+          const unavailableTitle = `${titleText} is not an anime title and cannot be opened in Seenary.`;
+
+          return (
+            <button
+              type="button"
+              key={`${media?.id ?? index}-${edge.relationType ?? "related"}`}
+              onClick={() => canOpen && onSelectAnime?.(mediaId)}
+              disabled={!canOpen}
+              className="group grid min-w-0 grid-cols-[3.5rem_1fr] gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
+              title={canOpen ? `Open ${titleText}` : unavailableTitle}
+            >
+              <div className="h-20 w-14 overflow-hidden rounded-xl bg-white/5">
+                {media?.coverImage?.large ? (
+                  <img
+                    src={media.coverImage.large}
+                    alt={titleText}
+                    className="h-full w-full object-cover"
+                  />
+                ) : (
+                  <div className="h-full w-full bg-white/5" />
+                )}
+              </div>
+
+              <div className="min-w-0">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <span
+                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.14em] ${relation.tone}`}
+                  >
+                    <relation.icon className="h-3.5 w-3.5" />
+                    {relation.label}
+                  </span>
+                  <span className="text-xs font-medium text-white/45">
+                    {isAnime ? relation.cue : "Shown for context"}
+                  </span>
+                </div>
+
+                <p className="mt-2 line-clamp-2 text-sm font-semibold leading-5 text-white/88">
+                  {titleText}
+                </p>
+
+                <div className="mt-3 flex flex-wrap gap-1.5">
+                  {media?.format && (
+                    <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
+                      {media.format}
+                    </span>
+                  )}
+                  {!isAnime && (
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/40">
+                      Not available in Seenary
+                    </span>
+                  )}
+                  {media?.episodes && (
+                    <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
+                      {media.episodes} eps
+                    </span>
+                  )}
+                  {media?.averageScore && (
+                    <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
+                      {media.averageScore}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            </button>
           );
         })}
       </div>
@@ -876,7 +2023,7 @@ function MediaShelf({
 }: {
   title: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
-  items: Array<{ label: string; media: any }>;
+  items: Array<{ label: string; media: RecommendationMedia }>;
   onSelectAnime?: (animeId: number) => void;
 }) {
   return (
@@ -893,7 +2040,7 @@ function MediaShelf({
               key={`${media?.id ?? index}-${label}`}
               onClick={() => canOpen && onSelectAnime?.(mediaId)}
               disabled={!canOpen}
-              className="group flex min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/[0.03]"
+              className="group flex min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
               title={canOpen ? `Open ${titleText}` : titleText}
             >
               <div className="h-20 w-14 shrink-0 overflow-hidden rounded-xl bg-white/5">
@@ -939,8 +2086,8 @@ function LinksSection({
   streamingEpisodes,
   externalLinks,
 }: {
-  streamingEpisodes: any[];
-  externalLinks: any[];
+  streamingEpisodes: StreamingEpisode[];
+  externalLinks: ExternalLink[];
 }) {
   return (
     <ContentSection title="Watch & Links" icon={LinkIcon}>
@@ -948,16 +2095,16 @@ function LinksSection({
         {streamingEpisodes.slice(0, 6).map((episode, index) => (
           <a
             key={`stream-${episode.url ?? index}`}
-            href={episode.url}
+            href={episode.url ?? undefined}
             target="_blank"
             rel="noreferrer"
-            className="flex min-w-0 gap-3 rounded-3xl border border-white/10 bg-white/[0.03] p-3 transition hover:bg-white/8"
+            className="flex min-w-0 gap-3 rounded-3xl border border-white/10 bg-white/3 p-3 transition hover:bg-white/8"
           >
             <div className="h-16 w-24 shrink-0 overflow-hidden rounded-2xl bg-white/5">
               {episode.thumbnail ? (
                 <img
                   src={episode.thumbnail}
-                  alt={episode.title}
+                  alt={episode.title ?? "Streaming episode"}
                   className="h-full w-full object-cover"
                 />
               ) : (
@@ -976,10 +2123,10 @@ function LinksSection({
         {externalLinks.slice(0, 8).map((link) => (
           <a
             key={`external-${link.id ?? link.url}`}
-            href={link.url}
+            href={link.url ?? undefined}
             target="_blank"
             rel="noreferrer"
-            className="flex items-center gap-3 rounded-3xl border border-white/10 bg-white/[0.03] p-3 transition hover:bg-white/8"
+            className="flex items-center gap-3 rounded-3xl border border-white/10 bg-white/3 p-3 transition hover:bg-white/8"
           >
             <div
               className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/8"
@@ -1002,9 +2149,22 @@ function LinksSection({
   );
 }
 
-function PersonImage({ src, name }: { src?: string | null; name: string }) {
+function PersonImage({
+  src,
+  name,
+  size = "normal",
+}: {
+  src?: string | null;
+  name: string;
+  size?: "normal" | "large";
+}) {
+  const className =
+    size === "large"
+      ? "h-52 w-36 rounded-3xl"
+      : "h-16 w-12 rounded-2xl";
+
   return (
-    <div className="h-16 w-12 shrink-0 overflow-hidden rounded-2xl bg-white/5">
+    <div className={`${className} shrink-0 overflow-hidden bg-white/5`}>
       {src ? (
         <img src={src} alt={name} className="h-full w-full object-cover" />
       ) : (
@@ -1021,27 +2181,84 @@ function TrailerPanel({
   trailer?: { id?: string | null; site?: string | null; thumbnail?: string | null } | null;
   trailerUrl: string | null;
 }) {
+  const [isPlayerOpen, setIsPlayerOpen] = useState(false);
   if (!trailer?.thumbnail && !trailerUrl) return null;
 
-  const content = (
-    <div className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]">
+  const embedUrl = getTrailerEmbedUrl(trailer);
+
+  return (
+    <>
+      <div className="group overflow-hidden rounded-3xl border border-white/10 bg-white/3 transition hover:border-white/18 focus-within:border-white/18">
       {trailer?.thumbnail ? (
         <div className="relative aspect-video overflow-hidden bg-white/5">
           <img
             src={trailer.thumbnail}
             alt="Trailer thumbnail"
-            className="h-full w-full object-cover opacity-80"
+            className="h-full w-full object-cover opacity-80 transition-[filter,transform,opacity] duration-300 group-hover:scale-[1.025] group-hover:blur-[3px] group-hover:opacity-55 group-focus-within:scale-[1.025] group-focus-within:blur-[3px] group-focus-within:opacity-55"
           />
-          <div className="absolute inset-0 bg-linear-to-t from-black/70 via-transparent to-transparent" />
-          <div className="absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1.5 text-xs font-medium text-white/85 backdrop-blur">
+          <div className="pointer-events-none absolute inset-0 bg-linear-to-t from-black/75 via-black/5 to-transparent transition group-hover:bg-black/30 group-focus-within:bg-black/30" />
+          <div className="pointer-events-none absolute bottom-3 left-3 inline-flex items-center gap-2 rounded-full border border-white/10 bg-black/45 px-3 py-1.5 text-xs font-medium text-white/85 backdrop-blur transition group-hover:opacity-0 group-focus-within:opacity-0">
             <PlayCircleIcon className="h-4 w-4" />
             Trailer
           </div>
+
+          {trailerUrl && (
+            <div className="absolute inset-0 flex items-center justify-center gap-3 bg-black/10 opacity-0 transition duration-300 group-hover:opacity-100 group-focus-within:opacity-100">
+              {embedUrl && (
+                <button
+                  type="button"
+                  onClick={() => setIsPlayerOpen(true)}
+                  className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white/85 shadow-xl backdrop-blur-md transition hover:scale-110 hover:bg-(--app-accent) hover:text-black focus:outline-none focus:ring-2 focus:ring-white/60"
+                  title="Play trailer in Seenary"
+                  aria-label="Play trailer in Seenary"
+                >
+                  <PlayCircleIcon className="h-6 w-6" />
+                </button>
+              )}
+              <a
+                href={trailerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white/85 shadow-xl backdrop-blur-md transition hover:scale-110 hover:bg-white hover:text-black focus:outline-none focus:ring-2 focus:ring-white/60"
+                title="Open trailer in browser"
+                aria-label="Open trailer in browser"
+              >
+                <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+              </a>
+            </div>
+          )}
         </div>
       ) : (
-        <div className="flex items-center gap-3 p-4">
+        <div className="flex items-center justify-between gap-3 p-4">
+          <div className="flex items-center gap-3">
           <PlayCircleIcon className="h-5 w-5 text-white/55" />
           <span className="text-sm font-medium text-white/80">Trailer</span>
+          </div>
+          {trailerUrl && (
+            <div className="flex items-center gap-2">
+              {embedUrl && (
+                <button
+                  type="button"
+                  onClick={() => setIsPlayerOpen(true)}
+                  className="rounded-full border border-white/10 bg-white/[0.05] p-2 text-white/65 transition hover:bg-(--app-accent) hover:text-black"
+                  title="Play trailer in Seenary"
+                  aria-label="Play trailer in Seenary"
+                >
+                  <PlayCircleIcon className="h-5 w-5" />
+                </button>
+              )}
+              <a
+                href={trailerUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="rounded-full border border-white/10 bg-white/[0.05] p-2 text-white/65 transition hover:bg-white hover:text-black"
+                title="Open trailer in browser"
+                aria-label="Open trailer in browser"
+              >
+                <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+              </a>
+            </div>
+          )}
         </div>
       )}
 
@@ -1052,15 +2269,93 @@ function TrailerPanel({
           </p>
         </div>
       )}
-    </div>
+      </div>
+
+      {isPlayerOpen && embedUrl && trailerUrl && (
+        <TrailerPlayerModal
+          embedUrl={embedUrl}
+          externalUrl={trailerUrl}
+          provider={trailer?.site || "Trailer"}
+          onClose={() => setIsPlayerOpen(false)}
+        />
+      )}
+    </>
   );
+}
 
-  if (!trailerUrl) return content;
+function TrailerPlayerModal({
+  embedUrl,
+  externalUrl,
+  provider,
+  onClose,
+}: {
+  embedUrl: string;
+  externalUrl: string;
+  provider: string;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
 
-  return (
-    <a href={trailerUrl} target="_blank" rel="noreferrer" className="block">
-      {content}
-    </a>
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[95] flex items-center justify-center overflow-y-auto rounded-3xl bg-black/82 p-3 sm:p-5"
+      role="dialog"
+      aria-modal="true"
+      aria-label="Trailer player"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <section className="relative flex max-h-[calc(100dvh-1.5rem)] w-full max-w-5xl flex-col overflow-hidden rounded-3xl border border-white/12 bg-[#0d0d0d] shadow-2xl sm:max-h-[calc(100dvh-2.5rem)]">
+        <div className="flex shrink-0 items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
+          <div>
+            <p className="text-sm font-semibold text-white">Trailer</p>
+            <p className="mt-0.5 text-xs uppercase tracking-[0.16em] text-white/35">
+              {provider}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <a
+              href={externalUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="rounded-full border border-white/10 bg-white/[0.05] p-2.5 text-white/65 transition hover:bg-white hover:text-black focus:outline-none focus:ring-2 focus:ring-white/60"
+              title="Open in browser"
+              aria-label="Open trailer in browser"
+            >
+              <ArrowTopRightOnSquareIcon className="h-5 w-5" />
+            </a>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-full border border-white/10 bg-white/[0.05] p-2.5 text-white/65 transition hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/60"
+              title="Close trailer"
+              aria-label="Close trailer"
+            >
+              <XMarkIcon className="h-5 w-5" />
+            </button>
+          </div>
+        </div>
+        <div className="aspect-video min-h-0 w-full shrink bg-black">
+          <iframe
+            src={embedUrl}
+            title="Anime trailer"
+            className="h-full w-full border-0"
+            allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+            referrerPolicy="strict-origin-when-cross-origin"
+            allowFullScreen
+          />
+        </div>
+      </section>
+    </div>,
+    document.body
   );
 }
 
@@ -1093,6 +2388,8 @@ function SideFacts({
   format?: string | null;
   animeStatus?: string | null;
 }) {
+  const isUpcoming = animeStatus === "NOT_YET_RELEASED";
+  const hasDistinctEndDate = Boolean(endDate && !areMediaDatesEqual(startDate, endDate));
   const facts = [
     score ? { label: "Community", value: `${score}%`, icon: StarIcon } : null,
     meanScore ? { label: "Mean", value: `${meanScore}%`, icon: StarIcon } : null,
@@ -1108,10 +2405,18 @@ function SideFacts({
       ? { label: "Country", value: countryOfOrigin, icon: TagIcon }
       : null,
     startDate
-      ? { label: "Start", value: formatFuzzyDate(startDate), icon: CalendarDaysIcon }
+      ? {
+          label: isUpcoming ? "Premiere" : "Start",
+          value: formatFuzzyDate(startDate),
+          icon: CalendarDaysIcon,
+        }
       : null,
-    endDate
-      ? { label: "End", value: formatFuzzyDate(endDate), icon: CalendarDaysIcon }
+    endDate && (!isUpcoming || hasDistinctEndDate)
+      ? {
+          label: isUpcoming ? "Expected end" : "End",
+          value: formatFuzzyDate(endDate),
+          icon: CalendarDaysIcon,
+        }
       : null,
     season && seasonYear
       ? {
@@ -1129,7 +2434,7 @@ function SideFacts({
   if (!facts.length) return null;
 
   return (
-    <aside className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+    <aside className="rounded-3xl border border-white/10 bg-white/3 p-5">
       <p className="text-xs uppercase tracking-[0.22em] text-white/35">
         Quick facts
       </p>
@@ -1175,7 +2480,7 @@ function ActionButton({
       disabled={disabled}
       className={`no-drag px-5 py-3 transition-transform duration-300 ease-out hover:scale-110 disabled:opacity-50 disabled:hover:scale-100 ${
         active
-          ? "text-[var(--app-accent)]"
+          ? "text-(--app-accent)"
           : "text-white/80 hover:text-white"
       }`}
       title={label}
@@ -1204,6 +2509,536 @@ function formatEnum(value: string) {
     .join(" ");
 }
 
+function getPersonFromEdge(edge: PersonEdge, kind: PeopleModalItem["kind"]): Person {
+  if (edge?.node) return edge.node;
+
+  return {
+    id: kind === "character" ? edge?.character_id : edge?.staff_id,
+    name: {
+      full: edge?.name_full,
+      native: edge?.name_native,
+      userPreferred: edge?.name_full,
+    },
+    image: {
+      large: edge?.image_large,
+    },
+  };
+}
+
+function getVoiceActorFromEdge(edge: PersonEdge): Person | null {
+  const voiceActor = edge?.voiceActors?.[0];
+  if (voiceActor) return voiceActor;
+
+  if (typeof edge?.voice_actors === "string") {
+    try {
+    return (JSON.parse(edge.voice_actors) as Person[])?.[0] ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  if (Array.isArray(edge?.voice_actors)) {
+    return edge.voice_actors[0] ?? null;
+  }
+
+  return null;
+}
+
+function buildPeopleModalItem({
+  edge,
+  kind,
+  title,
+  person,
+  voiceActor,
+}: {
+  edge: PersonEdge;
+  kind: PeopleModalItem["kind"];
+  title: string;
+  person: Person;
+  voiceActor: Person | null;
+}): PeopleModalItem {
+  const name = getPersonName(person);
+  const voiceActorName = voiceActor ? getPersonName(voiceActor) : null;
+
+  return {
+    id: Number(person?.id ?? edge?.character_id ?? edge?.staff_id) || null,
+    kind,
+    title,
+    name,
+    nativeName: person?.name?.native ?? null,
+    image: person?.image?.large ?? null,
+    role: edge?.role ?? null,
+    voiceActor:
+      kind === "character" && voiceActor && voiceActorName
+        ? {
+            name: voiceActorName,
+            nativeName: voiceActor?.name?.native ?? null,
+            image: voiceActor?.image?.large ?? null,
+            language: voiceActor?.language ?? null,
+          }
+        : null,
+  };
+}
+
+function getPersonDetailRequestKey(item: PeopleModalItem) {
+  return `${item.kind}:${item.id ?? "local"}`;
+}
+
+async function preloadPersonImages(details: PersonDetails, item: PeopleModalItem) {
+  const imageUrls = [
+    details?.image?.large ?? item.image,
+    item.voiceActor?.image,
+  ].filter((url): url is string => Boolean(url));
+
+  await Promise.all([...new Set(imageUrls)].map(preloadImage));
+}
+
+function preloadImage(src: string) {
+  return new Promise<void>((resolve) => {
+    const image = new Image();
+    let settled = false;
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+
+    image.onload = () => {
+      if (typeof image.decode === "function") {
+        image.decode().catch(() => undefined).finally(finish);
+      } else {
+        finish();
+      }
+    };
+    image.onerror = finish;
+    image.src = src;
+
+    if (image.complete) finish();
+  });
+}
+
+function buildPersonFacts(details: PersonDetails | null, kind: PeopleModalItem["kind"]) {
+  if (!details) return [];
+
+  const facts: Array<{ label: string; value: string }> = [];
+  const birthday = formatPersonDate(details.dateOfBirth);
+  const deathDate = formatPersonDate(details.dateOfDeath);
+
+  if (birthday !== "-") facts.push({ label: "Birthday", value: birthday });
+  if (kind === "staff" && deathDate !== "-") facts.push({ label: "Died", value: deathDate });
+  if (details.age) {
+    facts.push({
+      label: kind === "character" ? "Initial age" : "Age",
+      value: String(details.age),
+    });
+  }
+  if (details.gender) facts.push({ label: "Gender", value: details.gender });
+  if (kind === "character" && Array.isArray(details.name?.alternative)) {
+    const aliases = details.name.alternative
+      .map((alias: unknown) => String(alias || "").trim())
+      .filter(Boolean)
+      .slice(0, 3);
+
+    if (aliases.length > 0) {
+      facts.push({ label: "Also known as", value: aliases.join(", ") });
+    }
+  }
+  if (details.languageV2) facts.push({ label: "Language", value: details.languageV2 });
+  if (Array.isArray(details.primaryOccupations) && details.primaryOccupations.length > 0) {
+    facts.push({
+      label: "Work",
+      value: details.primaryOccupations.slice(0, 3).join(", "),
+    });
+  }
+  if (Array.isArray(details.yearsActive) && details.yearsActive.length > 0) {
+    const activeYears = details.yearsActive.filter(
+      (year): year is number => typeof year === "number" && year > 0
+    );
+
+    if (activeYears.length === 1) {
+      facts.push({ label: "Active since", value: String(activeYears[0]) });
+    } else if (activeYears.length > 1) {
+      facts.push({ label: "Years active", value: activeYears.join(" - ") });
+    }
+  }
+  if (details.homeTown) facts.push({ label: "Hometown", value: details.homeTown });
+  if (details.bloodType) facts.push({ label: "Blood type", value: details.bloodType });
+  return facts;
+}
+
+function parseAniListDescription(value?: string | null) {
+  if (!value) return [];
+
+  const normalized = normalizeAniListDescriptionText(value);
+  const segments: Array<{ type: "text" | "spoiler"; text: string }> = [];
+  const spoilerPattern = /~!(.*?)!~/gs;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = spoilerPattern.exec(normalized))) {
+    const textBefore = normalized.slice(lastIndex, match.index).trim();
+    const spoilerText = cleanDescriptionText(match[1]);
+
+    if (textBefore) {
+      segments.push({ type: "text", text: cleanDescriptionText(textBefore) });
+    }
+
+    if (spoilerText) {
+      segments.push({ type: "spoiler", text: spoilerText });
+    }
+
+    lastIndex = match.index + match[0].length;
+  }
+
+  const textAfter = normalized.slice(lastIndex).trim();
+  if (textAfter) {
+    segments.push({ type: "text", text: cleanDescriptionText(textAfter) });
+  }
+
+  return segments.filter((segment) => segment.text);
+}
+
+function normalizeAniListDescriptionText(value: string) {
+  return String(value)
+    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<\/p>/gi, "\n\n")
+    .replace(/<[^>]+>/g, "")
+    .replace(/\r/g, "");
+}
+
+function cleanDescriptionText(value: string) {
+  return value
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/_{2,}/g, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function formatPersonDate(date?: {
+  year?: number | null;
+  month?: number | null;
+  day?: number | null;
+} | null) {
+  if (!date?.year && !date?.month && !date?.day) return "-";
+
+  const month =
+    date.month && date.month >= 1 && date.month <= 12
+      ? new Intl.DateTimeFormat(undefined, { month: "short" }).format(
+          new Date(2000, date.month - 1, 1)
+        )
+      : null;
+
+  if (month && date.day && date.year) return `${month} ${date.day}, ${date.year}`;
+  if (month && date.day) return `${month} ${date.day}`;
+  if (month && date.year) return `${month} ${date.year}`;
+  if (month) return month;
+  if (date.year) return String(date.year);
+  if (date.day) return String(date.day);
+
+  return "-";
+}
+
+function getRelationPriority(relationType?: string | null) {
+  const priorities: Record<string, number> = {
+    PREQUEL: 10,
+    PARENT: 15,
+    SOURCE: 20,
+    ADAPTATION: 25,
+    SEQUEL: 30,
+    SIDE_STORY: 40,
+    SPIN_OFF: 45,
+    CHARACTER: 50,
+    SUMMARY: 60,
+    COMPILATION: 65,
+    CONTAINS: 70,
+    ALTERNATIVE: 80,
+    OTHER: 90,
+  };
+
+  return priorities[relationType ?? ""] ?? 100;
+}
+
+function isAnimeRelatedMedia(media: RelatedMedia | null | undefined) {
+  if (media?.type) {
+    return media.type === "ANIME";
+  }
+
+  return new Set(["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL", "MUSIC"]).has(
+    String(media?.format ?? "").toUpperCase()
+  );
+}
+
+function getRelationDetails(relationType?: string | null): {
+  label: string;
+  cue: string;
+  tone: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+} {
+  switch (relationType) {
+    case "PREQUEL":
+      return {
+        label: "Prequel",
+        cue: "Comes before this title",
+        tone: "border-sky-300/20 bg-sky-300/10 text-sky-100",
+        icon: CalendarDaysIcon,
+      };
+    case "SEQUEL":
+      return {
+        label: "Sequel",
+        cue: "Comes after this title",
+        tone: "border-emerald-300/20 bg-emerald-300/10 text-emerald-100",
+        icon: ArrowRightIcon,
+      };
+    case "ADAPTATION":
+      return {
+        label: "Adaptation",
+        cue: "Same story in another format",
+        tone: "border-violet-300/20 bg-violet-300/10 text-violet-100",
+        icon: BookmarkIcon,
+      };
+    case "SOURCE":
+      return {
+        label: "Source",
+        cue: "Original version",
+        tone: "border-violet-300/20 bg-violet-300/10 text-violet-100",
+        icon: BookmarkIcon,
+      };
+    case "SIDE_STORY":
+      return {
+        label: "Side story",
+        cue: "Parallel or extra story",
+        tone: "border-amber-300/20 bg-amber-300/10 text-amber-100",
+        icon: LinkIcon,
+      };
+    case "SPIN_OFF":
+      return {
+        label: "Spin-off",
+        cue: "Related branch",
+        tone: "border-amber-300/20 bg-amber-300/10 text-amber-100",
+        icon: LinkIcon,
+      };
+    case "SUMMARY":
+      return {
+        label: "Summary",
+        cue: "Recap version",
+        tone: "border-teal-300/20 bg-teal-300/10 text-teal-100",
+        icon: CheckCircleIcon,
+      };
+    case "COMPILATION":
+      return {
+        label: "Compilation",
+        cue: "Collected version",
+        tone: "border-teal-300/20 bg-teal-300/10 text-teal-100",
+        icon: CheckCircleIcon,
+      };
+    case "PARENT":
+      return {
+        label: "Parent story",
+        cue: "Main entry",
+        tone: "border-sky-300/20 bg-sky-300/10 text-sky-100",
+        icon: LinkIcon,
+      };
+    case "CHARACTER":
+      return {
+        label: "Character",
+        cue: "Shares characters",
+        tone: "border-pink-300/20 bg-pink-300/10 text-pink-100",
+        icon: UsersIcon,
+      };
+    case "ALTERNATIVE":
+      return {
+        label: "Alternative",
+        cue: "Alternate version",
+        tone: "border-orange-300/20 bg-orange-300/10 text-orange-100",
+        icon: ArrowPathIcon,
+      };
+    case "CONTAINS":
+      return {
+        label: "Contains",
+        cue: "Includes this story",
+        tone: "border-teal-300/20 bg-teal-300/10 text-teal-100",
+        icon: LinkIcon,
+      };
+    default:
+      return {
+        label: relationType ? formatEnum(relationType) : "Related",
+        cue: "Connected title",
+        tone: "border-white/10 bg-white/8 text-white/70",
+        icon: LinkIcon,
+      };
+  }
+}
+
+function positiveNumberOrNull(value: number | null | undefined) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : null;
+}
+
+function getPlainText(html: string) {
+  return html
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(?:nbsp|amp|quot|apos|lt|gt);/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function formatRuntime(totalMinutes: number) {
+  const roundedMinutes = Math.max(0, Math.round(totalMinutes));
+  const hours = Math.floor(roundedMinutes / 60);
+  const minutes = roundedMinutes % 60;
+
+  if (!hours) return `${minutes} min`;
+  if (!minutes) return `${hours} hr`;
+
+  return `${hours} hr ${minutes} min`;
+}
+
+function getSeriesTiming(
+  date: { year?: number | null; month?: number | null; day?: number | null } | null,
+  now: number
+) {
+  if (!date?.year) return null;
+
+  const start = new Date(date.year, Math.max(0, (date.month ?? 1) - 1), date.day ?? 1);
+  const difference = now - start.getTime();
+  const future = difference < 0;
+  const absoluteDays = Math.floor(Math.abs(difference) / 86_400_000);
+  const span = formatCalendarSpan(absoluteDays);
+
+  return future
+    ? {
+        label: "Premiere",
+        value: span === "today" ? "Starts today" : `Starts in ${span}`,
+        context: formatFuzzyDate(date),
+      }
+    : {
+        label: "Series age",
+        value: span === "today" ? "First aired today" : `First aired ${span} ago`,
+        context: formatFuzzyDate(date),
+      };
+}
+
+function formatCalendarSpan(days: number) {
+  if (days < 1) return "today";
+  if (days < 14) return `${days} ${days === 1 ? "day" : "days"}`;
+  if (days < 60) {
+    const weeks = Math.max(2, Math.round(days / 7));
+    return `${weeks} weeks`;
+  }
+  if (days < 730) {
+    const months = Math.max(2, Math.round(days / 30.44));
+    return `${months} months`;
+  }
+
+  const years = Math.floor(days / 365.25);
+  return `${years} years`;
+}
+
+function formatAiringCountdown(airingAt: number | null | undefined, now: number) {
+  const timestamp = Number(airingAt) * 1000;
+  if (!Number.isFinite(timestamp) || timestamp <= now) return null;
+
+  const totalMinutes = Math.max(1, Math.ceil((timestamp - now) / 60_000));
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+
+  if (days > 0) return `In ${days}d ${hours}h`;
+  if (hours > 0) return `In ${hours}h ${minutes}m`;
+  return `In ${minutes}m`;
+}
+
+function summarizeDirectRelations(relations: RelatedAnimeEdge[]) {
+  const animeFormats = new Set(["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL", "MUSIC"]);
+  const relationCounts = new Map<string, number>();
+
+  for (const edge of relations) {
+    const format = String(edge.node?.format ?? "").toUpperCase();
+    if (!animeFormats.has(format)) continue;
+
+    const relation = String(edge.relationType ?? "RELATED").toUpperCase();
+    relationCounts.set(relation, (relationCounts.get(relation) ?? 0) + 1);
+  }
+
+  const total = [...relationCounts.values()].reduce((sum, count) => sum + count, 0);
+  if (!total) return null;
+
+  const relationOrder = ["PREQUEL", "SEQUEL", "SIDE_STORY", "SPIN_OFF"];
+  const entries = [...relationCounts.entries()].sort(([left], [right]) => {
+    const leftIndex = relationOrder.indexOf(left);
+    const rightIndex = relationOrder.indexOf(right);
+    return (leftIndex < 0 ? 99 : leftIndex) - (rightIndex < 0 ? 99 : rightIndex);
+  });
+  const parts = entries.map(([relation, count]) => {
+    const singular = getDirectRelationLabel(relation);
+    const plural = getDirectRelationPlural(singular);
+    return formatCount(count, singular, plural);
+  });
+
+  return { total, summary: parts.join(" · ") };
+}
+
+function getDirectRelationLabel(relation: string) {
+  switch (relation) {
+    case "PREQUEL":
+      return "prequel";
+    case "SEQUEL":
+      return "sequel";
+    case "SIDE_STORY":
+      return "side story";
+    case "SPIN_OFF":
+      return "spin-off";
+    case "SUMMARY":
+      return "summary";
+    case "COMPILATION":
+      return "compilation";
+    case "ALTERNATIVE":
+      return "alternative";
+    case "PARENT":
+      return "parent title";
+    case "CHARACTER":
+      return "character connection";
+    default:
+      return "related title";
+  }
+}
+
+function getDirectRelationPlural(label: string) {
+  switch (label) {
+    case "side story":
+      return "side stories";
+    case "summary":
+      return "summaries";
+    default:
+      return `${label}s`;
+  }
+}
+
+function formatCount(count: number, singular: string, plural = `${singular}s`) {
+  if (!count) return null;
+  return `${count} ${count === 1 ? singular : plural}`;
+}
+
+function getAiringStatusLabel(status: string) {
+  switch (status) {
+    case "RELEASING":
+      return "Still airing";
+    case "FINISHED":
+      return "Finished airing";
+    case "NOT_YET_RELEASED":
+      return "Upcoming";
+    case "CANCELLED":
+      return "Cancelled";
+    case "HIATUS":
+      return "On hiatus";
+    default:
+      return formatEnum(status);
+  }
+}
+
 function formatFuzzyDate(date: {
   year?: number | null;
   month?: number | null;
@@ -1224,11 +3059,20 @@ function formatFuzzyDate(date: {
   return parts.join("-");
 }
 
+function areMediaDatesEqual(
+  left?: { year?: number | null; month?: number | null; day?: number | null } | null,
+  right?: { year?: number | null; month?: number | null; day?: number | null } | null
+) {
+  if (!left || !right) return false;
+
+  return left.year === right.year && left.month === right.month && left.day === right.day;
+}
+
 function formatNumber(value: number) {
   return new Intl.NumberFormat().format(value);
 }
 
-function getPersonName(person: any) {
+function getPersonName(person: Person | null | undefined) {
   return (
     person?.name?.userPreferred ||
     person?.name?.full ||
@@ -1237,7 +3081,9 @@ function getPersonName(person: any) {
   );
 }
 
-function getMediaTitle(media: any) {
+function getMediaTitle(
+  media: AnimeMedia | RecommendationMedia | RelatedMedia | null | undefined
+) {
   return (
     media?.title?.userPreferred ||
     media?.title?.english ||
@@ -1261,6 +3107,26 @@ function getTrailerUrl(trailer?: {
 
   if (site === "dailymotion") {
     return `https://www.dailymotion.com/video/${trailer.id}`;
+  }
+
+  return null;
+}
+
+function getTrailerEmbedUrl(trailer?: {
+  id?: string | null;
+  site?: string | null;
+} | null) {
+  if (!trailer?.id || !trailer.site) return null;
+
+  const id = encodeURIComponent(trailer.id);
+  const site = trailer.site.toLowerCase();
+
+  if (site === "youtube") {
+    return `https://www.youtube-nocookie.com/embed/${id}?autoplay=1&rel=0`;
+  }
+
+  if (site === "dailymotion") {
+    return `https://www.dailymotion.com/embed/video/${id}?autoplay=1`;
   }
 
   return null;

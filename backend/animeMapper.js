@@ -6,7 +6,7 @@ function mapAnimeForDb(media) {
     title_native: media.title?.native ?? null,
     title_preferred: media.title?.userPreferred ?? null,
 
-    cover_image_large: media.coverImage?.large ?? null,
+    cover_image_large: media.coverImage?.extraLarge ?? media.coverImage?.large ?? null,
     banner_image: media.bannerImage ?? null,
 
     episodes: media.episodes ?? null,
@@ -24,6 +24,7 @@ function mapAnimeForDb(media) {
     source: media.source ?? null,
     country_of_origin: media.countryOfOrigin ?? null,
     start_date: mapFuzzyDate(media.startDate),
+    franchise_start_date: mapFuzzyDate(media.franchiseStartDate ?? media.startDate),
     end_date: mapFuzzyDate(media.endDate),
     trailer_id: media.trailer?.id ?? null,
     trailer_site: media.trailer?.site ?? null,
@@ -78,6 +79,7 @@ function mapDbAnimeForFrontend(row) {
     source: row.source,
     countryOfOrigin: row.country_of_origin,
     startDate: parseStoredDate(row.start_date),
+    franchiseStartDate: parseStoredDate(row.franchise_start_date) ?? parseStoredDate(row.start_date),
     endDate: parseStoredDate(row.end_date),
     trailer:
       row.trailer_id || row.trailer_site || row.trailer_thumbnail
@@ -192,6 +194,7 @@ function mapRelatedMedia(media) {
 
   return {
     id: media.id,
+    type: media.type ?? null,
     title: media.title ?? null,
     coverImage: media.coverImage ?? null,
     description: media.description ?? null,

@@ -6,10 +6,59 @@ const zlib = require('zlib');
 
 const MAX_TEXT_IMPORT_LINES = 100;
 const MAX_PDF_IMPORT_BYTES = 25 * 1024 * 1024;
-const TEXT_IMPORT_SEARCH_CONCURRENCY = 4;
+const TEXT_IMPORT_SEARCH_CONCURRENCY = 8;
 const TEXT_IMPORT_SEARCH_BATCH_DELAY_MS = 250;
-const TEXT_IMPORT_RATE_LIMIT_RETRY_MS = 3500;
-const TEXT_IMPORT_RATE_LIMIT_RETRIES = 2;
+const TEXT_IMPORT_PREVIEW_TIME_BUDGET_MS = 45_000;
+const TEXT_IMPORT_MAX_SEARCH_VARIANTS = 2;
+const TEXT_IMPORT_STATUS_WORDS = new Set([
+  'completed',
+  'complete',
+  'watching',
+  'planned',
+  'planning',
+  'paused',
+  'dropped',
+  'rewatching',
+]);
+const TEXT_IMPORT_TITLE_ALIASES = new Map([
+  ['aoharuride', 'Ao Haru Ride'],
+  ['apothecarsdiaries', 'The Apothecary Diaries'],
+  ['apothecarydiaries', 'The Apothecary Diaries'],
+  ['86', '86 EIGHTY-SIX'],
+  ['blueexorcist', 'Blue Exorcist'],
+  ['bluelock', 'BLUE LOCK'],
+  ['bluespringride', 'Ao Haru Ride'],
+  ['darlinginfranxx', 'Darling in the FranXX'],
+  ['darlinginfranxxx', 'Darling in the FranXX'],
+  ['darlinginthefranxx', 'Darling in the FranXX'],
+  ['darlinginthefranxxoox', 'Darling in the FranXX'],
+  ['darlinginthefranxxox', 'Darling in the FranXX'],
+  ['darlinginthefranxxx', 'Darling in the FranXX'],
+  ['donttoywithmemissnagatoro', "Don't Toy with Me, Miss Nagatoro"],
+  ['franxx', 'Darling in the FranXX'],
+  ['fruitbasket', 'Fruits Basket'],
+  ['fruitsbasket', 'Fruits Basket'],
+  ['hellparadise', "Hell's Paradise"],
+  ['hellsparadise', "Hell's Paradise"],
+  ['hotarubinomorie', 'Hotarubi no Mori e'],
+  ['ijiranaidenagatorosan', 'Ijiranaide, Nagatoro-san'],
+  ['ijirinaidenagatorosan', 'Ijiranaide, Nagatoro-san'],
+  ['jigokuraku', 'Jigokuraku'],
+  ['lightoffireflyforest', 'Hotarubi no Mori e'],
+  ['lightofafireflyforest', 'Hotarubi no Mori e'],
+  ['mashlemagicandmuscles', 'MASHLE: MAGIC AND MUSCLES'],
+  ['myloveforyamadakunatlv999', 'My Love Story with Yamada-kun at Lv999'],
+  ['mylovestorywithyamada999', 'My Love Story with Yamada-kun at Lv999'],
+  ['mylovestorywithyamadaatlv999', 'My Love Story with Yamada-kun at Lv999'],
+  ['nierautomata', 'NieR:Automata Ver1.1a'],
+  ['oshinoko', 'Oshi no Ko'],
+  ['spyfamily', 'SPY x FAMILY'],
+  ['spyxfamily', 'SPY x FAMILY'],
+  ['theapothecarydiaries', 'The Apothecary Diaries'],
+  ['thelightofafireflyforest', 'Hotarubi no Mori e'],
+  ['wotakoi', 'Wotakoi: Love is Hard for Otaku'],
+  ['wotakoiloveishardforotaku', 'Wotakoi: Love is Hard for Otaku'],
+]);
 const PDF_IMPORT_BLOCKED_LINE_PATTERNS = [
   /\bsearch anime\b/i,
   /\bbookmark\b/i,
@@ -77,13 +126,14 @@ function parseTextLine(line) {
     progressMatch && /^\d+$/.test(progressMatch[2])
       ? Number(progressMatch[2])
       : null;
-  const title = line
+  const cleanedLine = line
     .replace(/^\s*(?:[-*]|\d+[.)])\s+/, '')
     .replace(progressMatch?.[0] || '', ' ')
     .replace(/\s+\[(?:completed|complete|watching|planned|paused|dropped)\]\s*$/i, '')
     .replace(/\s+-\s+(?:completed|complete|watching|planned|paused|dropped)\s*$/i, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
+  const title = extractTextImportTitle(cleanedLine);
 
   return {
     rawLine: line,
@@ -93,8 +143,125 @@ function parseTextLine(line) {
   };
 }
 
+function extractTextImportTitle(line) {
+  const candidates = splitTextImportLine(line)
+    .map(cleanTextImportTitleCandidate)
+    .filter(isLikelyTextImportTitleCandidate);
+
+  return candidates[0] || cleanTextImportTitleCandidate(line);
+}
+
+function splitTextImportLine(line) {
+  const text = String(line || '').trim();
+
+  if (!text) {
+    return [];
+  }
+
+  if (text.includes('\t')) {
+    return text.split('\t');
+  }
+
+  if (text.includes('|')) {
+    return text.split('|');
+  }
+
+  if (text.includes(';')) {
+    return text.split(';');
+  }
+
+  const csvParts = splitCsvTextImportLine(text);
+
+  return csvParts.length > 1 ? csvParts : [text];
+}
+
+function splitCsvTextImportLine(line) {
+  const parts = [];
+  let current = '';
+  let inQuotes = false;
+
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    const nextChar = line[index + 1];
+
+    if (char === '"' && nextChar === '"') {
+      current += '"';
+      index += 1;
+      continue;
+    }
+
+    if (char === '"') {
+      inQuotes = !inQuotes;
+      continue;
+    }
+
+    if (char === ',' && !inQuotes) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+
+    current += char;
+  }
+
+  parts.push(current);
+
+  return parts;
+}
+
+function cleanTextImportTitleCandidate(value) {
+  return String(value || '')
+    .trim()
+    .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
+    .replace(/\s+\[(?:completed|complete|watching|planned|paused|dropped)\]\s*$/i, '')
+    .replace(/\s+-\s+(?:completed|complete|watching|planned|paused|dropped)\s*$/i, '')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
+function isLikelyTextImportTitleCandidate(value) {
+  const text = String(value || '').trim();
+  const lowerText = text.toLowerCase();
+
+  if (text.length < 2 || text.length > 160) {
+    return false;
+  }
+
+  if (TEXT_IMPORT_STATUS_WORDS.has(lowerText)) {
+    return false;
+  }
+
+  if (/^(?:title|anime|name|status|score|rating|progress|episodes?|type|format)$/i.test(text)) {
+    return false;
+  }
+
+  if (/^\d+(?:\.\d+)?$/.test(text) || /^\d{4}-\d{2}-\d{2}$/.test(text)) {
+    return false;
+  }
+
+  return /[\p{L}\p{N}]/u.test(text);
+}
+
+function prioritizeTextImportEntries(entries) {
+  return [...entries].sort((left, right) => {
+    const leftHasAlias = hasTextImportTitleAlias(left.title);
+    const rightHasAlias = hasTextImportTitleAlias(right.title);
+
+    if (leftHasAlias !== rightHasAlias) {
+      return leftHasAlias ? -1 : 1;
+    }
+
+    return 0;
+  });
+}
+
+function hasTextImportTitleAlias(title) {
+  return TEXT_IMPORT_TITLE_ALIASES.has(normalizeTextImportAliasKey(title));
+}
+
 async function previewTextImport(text, options = {}) {
   const parsedEntries = parseTextList(text);
+  const searchEntries = prioritizeTextImportEntries(parsedEntries);
 
   if (!parsedEntries.length) {
     return { ok: false, message: 'Add at least one anime title to the text file.' };
@@ -106,29 +273,24 @@ async function previewTextImport(text, options = {}) {
   };
   const unmatched = [];
   let rateLimitedCount = 0;
+  let failedSearchCount = 0;
+  let timedOutCount = 0;
   const searchCache = new Map();
+  const startedAt = Date.now();
 
-  for (let index = 0; index < parsedEntries.length; index += TEXT_IMPORT_SEARCH_CONCURRENCY) {
-    const batch = parsedEntries.slice(index, index + TEXT_IMPORT_SEARCH_CONCURRENCY);
-    const batchResults = await Promise.all(
-      batch.map(async (parsedEntry) => {
-        const cacheKey = normalizeSearchCacheKey(parsedEntry.title, options.hideAdultContent);
+  for (let index = 0; index < searchEntries.length; index += TEXT_IMPORT_SEARCH_CONCURRENCY) {
+    if (Date.now() - startedAt > TEXT_IMPORT_PREVIEW_TIME_BUDGET_MS) {
+      const remainingEntries = searchEntries.slice(index);
+      timedOutCount += remainingEntries.length;
+      unmatched.push(...remainingEntries.map((entry) => entry.rawLine));
+      break;
+    }
 
-        if (!searchCache.has(cacheKey)) {
-          searchCache.set(
-            cacheKey,
-            await searchAnimeForTextImport(parsedEntry.title, {
-              hideAdultContent: options.hideAdultContent,
-            })
-          );
-        }
-
-        return {
-          parsedEntry,
-          searchResult: searchCache.get(cacheKey),
-        };
-      })
-    );
+    const batch = searchEntries.slice(index, index + TEXT_IMPORT_SEARCH_CONCURRENCY);
+    const batchResults = await searchAnimeBatchForTextImport(batch, {
+      hideAdultContent: options.hideAdultContent,
+      searchCache,
+    });
 
     const rateLimitedResultIndex = batchResults.findIndex(({ searchResult }) => searchResult.rateLimited);
 
@@ -141,6 +303,7 @@ async function previewTextImport(text, options = {}) {
 
     for (const { parsedEntry, searchResult } of batchResults) {
       if (searchResult.error) {
+        failedSearchCount += 1;
         unmatched.push(parsedEntry.rawLine);
         continue;
       }
@@ -173,11 +336,14 @@ async function previewTextImport(text, options = {}) {
         season: match.season ?? null,
         seasonYear: match.seasonYear ?? null,
         sourceTitle: parsedEntry.title,
+        guessed: Boolean(searchResult.guessed),
+        guessedFrom: searchResult.guessed ? parsedEntry.title : null,
+        interpretedTitle: searchResult.guessed ? searchResult.searchTitle : null,
         media: match,
       });
     }
 
-    await delayBetweenTextImportSearchBatches(index, parsedEntries.length);
+    await delayBetweenTextImportSearchBatches(index, searchEntries.length);
   }
 
   const groups = ['watching', 'completed']
@@ -191,6 +357,10 @@ async function previewTextImport(text, options = {}) {
       message:
         rateLimitedCount > 0
           ? 'AniList is rate limiting title matching. Wait a minute, then try the text import again.'
+          : timedOutCount > 0
+          ? 'Text import matching took too long. Try importing the matched titles now, or retry with fewer lines.'
+          : failedSearchCount > 0
+          ? 'AniList did not respond reliably while matching this text file. Try again in a moment, or try fewer titles at once.'
           : 'No titles from the text file could be matched to AniList anime.',
       unmatched,
     };
@@ -201,6 +371,10 @@ async function previewTextImport(text, options = {}) {
     message:
       rateLimitedCount > 0
         ? `Matched ${matchedCount} title${matchedCount === 1 ? '' : 's'}. AniList rate limited ${rateLimitedCount}, so try again later for the skipped lines.`
+        : timedOutCount > 0
+        ? `Matched ${matchedCount} title${matchedCount === 1 ? '' : 's'}. Matching took too long, so ${timedOutCount} line${timedOutCount === 1 ? '' : 's'} were skipped.`
+        : failedSearchCount > 0
+        ? `Matched ${matchedCount} title${matchedCount === 1 ? '' : 's'}. ${failedSearchCount} title${failedSearchCount === 1 ? '' : 's'} could not be checked because AniList did not respond.`
         : unmatched.length > 0
         ? `Matched ${matchedCount} title${matchedCount === 1 ? '' : 's'} and skipped ${unmatched.length}.`
         : `Matched ${matchedCount} title${matchedCount === 1 ? '' : 's'}.`,
@@ -293,29 +467,155 @@ function isLikelyPdfAnimeTitleLine(line) {
   return true;
 }
 
-async function searchAnimeForTextImport(title, options) {
-  for (let attempt = 0; attempt <= TEXT_IMPORT_RATE_LIMIT_RETRIES; attempt += 1) {
-    try {
-      const results = await anilist.searchAnime(title, options);
-      return { results };
-    } catch (error) {
-      if (!isRateLimitError(error)) {
-        return { error };
-      }
+async function searchAnimeBatchForTextImport(parsedEntries, options) {
+  const searchCache = options.searchCache;
+  const resultsByTitle = new Map();
+  const missingEntries = [];
 
-      if (attempt === TEXT_IMPORT_RATE_LIMIT_RETRIES) {
-        return { rateLimited: true, error };
-      }
+  for (const parsedEntry of parsedEntries) {
+    const cacheKey = normalizeSearchCacheKey(parsedEntry.title, options.hideAdultContent);
 
-      const retryAfterMs =
-        typeof error.retryAfter === 'number' && error.retryAfter > 0
-          ? error.retryAfter * 1000
-          : TEXT_IMPORT_RATE_LIMIT_RETRY_MS * (attempt + 1);
-      await delay(retryAfterMs);
+    if (searchCache.has(cacheKey)) {
+      resultsByTitle.set(parsedEntry.title, searchCache.get(cacheKey));
+    } else {
+      missingEntries.push({
+        parsedEntry,
+        cacheKey,
+        searchTitles: getTextImportSearchTitles(parsedEntry.title),
+      });
     }
   }
 
-  return { results: [] };
+  const maxVariantCount = Math.max(
+    0,
+    ...missingEntries.map((entry) => entry.searchTitles.length)
+  );
+  const unresolvedEntries = new Set(missingEntries);
+
+  for (let variantIndex = 0; variantIndex < maxVariantCount; variantIndex += 1) {
+    const variantEntries = Array.from(unresolvedEntries).filter(
+      (entry) => entry.searchTitles[variantIndex]
+    );
+
+    if (!variantEntries.length) {
+      continue;
+    }
+
+    try {
+      const batchResults = await anilist.searchAnimeBatch(
+        variantEntries.map((entry) => entry.searchTitles[variantIndex].title),
+        { hideAdultContent: options.hideAdultContent }
+      );
+
+      batchResults.forEach((results, resultIndex) => {
+        if (!Array.isArray(results) || results.length === 0) {
+          return;
+        }
+
+        const entry = variantEntries[resultIndex];
+        const searchTitle = entry.searchTitles[variantIndex];
+        const searchResult = {
+          results,
+          searchTitle: searchTitle.title,
+          guessed: searchTitle.guessed,
+        };
+
+        searchCache.set(entry.cacheKey, searchResult);
+        resultsByTitle.set(entry.parsedEntry.title, searchResult);
+        unresolvedEntries.delete(entry);
+      });
+    } catch (error) {
+      const searchResult = isRateLimitError(error)
+        ? { rateLimited: true, error }
+        : { error };
+
+      variantEntries.forEach((entry) => {
+        searchCache.set(entry.cacheKey, searchResult);
+        resultsByTitle.set(entry.parsedEntry.title, searchResult);
+        unresolvedEntries.delete(entry);
+      });
+    }
+  }
+
+  unresolvedEntries.forEach((entry) => {
+    const searchResult = { results: [] };
+    searchCache.set(entry.cacheKey, searchResult);
+    resultsByTitle.set(entry.parsedEntry.title, searchResult);
+  });
+
+  return parsedEntries.map((parsedEntry) => ({
+    parsedEntry,
+    searchResult: resultsByTitle.get(parsedEntry.title) ?? { results: [] },
+  }));
+}
+
+function getTextImportSearchTitles(title) {
+  const original = String(title || '').trim();
+  const alias = TEXT_IMPORT_TITLE_ALIASES.get(normalizeTextImportAliasKey(original));
+
+  if (alias) {
+    return [{ title: alias, guessed: true }];
+  }
+
+  const simplified = original
+    .replace(/\s*\([^)]*(?:TV|OVA|ONA|Movie|Special|Season|Ep(?:isode)?|\d{4})[^)]*\)\s*/gi, ' ')
+    .replace(/\s*\[[^\]]*(?:TV|OVA|ONA|Movie|Special|Season|Ep(?:isode)?|\d{4})[^\]]*\]\s*/gi, ' ')
+    .replace(/\b(?:season|s)\s*\d+\b/gi, ' ')
+    .replace(/\b(?:episode|ep)\s*\d+\b/gi, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const punctuationSpaced = original
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([a-zA-Z])(\d)/g, '$1 $2')
+    .replace(/(\d)([a-zA-Z])/g, '$1 $2')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+  const titles = [
+    alias ? { title: alias, guessed: true } : null,
+    original ? { title: original, guessed: false } : null,
+    simplified
+      ? {
+          title: simplified,
+          guessed:
+            simplified !== original &&
+            normalizeTextImportAliasKey(simplified) !== normalizeTextImportAliasKey(original),
+        }
+      : null,
+    punctuationSpaced
+      ? {
+          title: punctuationSpaced,
+          guessed:
+            punctuationSpaced !== original &&
+            normalizeTextImportAliasKey(punctuationSpaced) !== normalizeTextImportAliasKey(original),
+        }
+      : null,
+  ]
+    .filter(Boolean)
+    .map((searchTitle) => searchTitle);
+
+  const seen = new Set();
+
+  return titles.filter((searchTitle) => {
+    const key = normalizeTextImportAliasKey(searchTitle.title);
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  }).slice(0, TEXT_IMPORT_MAX_SEARCH_VARIANTS);
+}
+
+function normalizeTextImportAliasKey(value) {
+  return String(value || '')
+    .normalize('NFKD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/&/g, 'and')
+    .replace(/\b(?:the|a|an)\b/g, '')
+    .replace(/[^a-z0-9]+/g, '');
 }
 
 function isRateLimitError(error) {

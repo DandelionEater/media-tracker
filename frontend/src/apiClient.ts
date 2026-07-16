@@ -1,8 +1,10 @@
 import { DEFAULT_LOCAL_SETTINGS, localStore } from "./localStore";
+import type { AuthImportResult } from "./types/domain";
 
-type ApiClient = {
-  [key: string]: (...args: any[]) => Promise<any> | void;
-  onFocusSearch: (callback: () => void) => void;
+type ApiClient = typeof window.api;
+
+type ImportOptions = {
+  signal?: AbortSignal;
 };
 
 const API_BASE_URL =
@@ -14,8 +16,10 @@ const API_BASE_URL =
 let pendingAniListLoginFlowId: string | null = null;
 let pendingMalLoginFlowId: string | null = null;
 let activeUserId: number | null = null;
+let localAutoSyncTimer: number | null = null;
+const LOCAL_AUTO_SYNC_DELAY_MS = 15_000;
 
-async function rpc(method: string, args: unknown[] = []) {
+async function rpc(method: string, args: unknown[] = [], options: { signal?: AbortSignal } = {}) {
   const response = await fetch(`${API_BASE_URL}/rpc`, {
     method: "POST",
     credentials: "include",
@@ -23,6 +27,7 @@ async function rpc(method: string, args: unknown[] = []) {
       "Content-Type": "application/json",
     },
     body: JSON.stringify({ method, args }),
+    signal: options.signal,
   });
 
   const payload = await response.json().catch(() => null);
@@ -32,6 +37,56 @@ async function rpc(method: string, args: unknown[] = []) {
   }
 
   return payload;
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) {
+    return;
+  }
+
+  throw new DOMException("Import cancelled.", "AbortError");
+}
+
+function isAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function buildCancelledImportResult() {
+  return {
+    ok: false,
+    cancelled: true,
+    message: "Import cancelled.",
+  };
+}
+
+function isThirdPartyImport(source: string) {
+  return source === "AniList" || source === "MyAnimeList";
+}
+
+async function runLocalAutoSync(userId: number) {
+  if (!(await localStore.getAutoSyncEnabled(userId))) {
+    return;
+  }
+
+  if ((await localStore.getPendingSyncCount(userId)) <= 0) {
+    return;
+  }
+
+  const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId)]);
+  await localStore.markSynced(userId, result);
+}
+
+function scheduleLocalAutoSync(userId: number) {
+  if (localAutoSyncTimer !== null) {
+    window.clearTimeout(localAutoSyncTimer);
+  }
+
+  localAutoSyncTimer = window.setTimeout(() => {
+    localAutoSyncTimer = null;
+    runLocalAutoSync(userId).catch((error) => {
+      console.error("Auto sync failed:", error);
+    });
+  }, LOCAL_AUTO_SYNC_DELAY_MS);
 }
 
 function openPopup(url: string, name = "seenary-oauth") {
@@ -190,7 +245,7 @@ async function linkMalAccount() {
   return await waitForMalFlow("pollMalLink", start.flowId, popup);
 }
 
-async function saveAuthImportLocally(result: any) {
+async function saveAuthImportLocally(result: AuthImportResult) {
   const userId = result?.user?.id ?? activeUserId;
 
   if (!userId || !result?.import?.localEntries?.length) {
@@ -198,7 +253,12 @@ async function saveAuthImportLocally(result: any) {
   }
 
   activeUserId = userId;
-  await localStore.replaceEntriesFromImport(userId, result.import);
+
+  try {
+    await localStore.replaceEntriesFromImport(userId, result.import);
+  } catch (error) {
+    console.error("Failed to save imported AniList entries locally:", error);
+  }
 }
 
 async function getActiveUserId() {
@@ -253,45 +313,59 @@ async function logout() {
   return result;
 }
 
-function flattenPreviewEntries(result: any, selectedAnimeIds: number[] = []) {
+function flattenPreviewEntries(result: AuthImportResult, selectedAnimeIds: number[] = []) {
   const selected = new Set(
     selectedAnimeIds.map((animeId) => Number(animeId)).filter((animeId) => animeId > 0)
   );
   const hasSelection = selected.size > 0;
 
-  return (result?.localEntries ?? result?.preview?.groups?.flatMap((group: any) => group.items) ?? [])
-    .filter((item: any) => !hasSelection || selected.has(Number(item?.animeId)))
-    .filter((item: any) => Number(item?.animeId) > 0);
+  return (result.localEntries ?? result.preview?.groups?.flatMap((group) => group.items) ?? [])
+    .filter((item) => !hasSelection || selected.has(Number(item.animeId)))
+    .filter((item) => Number(item.animeId) > 0);
 }
 
 async function importLocalEntries(
   userId: number,
-  result: any,
+  result: AuthImportResult,
   selectedAnimeIds: number[] = [],
-  fallbackSource = "Import"
+  fallbackSource = "Import",
+  signal?: AbortSignal
 ) {
+  throwIfAborted(signal);
+
   const items = flattenPreviewEntries(result, selectedAnimeIds);
   let imported = 0;
   let created = 0;
   let updated = 0;
 
   for (const item of items) {
+    throwIfAborted(signal);
     await localStore.cachePreviewAnime(userId, item);
+    throwIfAborted(signal);
     const existing = await localStore.getEntry(userId, Number(item.animeId));
-    const saved = await localStore.saveEntry(userId, Number(item.animeId), {
-      status: item.status,
-      progress: item.progress ?? 0,
-      score: item.score ?? null,
-      notes: item.notes ?? null,
-      startedAt: item.startedAt ?? null,
-      completedAt: item.completedAt ?? null,
-      repeatCount: item.repeatCount ?? 0,
-      isFavorite: existing?.is_favorite,
-    });
+    throwIfAborted(signal);
+    const saved = await localStore.saveEntry(
+      userId,
+      Number(item.animeId),
+      {
+        status: item.status,
+        progress: item.progress ?? 0,
+        score: item.score ?? null,
+        notes: item.notes ?? null,
+        startedAt: item.startedAt ?? null,
+        completedAt: item.completedAt ?? null,
+        repeatCount: item.repeatCount ?? 0,
+        isFavorite: Boolean(existing?.is_favorite),
+      },
+      { markDirty: !isThirdPartyImport(fallbackSource) }
+    );
+    throwIfAborted(signal);
 
     if (saved.ok) {
       imported += 1;
-      if (existing) {
+      if (saved.unchanged) {
+        // Already current locally.
+      } else if (existing) {
         updated += 1;
       } else {
         created += 1;
@@ -306,7 +380,9 @@ async function importLocalEntries(
       `Imported ${imported} ${fallbackSource} entr${imported === 1 ? "y" : "ies"}.`,
     summary: {
       ...(result?.summary ?? {}),
+      sourceUsername: result.summary?.sourceUsername ?? fallbackSource,
       totalFound: result?.summary?.totalFound ?? items.length,
+      selectedStatuses: result.summary?.selectedStatuses ?? [],
       selectedAnimeIds,
       imported,
       created,
@@ -329,33 +405,67 @@ export function installApiClient() {
     getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true) =>
       rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent]),
     previewAniListImport: (username) => rpc("previewAniListImport", [username]),
-    importAniList: async (username, selectedStatuses, selectedAnimeIds) => {
-      const userId = await requireActiveUserId();
-      const result = await rpc("importAniList", [username, selectedStatuses, selectedAnimeIds]);
-      return importLocalEntries(userId, result, selectedAnimeIds, "AniList");
+    importAniList: async (username, selectedStatuses, selectedAnimeIds, options?: ImportOptions) => {
+      try {
+        throwIfAborted(options?.signal);
+        const userId = await requireActiveUserId();
+        throwIfAborted(options?.signal);
+        const result = await rpc("importAniList", [username, selectedStatuses, selectedAnimeIds], {
+          signal: options?.signal,
+        });
+        return importLocalEntries(userId, result, selectedAnimeIds, "AniList", options?.signal);
+      } catch (error) {
+        if (isAbortError(error)) {
+          return buildCancelledImportResult();
+        }
+
+        throw error;
+      }
     },
     previewMalImport: () => rpc("previewMalImport"),
-    importMal: async (selectedStatuses, selectedAnimeIds) => {
-      const userId = await requireActiveUserId();
-      const result = await rpc("importMal", [selectedStatuses, selectedAnimeIds]);
-      return importLocalEntries(userId, result, selectedAnimeIds, "MyAnimeList");
+    importMal: async (selectedStatuses, selectedAnimeIds, options?: ImportOptions) => {
+      try {
+        throwIfAborted(options?.signal);
+        const userId = await requireActiveUserId();
+        throwIfAborted(options?.signal);
+        const result = await rpc("importMal", [selectedStatuses, selectedAnimeIds], {
+          signal: options?.signal,
+        });
+        return importLocalEntries(userId, result, selectedAnimeIds, "MyAnimeList", options?.signal);
+      } catch (error) {
+        if (isAbortError(error)) {
+          return buildCancelledImportResult();
+        }
+
+        throw error;
+      }
     },
-    previewTextImport: (text, hideAdultContent = true) =>
-      rpc("previewTextImport", [text, hideAdultContent]),
-    previewPdfImport: (pdfBase64, hideAdultContent = true) =>
-      rpc("previewPdfImport", [pdfBase64, hideAdultContent]),
-    importTextList: async (entries, selectedAnimeIds) => {
-      const userId = await requireActiveUserId();
-      return importLocalEntries(
-        userId,
-        {
-          message: `Imported ${entries.length} text entr${entries.length === 1 ? "y" : "ies"}.`,
-          localEntries: entries,
-          summary: { sourceUsername: "Text file", totalFound: entries.length },
-        },
-        selectedAnimeIds,
-        "text"
-      );
+    previewTextImport: (text, hideAdultContent = true, options?: ImportOptions) =>
+      rpc("previewTextImport", [text, hideAdultContent], { signal: options?.signal }),
+    previewPdfImport: (pdfBase64, hideAdultContent = true, options?: ImportOptions) =>
+      rpc("previewPdfImport", [pdfBase64, hideAdultContent], { signal: options?.signal }),
+    importTextList: async (entries, selectedAnimeIds, options?: ImportOptions) => {
+      try {
+        throwIfAborted(options?.signal);
+        const userId = await requireActiveUserId();
+        return importLocalEntries(
+          userId,
+          {
+            message: `Imported ${entries.length} text entr${entries.length === 1 ? "y" : "ies"}.`,
+            localEntries: entries,
+            summary: { sourceUsername: "Text file", totalFound: entries.length },
+          },
+          selectedAnimeIds,
+          "text",
+          options?.signal
+        );
+      } catch (error) {
+        if (isAbortError(error)) {
+          return buildCancelledImportResult();
+        }
+
+        throw error;
+      }
     },
     getSettings: async () => {
       const userId = await getActiveUserId();
@@ -375,6 +485,9 @@ export function installApiClient() {
     setAutoSync: async (enabled) => {
       const userId = await requireActiveUserId();
       await localStore.setAutoSyncEnabled(userId, Boolean(enabled));
+      if (enabled && (await localStore.getPendingSyncCount(userId)) > 0) {
+        scheduleLocalAutoSync(userId);
+      }
       return rpc("setAutoSync", [Boolean(enabled), await localStore.getPendingSyncCount(userId)]);
     },
     runSyncNow: async () => {
@@ -387,7 +500,16 @@ export function installApiClient() {
       const userId = await requireActiveUserId();
       const result = await rpc("pullFromAniList");
       if (result.ok) {
-        await localStore.replaceEntriesFromImport(userId, result);
+        const summary = await localStore.replaceEntriesFromImport(userId, result);
+        return {
+          ...result,
+          message: `Updated local list from AniList. ${summary.created} created, ${summary.updated} updated.`,
+          summary: {
+            ...(result.summary ?? {}),
+            ...summary,
+            totalFound: result.summary?.totalFound ?? result.localEntries?.length ?? 0,
+          },
+        };
       }
       return result;
     },
@@ -395,7 +517,16 @@ export function installApiClient() {
       const userId = await requireActiveUserId();
       const result = await rpc("pullFromMal");
       if (result.ok) {
-        await localStore.replaceEntriesFromImport(userId, result);
+        const summary = await localStore.replaceEntriesFromImport(userId, result);
+        return {
+          ...result,
+          message: `Updated local list from MyAnimeList. ${summary.created} created, ${summary.updated} updated.`,
+          summary: {
+            ...(result.summary ?? {}),
+            ...summary,
+            totalFound: result.summary?.totalFound ?? result.localEntries?.length ?? 0,
+          },
+        };
       }
       return result;
     },
@@ -411,6 +542,8 @@ export function installApiClient() {
       }
       return media;
     },
+    getCharacterDetails: (id) => rpc("getCharacterDetails", [id]),
+    getStaffDetails: (id) => rpc("getStaffDetails", [id]),
     cacheMinimalAnime: async (media) => {
       const userId = await requireActiveUserId();
       return await localStore.cacheAnime(userId, media);
@@ -454,15 +587,27 @@ export function installApiClient() {
     },
     saveMyListEntry: async (animeId, data) => {
       const userId = await requireActiveUserId();
-      return await localStore.saveEntry(userId, Number(animeId), data);
+      const result = await localStore.saveEntry(userId, Number(animeId), data);
+      if (result.ok && !result.unchanged && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
     },
     removeMyListEntry: async (animeId) => {
       const userId = await requireActiveUserId();
-      return await localStore.removeEntry(userId, Number(animeId));
+      const result = await localStore.removeEntry(userId, Number(animeId));
+      if (result.ok && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
     },
     clearMyList: async () => {
       const userId = await requireActiveUserId();
-      return await localStore.clearList(userId);
+      const result = await localStore.clearList(userId);
+      if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
     },
     exportLocalBackup: async () => {
       const userId = await requireActiveUserId();
@@ -471,10 +616,19 @@ export function installApiClient() {
     },
     importLocalBackup: async (backup) => {
       const userId = await requireActiveUserId();
-      return await localStore.importBackup(userId, backup);
+      const result = await localStore.importBackup(userId, backup);
+      if (
+        result.ok &&
+        (result.imported ?? 0) > 0 &&
+        (await localStore.getAutoSyncEnabled(userId))
+      ) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
     },
     onFocusSearch: () => undefined,
+    onSyncProgress: () => () => undefined,
   };
 
-  window.api = api;
+  window.api = api as typeof window.api;
 }

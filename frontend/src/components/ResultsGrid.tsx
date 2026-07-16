@@ -1,44 +1,12 @@
 import { AnimeCard } from "./AnimeCard";
 import type { TitleLanguage } from "../utils/titlePreference";
-
-type Anime = {
-  id: number;
-  isAdult?: boolean;
-  title: {
-    romaji?: string;
-    english?: string;
-    native?: string;
-    userPreferred?: string;
-  };
-  coverImage: {
-    large: string;
-  };
-  episodes?: number | null;
-  format?: string | null;
-  averageScore?: number | null;
-  season?: string | null;
-  seasonYear?: number | null;
-};
-
-type TrackedAnimeEntry = {
-  anime_id: number;
-  status: "planned" | "watching" | "completed" | "paused" | "dropped";
-  is_favorite?: number | boolean;
-  progress: number;
-  score: number | null;
-  notes: string | null;
-  title_romaji?: string | null;
-  title_english?: string | null;
-  title_native?: string | null;
-  title_preferred?: string | null;
-  episodes?: number | null;
-};
+import type { SearchAnime, TrackedAnimeEntry } from "../types/domain";
 
 type ResultsGridProps = {
-  results: Anime[];
+  results: SearchAnime[];
   onSelectAnime: (id: number) => void;
   trackedEntries: TrackedAnimeEntry[];
-  onQuickAdd: (anime: Anime) => void;
+  onQuickAdd: (anime: SearchAnime) => void;
   onEditEntry: (entry: TrackedAnimeEntry) => void;
   titleLanguage: TitleLanguage;
 };

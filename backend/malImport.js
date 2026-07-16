@@ -1,8 +1,11 @@
 const anilist = require('./anilist');
 const {
+  getAnimeById,
   getAnimeExternalId,
+  saveAnimeSummary,
   upsertAnimeExternalId,
 } = require('./db');
+const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
 const { importAniListEntries } = require('./lists');
 
 const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
@@ -81,6 +84,19 @@ async function resolveAniListMediaForMalNode(malNode, cache) {
   const titles = getMalTitles(malNode);
   const mapped = getAnimeExternalId('mal', malNode?.id);
 
+  if (mapped?.anime_id) {
+    const cachedAnime = getAnimeById(mapped.anime_id);
+
+    if (cachedAnime) {
+      return mapDbAnimeForFrontend(cachedAnime);
+    }
+
+    const fetchedAnime = await anilist.getAnimeDetails(mapped.anime_id).catch(() => null);
+    if (fetchedAnime?.id) {
+      return fetchedAnime;
+    }
+  }
+
   for (const title of titles) {
     const key = normalizeTitle(title);
     if (cache.has(key)) {
@@ -111,19 +127,35 @@ async function resolveAniListMediaForMalNode(malNode, cache) {
 async function buildAniListCollectionFromMalList(malList, options = {}) {
   const cache = new Map();
   const listsByStatus = new Map(IMPORT_STATUS_ORDER.map((status) => [status, []]));
+  const entries = malList?.data || [];
+  const emitProgress =
+    typeof options.onProgress === 'function' ? options.onProgress : () => {};
   let mapped = 0;
   let skipped = 0;
   let skippedMissingStatus = 0;
   let skippedNoMatch = 0;
 
-  for (const item of malList?.data || []) {
+  for (const [index, item] of entries.entries()) {
     const node = item?.node;
     const listStatus = item?.list_status || node?.my_list_status || {};
     const status = mapMalStatus(listStatus.status);
 
+    emitProgress({
+      stage: 'mapping',
+      current: index,
+      total: entries.length,
+      entryTitle: node?.title || `MAL anime #${node?.id || index + 1}`,
+    });
+
     if (!node?.id || !status) {
       skipped += 1;
       skippedMissingStatus += 1;
+      emitProgress({
+        stage: 'mapping',
+        current: index + 1,
+        total: entries.length,
+        entryTitle: node?.title || `MAL anime #${node?.id || index + 1}`,
+      });
       continue;
     }
 
@@ -132,8 +164,16 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
     if (!media?.id) {
       skipped += 1;
       skippedNoMatch += 1;
+      emitProgress({
+        stage: 'mapping',
+        current: index + 1,
+        total: entries.length,
+        entryTitle: node.title,
+      });
       continue;
     }
+
+    saveAnimeSummary(mapAnimeForDb(media));
 
     upsertAnimeExternalId({
       provider: 'mal',
@@ -166,6 +206,13 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
       malTitle: node.title,
     });
     mapped += 1;
+
+    emitProgress({
+      stage: 'mapping',
+      current: index + 1,
+      total: entries.length,
+      entryTitle: node.title,
+    });
   }
 
   return {
@@ -245,10 +292,12 @@ async function previewMalImport(malList, options = {}) {
 async function importMalEntries(currentSession, malList, options = {}) {
   const mappedList = await buildAniListCollectionFromMalList(malList, {
     submittedByUserId: currentSession?.user?.id,
+    onProgress: options.onProgress,
   });
   const result = importAniListEntries(currentSession, mappedList.collection, mappedList.sourceUsername, {
     selectedStatuses: options.selectedStatuses,
     selectedAnimeIds: options.selectedAnimeIds,
+    onProgress: options.onImportProgress,
   });
 
   if (result.summary) {

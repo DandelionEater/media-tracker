@@ -15,10 +15,17 @@ if (!app.isPackaged) {
 }
 
 const { createWindow } = require('./window');
+const { registerWindowStateIpc } = require('./windowState');
 const { setupTray } = require('./tray');
-const { registerShortcuts, registerShortcutIpc } = require('./shortcuts');
+const {
+  getGamingModeEnabled,
+  registerShortcuts,
+  registerShortcutIpc,
+  setGamingModeEnabled,
+} = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
 const { registerSystemLocaleIpc } = require('./systemLocale');
+const { registerLayoutConfigIpc } = require('./layoutConfig');
 
 const anilist = require('./anilist');
 const anilistOAuth = require('./anilistOAuth');
@@ -31,6 +38,8 @@ const {
   saveAnime,
   saveAnimeSummary,
   getAnimeById,
+  getPersonDetails,
+  savePersonDetails,
   getAppSetting,
   setAppSetting,
   getSafeUserById,
@@ -78,19 +87,39 @@ const {
 
 const ANILIST_URL = 'https://graphql.anilist.co';
 const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let mainWindow = null;
 
 const DEFAULT_APP_SETTINGS = {
-  themeAccent: 'cyan',
+  themeAccent: 'violet',
+  customAccentColor: '#a78bfa',
   titleLanguage: 'userPreferred',
   showTrendingCarousel: true,
   autoRotateTrending: true,
   autoScrollHomeShelves: true,
   hideAdultContent: true,
+  overlayOpacity: 100,
+  overlayBackground: 'solid',
+  navbarStyle: 'integrated',
+  browseCardStyle: 'default',
+  backgroundDim: 65,
+  animationLevel: 'full',
+  compactMode: false,
+  discoverDensity: 'balanced',
+  homeDensity: 'balanced',
+  myListDensity: 'balanced',
+  startView: 'home',
 };
 
-const ALLOWED_THEME_ACCENTS = ['cyan', 'violet', 'rose', 'amber', 'emerald'];
+const ALLOWED_THEME_ACCENTS = ['violet', 'rose', 'amber', 'emerald', 'custom'];
 const ALLOWED_TITLE_LANGUAGES = ['userPreferred', 'english', 'romaji', 'native'];
+const ALLOWED_OVERLAY_BACKGROUNDS = ['solid', 'glass', 'transparent'];
+const ALLOWED_NAVBAR_STYLES = ['integrated', 'floating', 'minimal'];
+const ALLOWED_BROWSE_CARD_STYLES = ['default', 'immersive', 'gallery'];
+const ALLOWED_START_VIEWS = ['home', 'list', 'search'];
+const ALLOWED_ANIMATION_LEVELS = ['full', 'reduced', 'off'];
+const ALLOWED_DISCOVER_DENSITIES = ['comfortable', 'balanced', 'compact'];
+const ALLOWED_CARD_DENSITIES = ['comfortable', 'balanced', 'compact'];
 const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
 
 let pendingAniListSignup = null;
@@ -98,18 +127,57 @@ let pendingAniListLinkConflict = null;
 let pendingMalSignup = null;
 let pendingMalLinkConflict = null;
 
+function emitSyncProgress(payload) {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('sync:progress', {
+    updatedAt: new Date().toISOString(),
+    ...payload,
+  });
+}
+
+function clampPreferenceNumber(value, fallback, min, max) {
+  const parsed = Number(value);
+
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function normalizeAccentColor(value) {
+  const color = String(value || '').trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_APP_SETTINGS.customAccentColor;
+}
+
 function getAppPreferences() {
   const themeAccent = getAppSetting('preferences.themeAccent');
+  const customAccentColor = getAppSetting('preferences.customAccentColor');
   const titleLanguage = getAppSetting('preferences.titleLanguage');
   const showTrendingCarousel = getAppSetting('preferences.showTrendingCarousel');
   const autoRotateTrending = getAppSetting('preferences.autoRotateTrending');
   const autoScrollHomeShelves = getAppSetting('preferences.autoScrollHomeShelves');
   const hideAdultContent = getAppSetting('preferences.hideAdultContent');
+  const overlayOpacity = getAppSetting('preferences.overlayOpacity');
+  const overlayBackground = getAppSetting('preferences.overlayBackground');
+  const navbarStyle = getAppSetting('preferences.navbarStyle');
+  const browseCardStyle = getAppSetting('preferences.browseCardStyle');
+  const backgroundDim = getAppSetting('preferences.backgroundDim');
+  const animationLevel = getAppSetting('preferences.animationLevel');
+  const compactMode = getAppSetting('preferences.compactMode');
+  const discoverDensity = getAppSetting('preferences.discoverDensity');
+  const homeDensity = getAppSetting('preferences.homeDensity');
+  const myListDensity = getAppSetting('preferences.myListDensity');
+  const startView = getAppSetting('preferences.startView');
 
   return {
     themeAccent: ALLOWED_THEME_ACCENTS.includes(themeAccent)
       ? themeAccent
       : DEFAULT_APP_SETTINGS.themeAccent,
+    customAccentColor: normalizeAccentColor(customAccentColor),
     titleLanguage: ALLOWED_TITLE_LANGUAGES.includes(titleLanguage)
       ? titleLanguage
       : DEFAULT_APP_SETTINGS.titleLanguage,
@@ -129,6 +197,42 @@ function getAppPreferences() {
       hideAdultContent === null
         ? DEFAULT_APP_SETTINGS.hideAdultContent
         : hideAdultContent === 'true',
+    overlayOpacity:
+      overlayOpacity === null
+        ? DEFAULT_APP_SETTINGS.overlayOpacity
+        : clampPreferenceNumber(overlayOpacity, DEFAULT_APP_SETTINGS.overlayOpacity, 70, 100),
+    overlayBackground: ALLOWED_OVERLAY_BACKGROUNDS.includes(overlayBackground)
+      ? overlayBackground
+      : DEFAULT_APP_SETTINGS.overlayBackground,
+    navbarStyle: ALLOWED_NAVBAR_STYLES.includes(navbarStyle)
+      ? navbarStyle
+      : DEFAULT_APP_SETTINGS.navbarStyle,
+    browseCardStyle: ALLOWED_BROWSE_CARD_STYLES.includes(browseCardStyle)
+      ? browseCardStyle
+      : DEFAULT_APP_SETTINGS.browseCardStyle,
+    backgroundDim:
+      backgroundDim === null
+        ? DEFAULT_APP_SETTINGS.backgroundDim
+        : clampPreferenceNumber(backgroundDim, DEFAULT_APP_SETTINGS.backgroundDim, 0, 100),
+    animationLevel: ALLOWED_ANIMATION_LEVELS.includes(animationLevel)
+      ? animationLevel
+      : DEFAULT_APP_SETTINGS.animationLevel,
+    compactMode:
+      compactMode === null
+        ? DEFAULT_APP_SETTINGS.compactMode
+        : compactMode === 'true',
+    discoverDensity: ALLOWED_DISCOVER_DENSITIES.includes(discoverDensity)
+      ? discoverDensity
+      : DEFAULT_APP_SETTINGS.discoverDensity,
+    homeDensity: ALLOWED_CARD_DENSITIES.includes(homeDensity)
+      ? homeDensity
+      : DEFAULT_APP_SETTINGS.homeDensity,
+    myListDensity: ALLOWED_CARD_DENSITIES.includes(myListDensity)
+      ? myListDensity
+      : DEFAULT_APP_SETTINGS.myListDensity,
+    startView: ALLOWED_START_VIEWS.includes(startView)
+      ? startView
+      : DEFAULT_APP_SETTINGS.startView,
   };
 }
 
@@ -138,6 +242,10 @@ function updateAppPreferences(payload = {}) {
     themeAccent: ALLOWED_THEME_ACCENTS.includes(payload.themeAccent)
       ? payload.themeAccent
       : current.themeAccent,
+    customAccentColor:
+      typeof payload.customAccentColor === 'string'
+        ? normalizeAccentColor(payload.customAccentColor)
+        : current.customAccentColor,
     titleLanguage: ALLOWED_TITLE_LANGUAGES.includes(payload.titleLanguage)
       ? payload.titleLanguage
       : current.titleLanguage,
@@ -157,14 +265,62 @@ function updateAppPreferences(payload = {}) {
       typeof payload.hideAdultContent === 'boolean'
         ? payload.hideAdultContent
         : current.hideAdultContent,
+    overlayOpacity:
+      typeof payload.overlayOpacity === 'number'
+        ? clampPreferenceNumber(payload.overlayOpacity, current.overlayOpacity, 70, 100)
+        : current.overlayOpacity,
+    overlayBackground: ALLOWED_OVERLAY_BACKGROUNDS.includes(payload.overlayBackground)
+      ? payload.overlayBackground
+      : current.overlayBackground,
+    navbarStyle: ALLOWED_NAVBAR_STYLES.includes(payload.navbarStyle)
+      ? payload.navbarStyle
+      : current.navbarStyle,
+    browseCardStyle: ALLOWED_BROWSE_CARD_STYLES.includes(payload.browseCardStyle)
+      ? payload.browseCardStyle
+      : current.browseCardStyle,
+    backgroundDim:
+      typeof payload.backgroundDim === 'number'
+        ? clampPreferenceNumber(payload.backgroundDim, current.backgroundDim, 0, 100)
+        : current.backgroundDim,
+    animationLevel: ALLOWED_ANIMATION_LEVELS.includes(payload.animationLevel)
+      ? payload.animationLevel
+      : current.animationLevel,
+    compactMode:
+      typeof payload.compactMode === 'boolean'
+        ? payload.compactMode
+        : current.compactMode,
+    discoverDensity: ALLOWED_DISCOVER_DENSITIES.includes(payload.discoverDensity)
+      ? payload.discoverDensity
+      : current.discoverDensity,
+    homeDensity: ALLOWED_CARD_DENSITIES.includes(payload.homeDensity)
+      ? payload.homeDensity
+      : current.homeDensity,
+    myListDensity: ALLOWED_CARD_DENSITIES.includes(payload.myListDensity)
+      ? payload.myListDensity
+      : current.myListDensity,
+    startView: ALLOWED_START_VIEWS.includes(payload.startView)
+      ? payload.startView
+      : current.startView,
   };
 
   setAppSetting('preferences.themeAccent', next.themeAccent);
+  setAppSetting('preferences.customAccentColor', next.customAccentColor);
   setAppSetting('preferences.titleLanguage', next.titleLanguage);
   setAppSetting('preferences.showTrendingCarousel', next.showTrendingCarousel);
   setAppSetting('preferences.autoRotateTrending', next.autoRotateTrending);
   setAppSetting('preferences.autoScrollHomeShelves', next.autoScrollHomeShelves);
   setAppSetting('preferences.hideAdultContent', next.hideAdultContent);
+  setAppSetting('preferences.overlayOpacity', next.overlayOpacity);
+  setAppSetting('preferences.overlayBackground', next.overlayBackground);
+  setAppSetting('preferences.navbarStyle', next.navbarStyle);
+  setAppSetting('preferences.browseCardStyle', next.browseCardStyle);
+  setAppSetting('preferences.backgroundDim', next.backgroundDim);
+  setAppSetting('preferences.animationLevel', next.animationLevel);
+  setAppSetting('preferences.compactMode', next.compactMode);
+  setAppSetting('preferences.discoverDensity', next.discoverDensity);
+  setAppSetting('preferences.homeDensity', next.homeDensity);
+  setAppSetting('preferences.myListDensity', next.myListDensity);
+  setAppSetting('preferences.startView', next.startView);
 
   return next;
 }
@@ -372,16 +528,6 @@ function getAniListLinkStatus(currentSession) {
       lastImportAt: linkedAccount.last_import_at,
       updatedAt: linkedAccount.updated_at,
     },
-  };
-}
-
-function buildAniListAccountPayload(account) {
-  return {
-    anilistUserId: account.anilist_user_id,
-    anilistUsername: account.anilist_username,
-    originalAniListUsername: account.original_anilist_username,
-    lastImportAt: account.last_import_at,
-    updatedAt: account.updated_at,
   };
 }
 
@@ -723,7 +869,10 @@ ipcMain.handle('sync:run-now', async () => {
       return { ok: false, message: 'You must be logged in.' };
     }
 
-    return await runSyncForUser(session.user.id);
+    return await runSyncForUser(session.user.id, {
+      forceRetry: true,
+      onProgress: emitSyncProgress,
+    });
   } catch (error) {
     console.error('Manual sync error:', error);
     return { ok: false, message: error.message || 'Failed to run sync.' };
@@ -744,13 +893,36 @@ ipcMain.handle('sync:pull-from-anilist', async () => {
       return { ok: false, message: 'Link an AniList account before updating from AniList.' };
     }
 
+    emitSyncProgress({
+      operation: 'pull-anilist',
+      stage: 'fetching',
+      label: 'Fetching AniList library...',
+      current: 0,
+      total: null,
+    });
+
     const collection = await anilist.getViewerAnimeCollection(
       linkedAccount.access_token,
       linkedAccount.anilist_user_id
     );
+    emitSyncProgress({
+      operation: 'pull-anilist',
+      stage: 'saving',
+      label: 'Saving AniList changes locally...',
+      current: 0,
+      total: collection?.lists?.flatMap((list) => list?.entries || []).length ?? null,
+    });
     const result = importAniListEntries(session, collection, linkedAccount.anilist_username, {
       selectedStatuses: IMPORT_STATUS_ORDER,
       selectedAnimeIds: [],
+      onProgress: ({ current, total, entryTitle }) =>
+        emitSyncProgress({
+          operation: 'pull-anilist',
+          stage: 'saving',
+          label: `Saving ${current} of ${total}: ${entryTitle}`,
+          current,
+          total,
+        }),
     });
 
     if (result.ok) {
@@ -768,14 +940,31 @@ ipcMain.handle('sync:pull-from-anilist', async () => {
       }
     }
 
-    return {
+    const response = {
       ...result,
       message: result.ok
         ? `Updated local list from AniList. ${result.summary?.created ?? 0} created, ${result.summary?.updated ?? 0} updated.`
         : result.message,
     };
+
+    emitSyncProgress({
+      operation: 'pull-anilist',
+      stage: response.ok ? 'complete' : 'failed',
+      label: response.message,
+      current: result.summary?.totalFound ?? null,
+      total: result.summary?.totalFound ?? null,
+    });
+
+    return response;
   } catch (error) {
     console.error('AniList pull sync error:', error);
+    emitSyncProgress({
+      operation: 'pull-anilist',
+      stage: 'failed',
+      label: error.message || 'Failed to update from AniList.',
+      current: null,
+      total: null,
+    });
     return {
       ok: false,
       message: error.message || 'Failed to update from AniList.',
@@ -807,6 +996,13 @@ ipcMain.handle('sync:pull-from-mal', async () => {
     }
 
     let linkedAccount = null;
+    emitSyncProgress({
+      operation: 'pull-mal',
+      stage: 'fetching',
+      label: 'Fetching MyAnimeList library...',
+      current: 0,
+      total: null,
+    });
     const malList = await withFreshMalAccount(session.user.id, async (account) => {
       if (!account?.access_token) {
         throw new Error('Link a MyAnimeList account before updating from MyAnimeList.');
@@ -815,9 +1011,35 @@ ipcMain.handle('sync:pull-from-mal', async () => {
       linkedAccount = account;
       return await mal.getViewerAnimeList(account.access_token);
     });
+    emitSyncProgress({
+      operation: 'pull-mal',
+      stage: 'mapping',
+      label: 'Matching MyAnimeList entries...',
+      current: 0,
+      total: malList?.data?.length ?? null,
+    });
     const result = await importMalEntries(session, malList, {
       selectedStatuses: IMPORT_STATUS_ORDER,
       selectedAnimeIds: [],
+      onProgress: ({ stage, current, total, entryTitle }) =>
+        emitSyncProgress({
+          operation: 'pull-mal',
+          stage,
+          label:
+            stage === 'mapping'
+              ? `Matching ${current} of ${total}: ${entryTitle}`
+              : `Processing ${current} of ${total}: ${entryTitle}`,
+          current,
+          total,
+        }),
+      onImportProgress: ({ current, total, entryTitle }) =>
+        emitSyncProgress({
+          operation: 'pull-mal',
+          stage: 'saving',
+          label: `Saving ${current} of ${total}: ${entryTitle}`,
+          current,
+          total,
+        }),
     });
 
     if (result.ok) {
@@ -835,14 +1057,40 @@ ipcMain.handle('sync:pull-from-mal', async () => {
       }
     }
 
-    return result;
+    const response = {
+      ...result,
+      message: result.ok
+        ? `Updated local list from MyAnimeList. ${result.summary?.created ?? 0} created, ${result.summary?.updated ?? 0} updated.`
+        : result.message,
+    };
+
+    emitSyncProgress({
+      operation: 'pull-mal',
+      stage: response.ok ? 'complete' : 'failed',
+      label: response.message,
+      current: result.summary?.totalFound ?? null,
+      total: result.summary?.totalFound ?? null,
+    });
+
+    return response;
   } catch (error) {
     console.error('MyAnimeList pull error:', error);
+    emitSyncProgress({
+      operation: 'pull-mal',
+      stage: 'failed',
+      label: error.message || 'Failed to update from MyAnimeList.',
+      current: null,
+      total: null,
+    });
     return { ok: false, message: error.message || 'Failed to update from MyAnimeList.' };
   }
 });
 
 async function fetchAnimeDetailsFromAniList(id) {
+  if (typeof anilist.getAnimeDetails === 'function') {
+    return await anilist.getAnimeDetails(id);
+  }
+
   const query = `
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
@@ -967,6 +1215,7 @@ async function fetchAnimeDetailsFromAniList(id) {
             relationType
             node {
               id
+              type
               title {
                 romaji
                 english
@@ -1070,7 +1319,7 @@ function hasFreshAnimeDetailsCache(row) {
     Boolean(row.relations && row.relations !== '[]') ||
     Boolean(row.recommendations && row.recommendations !== '[]');
 
-  if (!hasFullDetails) return false;
+  if (!hasFullDetails || !row.franchise_start_date) return false;
 
   const cachedAt = Date.parse(row.cached_at);
   return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
@@ -1088,11 +1337,55 @@ async function getAnimeDetails(id) {
   return media;
 }
 
+function hasFreshPersonDetailsCache(row) {
+  if (!row?.details) return false;
+
+  const cachedAt = Date.parse(row.cachedAt);
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < PERSON_DETAILS_CACHE_TTL_MS;
+}
+
+async function getCachedPersonDetails(kind, id) {
+  const cachedDetails = getPersonDetails(kind, id);
+
+  if (hasFreshPersonDetailsCache(cachedDetails)) {
+    return cachedDetails.details;
+  }
+
+  const details =
+    kind === 'character'
+      ? await anilist.getCharacterDetails(Number(id))
+      : await anilist.getStaffDetails(Number(id));
+
+  if (details?.id) {
+    savePersonDetails(kind, details.id, details);
+  }
+
+  return details;
+}
+
 ipcMain.handle('anime:get-details', async (_event, id) => {
   try {
     return await getAnimeDetails(id);
   } catch (error) {
     console.error('Failed to fetch anime details:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('anime:get-character-details', async (_event, id) => {
+  try {
+    return await getCachedPersonDetails('character', id);
+  } catch (error) {
+    console.error('Failed to fetch character details:', error);
+    throw error;
+  }
+});
+
+ipcMain.handle('anime:get-staff-details', async (_event, id) => {
+  try {
+    return await getCachedPersonDetails('staff', id);
+  } catch (error) {
+    console.error('Failed to fetch staff details:', error);
     throw error;
   }
 });
@@ -1689,13 +1982,21 @@ ipcMain.handle('list:clear', () => {
 
 registerSystemLocaleIpc();
 
+function getTrayOptions(win) {
+  return {
+    isGamingModeEnabled: getGamingModeEnabled,
+    onToggleGamingMode: (enabled) => setGamingModeEnabled(win, enabled),
+  };
+}
+
 function bootAppWindow() {
   mainWindow = createWindow();
 
-  setupTray(mainWindow);
+  setupTray(mainWindow, getTrayOptions(mainWindow));
   registerShortcuts(mainWindow);
   registerShortcutIpc(() => mainWindow);
   registerStartupIpc();
+  registerWindowStateIpc(() => mainWindow);
 
   mainWindow.on('closed', () => {
     mainWindow = null;
@@ -1703,6 +2004,7 @@ function bootAppWindow() {
 }
 
 app.whenReady().then(() => {
+  registerLayoutConfigIpc();
   bootAppWindow();
 
   app.on('activate', () => {

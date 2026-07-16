@@ -1,12 +1,13 @@
 const { app, BrowserWindow, globalShortcut } = require('electron');
 const path = require('path');
+const { attachWindowState, getInitialWindowOptions } = require('./windowState');
 
 function createWindow() {
   const debugWindow = !app.isPackaged && process.env.ELECTRON_DEBUG_WINDOW === '1';
   const iconPath = path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png');
+  const initialWindowOptions = getInitialWindowOptions();
   const win = new BrowserWindow({
-    width: 1280,
-    height: 900,
+    ...initialWindowOptions,
 
     minWidth: 900,
     minHeight: 600,
@@ -25,6 +26,7 @@ function createWindow() {
       nodeIntegration: false,
     },
   });
+  attachWindowState(win);
 
   if (app.isPackaged) {
     win.loadFile(path.join(__dirname, 'frontend-dist', 'index.html'));

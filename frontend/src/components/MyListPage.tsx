@@ -1,10 +1,17 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import type { DragEvent, ReactNode } from "react";
 import {
   BookmarkIcon,
+  Bars3BottomLeftIcon,
   CheckCircleIcon,
   ChevronDownIcon,
+  FunnelIcon,
+  EllipsisVerticalIcon,
   MagnifyingGlassIcon,
   PauseCircleIcon,
+  RectangleGroupIcon,
+  Squares2X2Icon,
+  ViewColumnsIcon,
   StarIcon,
   XCircleIcon,
   EyeIcon,
@@ -22,6 +29,7 @@ type MyListEntry = {
   progress: number;
   score: number | null;
   notes: string | null;
+  updated_at?: string | null;
   title_romaji?: string | null;
   title_english?: string | null;
   title_native?: string | null;
@@ -29,12 +37,16 @@ type MyListEntry = {
   cover_image_large?: string | null;
   episodes?: number | null;
   format?: string | null;
+  anime_status?: string | null;
+  next_airing_episode?: number | null;
+  next_airing_at?: number | null;
   average_score?: number | null;
   season?: string | null;
   season_year?: number | null;
 };
 
 type MyListPageProps = {
+  userId: number;
   entries: MyListEntry[];
   onSelectAnime: (id: number) => void;
   onRefreshList: () => void | Promise<void>;
@@ -45,11 +57,17 @@ type MyListPageProps = {
     message: string
   ) => void;
   titleLanguage: TitleLanguage;
+  density: MyListDensity;
 };
 
 type SortMode = "alphabetical" | "personalScore";
+type ListStatus = MyListEntry["status"];
+type MyListDensity = "comfortable" | "balanced" | "compact";
+type MyListView = "list" | "grid" | "board";
+type ProgressFilter = "all" | "notStarted" | "inProgress" | "finished";
+type RatingFilter = "all" | "rated" | "unrated" | "favorites";
 
-const STATUS_ORDER: Array<MyListEntry["status"]> = [
+const DEFAULT_STATUS_ORDER: ListStatus[] = [
   "watching",
   "planned",
   "completed",
@@ -58,7 +76,7 @@ const STATUS_ORDER: Array<MyListEntry["status"]> = [
 ];
 
 const STATUS_META: Record<
-  MyListEntry["status"],
+  ListStatus,
   {
     label: string;
     icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
@@ -104,6 +122,15 @@ const MY_LIST_OPEN_SECTIONS_KEY = "seenary.my-list.open-sections";
 const MY_LIST_OPEN_SECTIONS_LEGACY_KEY = "media-tracker.my-list.open-sections";
 const MY_LIST_SORT_MODE_KEY = "seenary.my-list.sort-mode";
 const MY_LIST_SORT_MODE_LEGACY_KEY = "media-tracker.my-list.sort-mode";
+const MY_LIST_SECTION_ORDER_KEY = "seenary.my-list.section-order";
+const MY_LIST_SECTION_ORDER_LEGACY_KEY = "media-tracker.my-list.section-order";
+const MY_LIST_VIEW_KEY = "seenary.my-list.view";
+
+function readStoredView(): MyListView {
+  if (typeof window === "undefined") return "list";
+  const value = window.localStorage.getItem(MY_LIST_VIEW_KEY);
+  return value === "grid" || value === "board" || value === "list" ? value : "list";
+}
 
 function readStoredOpenSections() {
   if (typeof window === "undefined") {
@@ -168,24 +195,157 @@ function readStoredSortMode(): SortMode {
   }
 }
 
+function readStoredSectionOrder() {
+  if (typeof window === "undefined") {
+    return [...DEFAULT_STATUS_ORDER];
+  }
+
+  try {
+    const rawValue = getMigratedLocalStorageItem(
+      MY_LIST_SECTION_ORDER_KEY,
+      MY_LIST_SECTION_ORDER_LEGACY_KEY
+    );
+
+    if (!rawValue) {
+      return [...DEFAULT_STATUS_ORDER];
+    }
+
+    return normalizeSectionOrder(JSON.parse(rawValue));
+  } catch {
+    return [...DEFAULT_STATUS_ORDER];
+  }
+}
+
+function persistSectionOrder(order: ListStatus[]) {
+  try {
+    window.localStorage.setItem(MY_LIST_SECTION_ORDER_KEY, JSON.stringify(order));
+    window.localStorage.removeItem(MY_LIST_SECTION_ORDER_LEGACY_KEY);
+  } catch {
+    // Ignore local persistence failures and keep the UI usable.
+  }
+}
+
+function normalizeSectionOrder(value: unknown): ListStatus[] {
+  const allowedStatuses = new Set<ListStatus>(DEFAULT_STATUS_ORDER);
+  const savedStatuses = Array.isArray(value)
+    ? value.filter((status): status is ListStatus =>
+        allowedStatuses.has(status as ListStatus)
+      )
+    : [];
+  const missingStatuses = DEFAULT_STATUS_ORDER.filter(
+    (status) => !savedStatuses.includes(status)
+  );
+
+  return [...savedStatuses, ...missingStatuses];
+}
+
+function isListStatus(value: string): value is ListStatus {
+  return DEFAULT_STATUS_ORDER.includes(value as ListStatus);
+}
+
+function moveSectionOrder(
+  order: ListStatus[],
+  activeStatus: ListStatus,
+  targetStatus: ListStatus
+) {
+  const currentOrder = normalizeSectionOrder(order);
+  const activeIndex = currentOrder.indexOf(activeStatus);
+  const targetIndex = currentOrder.indexOf(targetStatus);
+
+  if (activeIndex === -1 || targetIndex === -1 || activeIndex === targetIndex) {
+    return currentOrder;
+  }
+
+  const nextOrder = [...currentOrder];
+  const [activeSection] = nextOrder.splice(activeIndex, 1);
+  nextOrder.splice(targetIndex, 0, activeSection);
+
+  return nextOrder;
+}
+
+function getCollapsedSections(): Record<ListStatus, boolean> {
+  return {
+    watching: false,
+    planned: false,
+    completed: false,
+    paused: false,
+    dropped: false,
+  };
+}
+
 export function MyListPage({
+  userId,
   entries,
   onSelectAnime,
   onRefreshList,
   onListChanged,
   onNotify,
   titleLanguage,
+  density,
 }: MyListPageProps) {
   const [editingEntry, setEditingEntry] = useState<MyListEntry | null>(null);
   const [listSearch, setListSearch] = useState("");
   const [openSections, setOpenSections] = useState(readStoredOpenSections);
   const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
+  const [sectionOrder, setSectionOrder] = useState<ListStatus[]>(readStoredSectionOrder);
+  const sectionOrderRef = useRef(sectionOrder);
+  const [isEditingSectionOrder, setIsEditingSectionOrder] = useState(false);
+  const [draggedSectionStatus, setDraggedSectionStatus] = useState<ListStatus | null>(null);
+  const [view, setView] = useState<MyListView>(readStoredView);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [progressFilter, setProgressFilter] = useState<ProgressFilter>("all");
+  const [ratingFilter, setRatingFilter] = useState<RatingFilter>("all");
+  const [formatFilter, setFormatFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState<"all" | ListStatus>("all");
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const openSectionsBeforeEdit = useRef<Record<ListStatus, boolean> | null>(null);
 
   useEffect(() => {
     onRefreshList();
   }, [onRefreshList]);
 
   useEffect(() => {
+    if (!window.desktopConfig) return;
+    const desktopConfig = window.desktopConfig;
+
+    let cancelled = false;
+
+    async function loadDesktopSectionOrder() {
+      try {
+        const result = await desktopConfig.getLayoutOrders(userId);
+        if (cancelled || !result.ok) return;
+
+        if (result.myListSectionOrder) {
+          const order = normalizeSectionOrder(result.myListSectionOrder);
+          sectionOrderRef.current = order;
+          persistSectionOrder(order);
+          setSectionOrder(order);
+        } else {
+          desktopConfig.setLayoutOrders(userId, {
+            myListSectionOrder: sectionOrderRef.current,
+          });
+        }
+      } catch (error) {
+        console.warn("Failed to load desktop My List configuration:", error);
+      }
+    }
+
+    void loadDesktopSectionOrder();
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    if (isEditingSectionOrder) {
+      return;
+    }
+
     try {
       window.localStorage.setItem(
         MY_LIST_OPEN_SECTIONS_KEY,
@@ -194,7 +354,7 @@ export function MyListPage({
     } catch {
       // Ignore local persistence failures and keep the UI usable.
     }
-  }, [openSections]);
+  }, [isEditingSectionOrder, openSections]);
 
   useEffect(() => {
     try {
@@ -204,14 +364,100 @@ export function MyListPage({
     }
   }, [sortMode]);
 
-  const normalizedSearch = listSearch.trim().toLowerCase();
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(MY_LIST_VIEW_KEY, view);
+    } catch {
+      // Ignore local persistence failures and keep the UI usable.
+    }
+  }, [view]);
 
-  const filteredEntries = useMemo(() => {
-    if (!normalizedSearch) {
-      return entries;
+  function saveSectionOrder(order: ListStatus[]) {
+    sectionOrderRef.current = order;
+    persistSectionOrder(order);
+    setSectionOrder(order);
+    const result = window.desktopConfig?.setLayoutOrders(userId, {
+      myListSectionOrder: order,
+    });
+    if (result && !result.ok) {
+      console.warn(result.message || "Failed to save My List layout.");
+    }
+  }
+
+  function handleToggleSectionOrderEdit() {
+    if (isEditingSectionOrder) {
+      persistSectionOrder(sectionOrderRef.current);
+      setIsEditingSectionOrder(false);
+
+      if (openSectionsBeforeEdit.current) {
+        setOpenSections(openSectionsBeforeEdit.current);
+        openSectionsBeforeEdit.current = null;
+      }
+
+      setDraggedSectionStatus(null);
+      return;
     }
 
+    openSectionsBeforeEdit.current = openSections;
+    setIsEditingSectionOrder(true);
+    setDraggedSectionStatus(null);
+    setOpenSections(getCollapsedSections());
+  }
+
+  function handleResetSectionOrder() {
+    const defaultOrder = [...DEFAULT_STATUS_ORDER];
+    saveSectionOrder(defaultOrder);
+    setDraggedSectionStatus(null);
+  }
+
+  function handleSectionDragStart(status: string, event: DragEvent<HTMLDivElement>) {
+    if (!isListStatus(status)) {
+      return;
+    }
+
+    setDraggedSectionStatus(status);
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", status);
+  }
+
+  function handleSectionDragOver(status: string, event: DragEvent<HTMLDivElement>) {
+    event.preventDefault();
+
+    const activeStatus = draggedSectionStatus;
+    if (!activeStatus || activeStatus === status || !isListStatus(status)) {
+      return;
+    }
+
+    saveSectionOrder(moveSectionOrder(sectionOrderRef.current, activeStatus, status));
+  }
+
+  function handleSectionDragEnd() {
+    setDraggedSectionStatus(null);
+  }
+
+  const normalizedSearch = listSearch.trim().toLowerCase();
+
+  const availableFormats = useMemo(
+    () => Array.from(new Set(entries.map((entry) => entry.format).filter(Boolean) as string[])).sort(),
+    [entries]
+  );
+
+  const activeFilterCount = [statusFilter !== "all", progressFilter !== "all", ratingFilter !== "all", formatFilter !== "all"].filter(Boolean).length;
+
+  const filteredEntries = useMemo(() => {
     return entries.filter((entry) => {
+      if (statusFilter !== "all" && entry.status !== statusFilter) return false;
+      if (formatFilter !== "all" && entry.format !== formatFilter) return false;
+      if (ratingFilter === "rated" && entry.score === null) return false;
+      if (ratingFilter === "unrated" && entry.score !== null) return false;
+      if (ratingFilter === "favorites" && !entry.is_favorite) return false;
+
+      const isFinished = Boolean(entry.episodes && entry.progress >= entry.episodes);
+      if (progressFilter === "notStarted" && entry.progress !== 0) return false;
+      if (progressFilter === "inProgress" && (entry.progress === 0 || isFinished)) return false;
+      if (progressFilter === "finished" && !isFinished) return false;
+      if (!normalizedSearch) return true;
+
       const preferredTitle = getPreferredTitle(
         {
           userPreferred: entry.title_preferred,
@@ -233,10 +479,10 @@ export function MyListPage({
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(normalizedSearch));
     });
-  }, [entries, normalizedSearch, titleLanguage]);
+  }, [entries, formatFilter, normalizedSearch, progressFilter, ratingFilter, statusFilter, titleLanguage]);
 
   const groupedEntries = useMemo(() => {
-    return STATUS_ORDER.map((status) => {
+    return sectionOrder.map((status) => {
       const items = filteredEntries
         .filter((entry) => entry.status === status)
         .sort((a, b) => compareEntries(a, b, titleLanguage, sortMode));
@@ -249,9 +495,12 @@ export function MyListPage({
         items,
       };
     });
-  }, [filteredEntries, sortMode, titleLanguage]);
+  }, [filteredEntries, sectionOrder, sortMode, titleLanguage]);
 
   const visibleSections = groupedEntries.filter(({ items }) => items.length > 0);
+  const displayedSections = view === "board" && !isEditingSectionOrder
+    ? visibleSections.filter(({ status }) => openSections[status])
+    : visibleSections;
 
   if (!entries.length) {
     return (
@@ -303,7 +552,7 @@ export function MyListPage({
             </div>
           </div>
 
-          <div className="mb-8 space-y-4">
+          <div className="mb-4 space-y-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
               <div className="no-drag flex min-w-0 flex-1 items-center gap-2 rounded-2xl border border-white/10 bg-white/6 px-3 py-3 shadow-lg">
                 <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-white/45" />
@@ -327,6 +576,21 @@ export function MyListPage({
               </div>
 
               <div className="flex shrink-0 flex-wrap gap-2 self-start lg:ml-3">
+                <button
+                  type="button"
+                  onClick={() => setFiltersOpen((current) => !current)}
+                  className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
+                    filtersOpen || activeFilterCount
+                      ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
+                      : "border-white/10 bg-white/[0.03] text-white/60 hover:bg-white/8 hover:text-white"
+                  }`}
+                >
+                  <FunnelIcon className="h-4 w-4" />
+                  Filters
+                  {activeFilterCount > 0 && (
+                    <span className="rounded-full bg-black/25 px-1.5 py-0.5 text-[10px]">{activeFilterCount}</span>
+                  )}
+                </button>
                 <button
                   type="button"
                   onClick={() => setSortMode("alphabetical")}
@@ -353,41 +617,132 @@ export function MyListPage({
               </div>
             </div>
 
-            <div className="flex flex-wrap gap-2">
-              {STATUS_ORDER.map((status) => {
-                const count = groupedEntries.find((group) => group.status === status)?.items.length ?? 0;
-                const meta = STATUS_META[status];
-                const PillIcon = meta.icon;
-                const selected = normalizedSearch
-                  ? count > 0
-                  : openSections[status];
-
-                return (
+            <div className="grid items-center gap-3 lg:grid-cols-[2fr_1fr]">
+              <div className="order-2 inline-flex w-fit items-center rounded-2xl border border-white/10 bg-black/20 p-1 lg:justify-self-end">
+                {([
+                  ["list", Bars3BottomLeftIcon, "List"],
+                  ["grid", Squares2X2Icon, "Grid"],
+                  ["board", ViewColumnsIcon, "Board"],
+                ] as const).map(([value, ViewIcon, label]) => (
                   <button
-                    key={status}
+                    key={value}
                     type="button"
-                    onClick={() =>
-                      setOpenSections((current) => ({
-                        ...current,
-                        [status]: !current[status],
-                      }))
-                    }
-                    className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
-                      selected
-                        ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
-                        : "border-white/10 bg-white/[0.03] text-white/60 hover:bg-white/8 hover:text-white"
+                    onClick={() => setView(value)}
+                    className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition ${
+                      view === value ? "bg-[var(--app-accent)] text-black" : "text-white/50 hover:bg-white/7 hover:text-white"
                     }`}
+                    title={`${label} view`}
                   >
-                    <PillIcon className="h-4 w-4" />
-                    {meta.label}
-                    <span className="rounded-full bg-black/20 px-2 py-0.5 text-[11px] text-white/80">
-                      {count}
-                    </span>
+                    <ViewIcon className="h-4 w-4" />
+                    {label}
                   </button>
-                );
-              })}
+                ))}
+              </div>
+
+              <div className="order-1 flex flex-wrap gap-2">
+                {sectionOrder.map((status) => {
+                  const count = groupedEntries.find((group) => group.status === status)?.items.length ?? 0;
+                  const meta = STATUS_META[status];
+                  const PillIcon = meta.icon;
+                  const selected = view === "board"
+                    ? openSections[status]
+                    : normalizedSearch
+                    ? count > 0
+                    : openSections[status];
+
+                  return (
+                    <button
+                      key={status}
+                      type="button"
+                      disabled={isEditingSectionOrder}
+                      onClick={() =>
+                        setOpenSections((current) => ({
+                          ...current,
+                          [status]: !current[status],
+                        }))
+                      }
+                      className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
+                        selected
+                          ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
+                          : "border-white/10 bg-white/[0.03] text-white/60 hover:bg-white/8 hover:text-white"
+                      } disabled:cursor-default disabled:opacity-65`}
+                    >
+                      <PillIcon className="h-4 w-4" />
+                      {meta.label}
+                      <span className="rounded-full bg-black/20 px-2 py-0.5 text-[11px] text-white/80">
+                        {count}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
+
+            <div
+              className={`grid transition-[grid-template-rows,opacity] duration-300 ${filtersOpen ? "" : "!mt-0"}`}
+              style={{ gridTemplateRows: filtersOpen ? "1fr" : "0fr", opacity: filtersOpen ? 1 : 0 }}
+            >
+              <div className="overflow-hidden">
+                <div className="grid gap-4 rounded-3xl border border-white/10 bg-white/[0.035] p-4 md:grid-cols-2 xl:grid-cols-4">
+                  <FilterSelect
+                    label="List status"
+                    value={statusFilter}
+                    onChange={(value) => setStatusFilter(value as "all" | ListStatus)}
+                    options={[["all", "Every status"], ...sectionOrder.map((status) => [status, STATUS_META[status].label] as [string, string])]}
+                  />
+                  <FilterSelect
+                    label="Watch progress"
+                    value={progressFilter}
+                    onChange={(value) => setProgressFilter(value as ProgressFilter)}
+                    options={[
+                      ["all", "Any progress"],
+                      ["notStarted", "Not started"],
+                      ["inProgress", "In progress"],
+                      ["finished", "Finished"],
+                    ]}
+                  />
+                  <FilterSelect
+                    label="Personal details"
+                    value={ratingFilter}
+                    onChange={(value) => setRatingFilter(value as RatingFilter)}
+                    options={[
+                      ["all", "Everything"],
+                      ["rated", "Rated"],
+                      ["unrated", "Not rated"],
+                      ["favorites", "Favorites"],
+                    ]}
+                  />
+                  <FilterSelect
+                    label="Format"
+                    value={formatFilter}
+                    onChange={setFormatFilter}
+                    options={[["all", "Any format"], ...availableFormats.map((format) => [format, format] as [string, string])]}
+                  />
+                  {activeFilterCount > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setProgressFilter("all");
+                        setRatingFilter("all");
+                        setFormatFilter("all");
+                        setStatusFilter("all");
+                      }}
+                      className="inline-flex w-fit items-center gap-2 text-sm text-white/45 transition hover:text-white md:col-span-2 xl:col-span-4"
+                    >
+                      <XMarkIcon className="h-4 w-4" /> Clear all filters
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
           </div>
+
+          <MyListLayoutToolbar
+            isEditing={isEditingSectionOrder}
+            onToggleEdit={handleToggleSectionOrderEdit}
+            onReset={handleResetSectionOrder}
+          />
 
           {normalizedSearch && (
             <div className="mb-8 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3 text-sm text-white/55">
@@ -399,87 +754,115 @@ export function MyListPage({
             </div>
           )}
 
-          <div className="space-y-5">
-            {visibleSections.length ? (
-              visibleSections.map(({ status, label, icon: Icon, description, items }) => {
-                const isOpen = normalizedSearch ? true : openSections[status];
+          <div className={view === "board" ? `grid items-start gap-4 ${getBoardGridClass(displayedSections.length)}` : "space-y-5"}>
+            {displayedSections.length ? (
+              displayedSections.map(({ status, label, icon: Icon, description, items }) => {
+                const isOpen = view === "board"
+                  ? true
+                  : isEditingSectionOrder
+                  ? false
+                  : normalizedSearch
+                  ? true
+                  : openSections[status];
 
                 return (
-                  <section
+                  <MyListSectionEditBlock
                     key={status}
-                    className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-xl"
+                    status={status}
+                    label={label}
+                    isEditing={isEditingSectionOrder}
+                    isDragging={draggedSectionStatus === status}
+                    onDragStart={handleSectionDragStart}
+                    onDragOver={handleSectionDragOver}
+                    onDragEnd={handleSectionDragEnd}
                   >
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setOpenSections((current) => ({
-                          ...current,
-                          [status]: !current[status],
-                        }))
-                      }
-                      className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left transition hover:bg-white/[0.03] focus:outline-none focus:ring-2 focus:ring-white/55"
-                    >
-                      <div className="flex min-w-0 items-start gap-3">
-                        <div className="rounded-2xl border border-white/10 bg-white/5 p-2.5 text-white/75">
-                          <Icon className="h-5 w-5" />
-                        </div>
-
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-3">
-                            <h2 className="text-lg font-semibold text-white">{label}</h2>
-                            <span className="rounded-full bg-white/8 px-2.5 py-1 text-xs text-white/45">
-                              {items.length}
-                            </span>
+                    <section className="min-w-0 overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03] shadow-xl">
+                      <button
+                        type="button"
+                        disabled={isEditingSectionOrder || view === "board"}
+                        onClick={() =>
+                          setOpenSections((current) => ({
+                            ...current,
+                            [status]: !current[status],
+                          }))
+                        }
+                        className="flex w-full items-center justify-between gap-4 px-5 py-5 text-left transition hover:bg-white/[0.03] focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55 disabled:cursor-default disabled:hover:bg-transparent"
+                      >
+                        <div className="flex min-w-0 items-start gap-3">
+                          <div className={`rounded-2xl border p-2.5 transition ${
+                            isOpen
+                              ? "border-[var(--app-accent)]/25 bg-[var(--app-accent-soft)] text-white/80"
+                              : "border-white/10 bg-white/5 text-white/75"
+                          }`}>
+                            <Icon className="h-5 w-5" />
                           </div>
 
-                          <p className="mt-1 text-sm text-white/40">{description}</p>
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-3">
+                              <h2 className="text-lg font-semibold text-white">{label}</h2>
+                              <span className="rounded-full bg-white/8 px-2.5 py-1 text-xs text-white/45">
+                                {items.length}
+                              </span>
+                            </div>
+
+                            {view !== "board" && <p className="mt-1 text-sm text-white/40">{description}</p>}
+                          </div>
                         </div>
-                      </div>
 
-                      <span
-                        className={`rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition-transform duration-300 ${
-                          isOpen ? "rotate-180" : ""
-                        }`}
-                      >
-                        <ChevronDownIcon className="h-5 w-5" />
-                      </span>
-                    </button>
-
-                    <div
-                      className="grid transition-[grid-template-rows,opacity] duration-300 ease-out"
-                      style={{
-                        gridTemplateRows: isOpen ? "1fr" : "0fr",
-                        opacity: isOpen ? 1 : 0.7,
-                      }}
-                    >
-                      <div className="overflow-hidden">
-                        <div
-                          className={`border-t border-white/10 px-5 pb-5 pt-4 transition duration-300 ${
-                            isOpen ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
+                        {view !== "board" && <span
+                          className={`rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition-transform duration-300 ${
+                            isOpen ? "rotate-180 border-[var(--app-accent)]/25 bg-[var(--app-accent-soft)] text-white/80" : ""
                           }`}
                         >
-                          <div className="grid grid-cols-1 gap-4">
-                            {items.map((entry) => (
-                              <MyListCard
-                                key={`${entry.anime_id}-${entry.status}`}
-                                entry={entry}
-                                statusLabel={label}
-                                onOpen={onSelectAnime}
-                                onEdit={setEditingEntry}
-                                titleLanguage={titleLanguage}
-                                searchQuery={listSearch}
-                              />
-                            ))}
+                          <ChevronDownIcon className="h-5 w-5" />
+                        </span>}
+                      </button>
+
+                      <div
+                        className="grid transition-[grid-template-rows,opacity] duration-300 ease-out"
+                        style={{
+                          gridTemplateRows: isOpen ? "1fr" : "0fr",
+                          opacity: isOpen ? 1 : 0.7,
+                        }}
+                      >
+                        <div className="overflow-hidden">
+                          <div
+                            className={`border-t border-white/10 px-5 pb-5 pt-4 transition duration-300 ${
+                              isOpen ? "translate-y-0 opacity-100" : "-translate-y-2 opacity-0"
+                            }`}
+                          >
+                            <div className={`grid gap-4 ${
+                              view === "grid"
+                                ? "sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5"
+                                : "grid-cols-1"
+                            }`}>
+                              {items.map((entry) => (
+                                <MyListCard
+                                  key={`${entry.anime_id}-${entry.status}`}
+                                  entry={entry}
+                                  statusLabel={label}
+                                  onOpen={onSelectAnime}
+                                  onEdit={setEditingEntry}
+                                  titleLanguage={titleLanguage}
+                                  searchQuery={listSearch}
+                                  density={density}
+                                  variant={view}
+                                  nowMs={nowMs}
+                                />
+                              ))}
+                            </div>
                           </div>
                         </div>
                       </div>
-                    </div>
-                  </section>
+                    </section>
+                  </MyListSectionEditBlock>
                 );
               })
             ) : (
               <div className="rounded-3xl border border-dashed border-white/10 bg-white/[0.03] px-5 py-8 text-sm text-white/45">
-                No entries matched your list search.
+                {view === "board" && visibleSections.length
+                  ? "Choose one or more statuses above to add them to the board."
+                  : "No entries matched your search and filters."}
               </div>
             )}
           </div>
@@ -502,19 +885,179 @@ export function MyListPage({
           )}
           totalEpisodes={editingEntry.episodes ?? null}
           onClose={() => setEditingEntry(null)}
-          onSaved={async (_entry, message) => {
+          onSaved={async () => {
             setEditingEntry(null);
             await onListChanged?.();
-            onNotify?.("success", "List updated", message || "List entry updated.");
+            const title = getPreferredTitle(
+              {
+                userPreferred: editingEntry.title_preferred,
+                english: editingEntry.title_english,
+                romaji: editingEntry.title_romaji,
+                native: editingEntry.title_native,
+              },
+              titleLanguage
+            );
+            onNotify?.("success", "List entry updated", `${title} was updated.`);
           }}
-          onRemoved={async (message) => {
+          onRemoved={async () => {
             setEditingEntry(null);
             await onListChanged?.();
-            onNotify?.("success", "List updated", message || "Anime removed from your list.");
+            const title = getPreferredTitle(
+              {
+                userPreferred: editingEntry.title_preferred,
+                english: editingEntry.title_english,
+                romaji: editingEntry.title_romaji,
+                native: editingEntry.title_native,
+              },
+              titleLanguage
+            );
+            onNotify?.("success", "List entry removed", `${title} was removed from your list.`);
           }}
         />
       )}
     </>
+  );
+}
+
+function FilterSelect({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string;
+  value: string;
+  options: [string, string][];
+  onChange: (value: string) => void;
+}) {
+  return (
+    <label className="block">
+      <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">
+        {label}
+      </span>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="no-drag w-full rounded-2xl border border-white/10 bg-[#1b1b1b] px-3 py-2.5 text-sm text-white/75 outline-none transition focus:border-[var(--app-accent)]"
+      >
+        {options.map(([optionValue, optionLabel]) => (
+          <option key={optionValue} value={optionValue}>{optionLabel}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function getBoardGridClass(columnCount: number) {
+  if (columnCount >= 5) return "sm:grid-cols-2 xl:grid-cols-5";
+  if (columnCount === 4) return "sm:grid-cols-2 xl:grid-cols-4";
+  if (columnCount === 3) return "sm:grid-cols-2 xl:grid-cols-3";
+  if (columnCount === 2) return "md:grid-cols-2";
+  return "grid-cols-1";
+}
+
+function MyListLayoutToolbar({
+  isEditing,
+  onToggleEdit,
+  onReset,
+}: {
+  isEditing: boolean;
+  onToggleEdit: () => void;
+  onReset: () => void;
+}) {
+  return (
+    <section
+      className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-white/10 px-4 py-3 ${
+        isEditing
+          ? "sticky top-3 z-30 border-white/15 bg-[#1b1b1b]/96 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
+          : "bg-white/[0.03]"
+      }`}
+    >
+      <div className="flex items-center gap-3">
+        <div className="rounded-2xl border border-[var(--app-accent)]/20 bg-[var(--app-accent-soft)] p-2 text-white/80">
+          <RectangleGroupIcon className="h-5 w-5" />
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-white">"My List" layout</p>
+          <p className="text-xs text-white/40">
+            {isEditing ? "Drag shelves into your preferred order." : "Customize shelf order."}
+          </p>
+        </div>
+      </div>
+
+      <div className="flex flex-wrap gap-2">
+        {isEditing && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white/65 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55"
+          >
+            Reset
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={onToggleEdit}
+          className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55 ${
+            isEditing
+              ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
+              : "border-[var(--app-accent)]/25 bg-[var(--app-accent)] text-black shadow-lg shadow-[var(--app-accent)]/15 hover:opacity-90"
+          }`}
+        >
+          <RectangleGroupIcon className="h-4 w-4" />
+          {isEditing ? "Save" : "Edit"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+function MyListSectionEditBlock({
+  status,
+  label,
+  isEditing,
+  isDragging,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  children,
+}: {
+  status: ListStatus;
+  label: string;
+  isEditing: boolean;
+  isDragging: boolean;
+  onDragStart: (status: string, event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (status: string, event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <div
+      draggable={isEditing}
+      onDragStart={(event) => onDragStart(status, event)}
+      onDragOver={(event) => onDragOver(status, event)}
+      onDragEnd={onDragEnd}
+      className={`relative rounded-[1.75rem] transition ${
+        isEditing
+          ? "border border-dashed border-white/15 bg-white/[0.025] p-2"
+          : "border border-transparent"
+      } ${isDragging ? "opacity-45" : "opacity-100"}`}
+    >
+      {isEditing && (
+        <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2">
+          <div className="flex items-center gap-2 text-sm font-semibold text-white/70">
+            <span className="flex cursor-grab items-center text-white/45 active:cursor-grabbing">
+              <EllipsisVerticalIcon className="h-5 w-3" />
+              <EllipsisVerticalIcon className="-ml-1 h-5 w-3" />
+            </span>
+            {label}
+          </div>
+          <span className="text-xs uppercase tracking-[0.2em] text-white/30">Drag</span>
+        </div>
+      )}
+
+      {children}
+    </div>
   );
 }
 

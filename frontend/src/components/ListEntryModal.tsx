@@ -10,15 +10,16 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
+import type { EditableListEntry } from "../types/domain";
 
 type ListEntryModalProps = {
   animeId: number;
   isOpen: boolean;
-  entry: any | null;
+  entry: EditableListEntry | null;
   title?: string;
   totalEpisodes?: number | null;
   onClose: () => void;
-  onSaved: (entry: any, message?: string) => void;
+  onSaved: (entry: EditableListEntry, message?: string) => void;
   onRemoved: (message?: string) => void;
 };
 
@@ -66,6 +67,21 @@ function toDateInputValue(value: unknown) {
 
   const date = new Date(text);
   return Number.isNaN(date.getTime()) ? "" : date.toISOString().slice(0, 10);
+}
+
+function clampScore(value: number) {
+  return Math.min(10, Math.max(0, Math.round(value * 10) / 10));
+}
+
+function normalizeScoreInput(value: string) {
+  const trimmed = value.trim();
+
+  if (!trimmed || trimmed === "-") {
+    return "";
+  }
+
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? String(clampScore(parsed)) : "";
 }
 
 export function ListEntryModal({
@@ -127,6 +143,9 @@ export function ListEntryModal({
     totalEpisodes && totalEpisodes > 0
       ? Math.round((clampedProgress / totalEpisodes) * 100)
       : null;
+  const normalizedScore = normalizeScoreInput(score);
+  const scoreSliderValue = normalizedScore === "" ? 0 : Number(normalizedScore);
+  const scoreLabel = normalizedScore === "" ? "Not rated" : `${normalizedScore} / 10`;
 
   const markCompleted = () => {
     setStatus("completed");
@@ -175,7 +194,7 @@ export function ListEntryModal({
         status,
         isFavorite,
         progress: finalProgress,
-        score: score.trim() === "" ? null : Number(score),
+        score: normalizedScore === "" ? null : Number(normalizedScore),
         notes: notes.trim() || null,
         startedAt: startedAt || null,
         completedAt: completedAt || null,
@@ -257,8 +276,33 @@ export function ListEntryModal({
     }
   }
 
+  function updateScoreFromInput(value: string) {
+    const trimmed = value.trim();
+
+    if (!trimmed || trimmed === "-") {
+      setScore("");
+      return;
+    }
+
+    if (!/^\d{0,2}(?:\.\d?)?$/.test(trimmed)) {
+      return;
+    }
+
+    const parsed = Number(trimmed);
+
+    if (!Number.isFinite(parsed) || parsed > 10) {
+      return;
+    }
+
+    setScore(trimmed);
+  }
+
+  function updateScoreFromSlider(value: string) {
+    setScore(String(clampScore(Number(value))));
+  }
+
   return (
-    <div className="absolute inset-0 z-80 flex items-center justify-center bg-black/50 px-6 py-4 backdrop-blur-sm">
+    <div className="absolute inset-0 z-80 flex items-center justify-center bg-black/82 px-6 py-4">
       <div className="flex h-[calc(100vh-32px)] max-h-[900px] w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-[#111111]/95 p-5 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
@@ -296,7 +340,7 @@ export function ListEntryModal({
                 onClick={() => setIsFavorite((current) => !current)}
                 className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
                   isFavorite
-                    ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-[var(--app-accent)]"
+                    ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                     : "border-white/10 bg-white/5 text-white/65 hover:bg-white/10 hover:text-white"
                 }`}
               >
@@ -323,7 +367,7 @@ export function ListEntryModal({
                   onClick={isRewatching ? stopRewatch : startRewatch}
                   className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
                     isRewatching
-                      ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-[var(--app-accent)]"
+                      ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                       : "border-white/10 bg-white/5 text-white/65 hover:bg-white/10 hover:text-white"
                   }`}
                 >
@@ -344,7 +388,7 @@ export function ListEntryModal({
                   onClick={() => chooseStatus(option)}
                   className={`rounded-2xl border px-3 py-2.5 text-sm transition ${
                     status === option
-                      ? "border-white/20 bg-white text-black"
+                      ? "border-[var(--app-accent)] bg-[var(--app-accent)] text-black shadow-lg shadow-[var(--app-accent)]/15"
                       : "border-white/10 bg-white/5 text-white/65 hover:bg-white/10 hover:text-white"
                   }`}
                 >
@@ -395,7 +439,7 @@ export function ListEntryModal({
             {progressPercent !== null && (
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-white/10">
                 <div
-                  className="h-full rounded-full bg-white/70"
+                  className="h-full rounded-full bg-[var(--app-accent)] shadow-[0_0_14px_var(--app-accent)]"
                   style={{ width: `${progressPercent}%` }}
                 />
               </div>
@@ -438,31 +482,52 @@ export function ListEntryModal({
           <div>
             <div className="mb-2 flex items-center justify-between gap-4">
               <label className="block text-sm text-white/65">Score</label>
-              <span className="text-sm text-white/35">0-10</span>
+              <span className="text-sm text-white/35">{scoreLabel}</span>
             </div>
 
-            <div className="relative">
-              <input
-                type="number"
-                min={0}
-                max={10}
-                step={0.1}
-                value={score}
-                onChange={(event) => setScore(event.target.value)}
-                placeholder="Optional"
-                className="h-12 w-full rounded-2xl border border-white/10 bg-black/25 px-4 pr-12 text-white outline-none placeholder:text-white/25 [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
-              />
+            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-[1fr_7rem_auto] sm:items-center">
+                <input
+                  type="range"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={scoreSliderValue}
+                  onChange={(event) => updateScoreFromSlider(event.target.value)}
+                  aria-label="Score slider from 0 to 10"
+                  className="h-2 w-full cursor-pointer accent-[var(--app-accent)]"
+                />
 
-              {score.trim() && (
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  step={0.1}
+                  value={score}
+                  onChange={(event) => updateScoreFromInput(event.target.value)}
+                  onBlur={() => setScore((current) => normalizeScoreInput(current))}
+                  onFocus={(event) => event.currentTarget.select()}
+                  placeholder="None"
+                  aria-label="Score from 0 to 10"
+                  className="h-12 w-full rounded-2xl border border-white/10 bg-black/25 px-4 text-center text-lg font-semibold text-white outline-none placeholder:text-white/25 [appearance:textfield] focus:border-white/25 [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+
                 <button
                   type="button"
                   onClick={() => setScore("")}
-                  className="absolute right-3 top-1/2 inline-flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full text-white/45 transition hover:bg-white/10 hover:text-white"
+                  disabled={!score.trim()}
+                  className="inline-flex h-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 text-sm font-medium text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
                   title="Clear score"
                 >
-                  <XMarkIcon className="h-4 w-4" />
+                  Clear
                 </button>
-              )}
+              </div>
+
+              <div className="mt-3 flex items-center justify-between text-xs text-white/35">
+                <span>0</span>
+                <span>Personal score out of 10</span>
+                <span>10</span>
+              </div>
             </div>
           </div>
 
@@ -508,7 +573,7 @@ export function ListEntryModal({
               type="button"
               onClick={handleSave}
               disabled={busy}
-              className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-white px-5 py-3 text-sm font-semibold text-black transition hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 sm:flex-none"
+              className="inline-flex flex-1 items-center justify-center gap-2 rounded-2xl bg-[var(--app-accent)] px-5 py-3 text-sm font-semibold text-black shadow-lg shadow-[var(--app-accent)]/15 transition hover:scale-[1.01] active:scale-[0.99] disabled:opacity-50 sm:flex-none"
             >
               <CheckCircleIcon className="h-4 w-4" />
               {busy ? "Saving..." : "Save changes"}
@@ -537,12 +602,6 @@ function DatePickerField({
 }) {
   const [visibleMonth, setVisibleMonth] = useState(() => dateFromInputValue(value));
 
-  useEffect(() => {
-    if (value) {
-      setVisibleMonth(dateFromInputValue(value));
-    }
-  }, [value]);
-
   const selectedDate = value ? dateFromInputValue(value) : null;
   const monthLabel = visibleMonth.toLocaleDateString(undefined, {
     month: "long",
@@ -568,6 +627,16 @@ function DatePickerField({
     );
   }
 
+  function togglePicker() {
+    const nextOpen = !open;
+
+    if (nextOpen && value) {
+      setVisibleMonth(dateFromInputValue(value));
+    }
+
+    onOpenChange(nextOpen);
+  }
+
   function selectDate(date: Date) {
     onChange(
       `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(
@@ -586,7 +655,7 @@ function DatePickerField({
 
       <button
         type="button"
-        onClick={() => onOpenChange(!open)}
+        onClick={togglePicker}
         className="flex h-12 w-full items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/25 px-4 text-left text-white outline-none transition hover:border-white/20 hover:bg-white/[0.04]"
         aria-expanded={open}
         aria-controls={`${id}-calendar`}

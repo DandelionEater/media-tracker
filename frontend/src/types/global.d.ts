@@ -1,3 +1,13 @@
+import type {
+  AnimeMedia,
+  DiscoverShelfResult,
+  ImportPreviewItem,
+  PersonDetails,
+  SearchAnime,
+  SeenaryBackup,
+  TrackedAnimeEntry,
+} from "./domain";
+
 export {};
 
 type AuthUser = {
@@ -39,19 +49,29 @@ type MalLinkedAccount = {
 };
 
 type AppSettings = {
-  themeAccent: "cyan" | "violet" | "rose" | "amber" | "emerald";
+  themeAccent: "violet" | "rose" | "amber" | "emerald" | "custom";
+  customAccentColor: string;
   titleLanguage: "userPreferred" | "english" | "romaji" | "native";
   showTrendingCarousel: boolean;
   autoRotateTrending: boolean;
   autoScrollHomeShelves: boolean;
   hideAdultContent: boolean;
+  overlayOpacity: number;
+  overlayBackground: "solid" | "glass" | "transparent";
+  backgroundDim: number;
+  animationLevel: "full" | "reduced" | "off";
+  compactMode: boolean;
+  discoverDensity: "comfortable" | "balanced" | "compact";
+  homeDensity: "comfortable" | "balanced" | "compact";
+  myListDensity: "comfortable" | "balanced" | "compact";
+  startView: "home" | "list" | "search";
 };
 
 type SyncActivityItem = {
   id: number;
-  user_id: number;
-  anime_id: number | null;
-  animeTitle?: string;
+  user_id?: number;
+  anime_id?: number | null;
+  animeTitle?: string | null;
   anime_title?: string | null;
   operation: string;
   status: string;
@@ -68,6 +88,15 @@ type SyncActivityItem = {
   }>;
 };
 
+type SyncProgressEvent = {
+  operation: "manual-sync" | "pull-anilist" | "pull-mal";
+  stage: "fetching" | "mapping" | "saving" | "processing" | "complete" | "failed";
+  label: string;
+  current?: number | null;
+  total?: number | null;
+  updatedAt?: string;
+};
+
 type DesktopUpdateInfo = {
   version: string;
   releaseName?: string;
@@ -80,14 +109,14 @@ declare global {
 
   interface Window {
     api: {
-      searchAnime: (query: string, hideAdultContent?: boolean) => Promise<any>;
-      getTrendingAnime: (hideAdultContent?: boolean) => Promise<any[]>;
-      getDiscoverAnime: (hideAdultContent?: boolean) => Promise<any[]>;
+      searchAnime: (query: string, hideAdultContent?: boolean) => Promise<SearchAnime[]>;
+      getTrendingAnime: (hideAdultContent?: boolean) => Promise<unknown>;
+      getDiscoverAnime: (hideAdultContent?: boolean) => Promise<unknown>;
       getDiscoverShelfAnime: (
         shelfId: string,
         page?: number,
         hideAdultContent?: boolean
-      ) => Promise<any>;
+      ) => Promise<DiscoverShelfResult>;
       previewAniListImport: (username: string) => Promise<{
         ok: boolean;
         message?: string;
@@ -122,9 +151,11 @@ declare global {
       importAniList: (
         username: string,
         selectedStatuses?: string[],
-        selectedAnimeIds?: number[]
+        selectedAnimeIds?: number[],
+        options?: { signal?: AbortSignal }
       ) => Promise<{
         ok: boolean;
+        cancelled?: boolean;
         message: string;
         summary?: {
           sourceUsername: string;
@@ -176,9 +207,11 @@ declare global {
       }>;
       importMal: (
         selectedStatuses?: string[],
-        selectedAnimeIds?: number[]
+        selectedAnimeIds?: number[],
+        options?: { signal?: AbortSignal }
       ) => Promise<{
         ok: boolean;
+        cancelled?: boolean;
         message: string;
         summary?: {
           sourceUsername: string;
@@ -193,7 +226,7 @@ declare global {
           unmapped?: number;
         };
       }>;
-      previewTextImport: (text: string, hideAdultContent?: boolean) => Promise<{
+      previewTextImport: (text: string, hideAdultContent?: boolean, options?: { signal?: AbortSignal }) => Promise<{
         ok: boolean;
         message?: string;
         preview?: {
@@ -221,12 +254,15 @@ declare global {
               season?: string | null;
               seasonYear?: number | null;
               sourceTitle?: string;
-              media?: any;
+              guessed?: boolean;
+              guessedFrom?: string | null;
+              interpretedTitle?: string | null;
+              media?: AnimeMedia;
             }>;
           }>;
         };
       }>;
-      previewPdfImport: (pdfBase64: string, hideAdultContent?: boolean) => Promise<{
+      previewPdfImport: (pdfBase64: string, hideAdultContent?: boolean, options?: { signal?: AbortSignal }) => Promise<{
         ok: boolean;
         message?: string;
         preview?: {
@@ -254,16 +290,21 @@ declare global {
               season?: string | null;
               seasonYear?: number | null;
               sourceTitle?: string;
-              media?: any;
+              guessed?: boolean;
+              guessedFrom?: string | null;
+              interpretedTitle?: string | null;
+              media?: AnimeMedia;
             }>;
           }>;
         };
       }>;
       importTextList: (
-        entries: any[],
-        selectedAnimeIds?: number[]
+        entries: ImportPreviewItem[],
+        selectedAnimeIds?: number[],
+        options?: { signal?: AbortSignal }
       ) => Promise<{
         ok: boolean;
+        cancelled?: boolean;
         message: string;
         summary?: {
           sourceUsername: string;
@@ -333,6 +374,7 @@ declare global {
           unmapped?: number;
         };
       }>;
+      onSyncProgress: (callback: (progress: SyncProgressEvent) => void) => () => void;
       getSyncActivity: () => Promise<{
         ok: boolean;
         message?: string;
@@ -341,8 +383,10 @@ declare global {
         failed?: SyncActivityItem[];
       }>;
       onFocusSearch: (callback: () => void) => void;
-      getAnimeDetails: (id: number) => Promise<any>;
-      cacheMinimalAnime: (media: any) => Promise<{ ok: boolean; message?: string }>;
+      getAnimeDetails: (id: number) => Promise<AnimeMedia>;
+      getCharacterDetails: (id: number) => Promise<PersonDetails>;
+      getStaffDetails: (id: number) => Promise<PersonDetails>;
+      cacheMinimalAnime: (media: AnimeMedia) => Promise<{ ok: boolean; message?: string }>;
 
       register: (username: string, password: string) => Promise<AuthResponse>;
       login: (username: string, password: string) => Promise<AuthResponse>;
@@ -476,13 +520,13 @@ declare global {
       getMyList: () => Promise<{
         ok: boolean;
         message?: string;
-        entries: any[];
+        entries: TrackedAnimeEntry[];
       }>;
 
       getMyListEntry: (animeId: number) => Promise<{
         ok: boolean;
         message?: string;
-        entry: any | null;
+        entry: TrackedAnimeEntry | null;
       }>;
 
       saveMyListEntry: (
@@ -501,7 +545,7 @@ declare global {
       ) => Promise<{
         ok: boolean;
         message: string;
-        entry?: any;
+        entry?: TrackedAnimeEntry;
       }>;
 
       removeMyListEntry: (animeId: number) => Promise<{
@@ -515,9 +559,9 @@ declare global {
         removedCount?: number;
       }>;
 
-      exportLocalBackup: () => Promise<any>;
+      exportLocalBackup: () => Promise<SeenaryBackup>;
 
-      importLocalBackup: (backup: any) => Promise<{
+      importLocalBackup: (backup: unknown) => Promise<{
         ok: boolean;
         message: string;
         imported?: number;
@@ -564,6 +608,11 @@ declare global {
         accelerator: string;
         message?: string;
       }>;
+      setShortcutRecordingActive: (active: boolean) => Promise<{
+        ok: boolean;
+        active: boolean;
+        message?: string;
+      }>;
     };
     desktopStartup?: {
       getStartupSetting: () => Promise<{
@@ -580,6 +629,109 @@ declare global {
         wasOpenedAtLogin?: boolean;
         message?: string;
       }>;
+    };
+    desktopWindow?: {
+      getWindowState: () => Promise<{
+        ok: boolean;
+        preset?: "compact" | "balanced" | "cinematic" | "custom";
+        message?: string;
+        bounds?: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        } | null;
+        customBounds?: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        } | null;
+        presets?: Array<{
+          id: "compact" | "balanced" | "cinematic";
+          width: number;
+          height: number;
+        }>;
+      }>;
+      setWindowPreset: (preset: "compact" | "balanced" | "cinematic") => Promise<{
+        ok: boolean;
+        preset?: "compact" | "balanced" | "cinematic" | "custom";
+        message?: string;
+        bounds?: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        } | null;
+        customBounds?: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        } | null;
+      }>;
+      setCustomBounds: (bounds: { width: number; height: number }) => Promise<{
+        ok: boolean;
+        preset?: "custom";
+        message?: string;
+        minimum?: {
+          width: number;
+          height: number;
+        };
+        bounds?: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        } | null;
+        customBounds?: {
+          x: number;
+          y: number;
+          width: number;
+          height: number;
+        } | null;
+      }>;
+      onWindowStateChanged: (
+        callback: (state: {
+          ok: boolean;
+          preset?: "compact" | "balanced" | "cinematic" | "custom";
+          bounds?: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+          } | null;
+          customBounds?: {
+            x: number;
+            y: number;
+            width: number;
+            height: number;
+          } | null;
+        }) => void
+      ) => () => void;
+    };
+    desktopConfig?: {
+      getLayoutOrders: (userId: number) => Promise<{
+        ok: boolean;
+        message?: string;
+        personalLayoutOrder?: string[];
+        discoverLayoutOrder?: string[];
+        myListSectionOrder?: string[];
+      }>;
+      setLayoutOrders: (
+        userId: number,
+        layouts: {
+          personalLayoutOrder?: string[];
+          discoverLayoutOrder?: string[];
+          myListSectionOrder?: string[];
+        }
+      ) => {
+        ok: boolean;
+        message?: string;
+        personalLayoutOrder?: string[];
+        discoverLayoutOrder?: string[];
+        myListSectionOrder?: string[];
+      };
     };
     systemLocale?: {
       locale: string | null;

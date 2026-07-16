@@ -1,7 +1,11 @@
 const anilist = require('./anilist');
 const mal = require('./mal');
 const { resolveMalAnimeIdForAnime } = require('./malMapping');
-const { getFreshMalAccountByUserId, withFreshMalAccount } = require('./malTokens');
+const {
+  getFreshMalAccountByUserId,
+  isUnauthorizedMalError,
+  refreshMalAccountByUserId,
+} = require('./malTokens');
 const {
   getAppSetting,
   setAppSetting,
@@ -109,6 +113,22 @@ function getLocalEntryTitles(entry) {
     .filter(Boolean);
 }
 
+function getMalSearchTitleVariants(title) {
+  const rawTitle = String(title || '').trim();
+  const normalizedTitle = normalizeTitle(rawTitle);
+  const words = normalizedTitle.split(' ').filter(Boolean);
+  const variants = [
+    rawTitle,
+    rawTitle.replace(/\([^)]*\)/g, ' ').trim(),
+    rawTitle.replace(/[|:;,_!?()[\]{}]+/g, ' ').trim(),
+    normalizedTitle,
+    words.length > 8 ? words.slice(0, 8).join(' ') : '',
+    words.length > 6 ? words.slice(0, 6).join(' ') : '',
+  ];
+
+  return [...new Set(variants)].filter((variant) => variant.length >= 2);
+}
+
 function scoreMalCandidateForEntry(entry, candidate) {
   const localTitles = new Set(getLocalEntryTitles(entry).map(normalizeTitle));
   const candidateTitles = [
@@ -123,6 +143,12 @@ function scoreMalCandidateForEntry(entry, candidate) {
 
   if (candidateTitles.some((title) => localTitles.has(title))) {
     score += 100;
+  } else if (
+    candidateTitles.some((candidateTitle) =>
+      [...localTitles].some((localTitle) => isStrongTitleContainment(localTitle, candidateTitle))
+    )
+  ) {
+    score += 80;
   } else if (
     candidateTitles.some((candidateTitle) =>
       [...localTitles].some(
@@ -151,6 +177,69 @@ function scoreMalCandidateForEntry(entry, candidate) {
   return score;
 }
 
+function isStrongTitleContainment(localTitle, candidateTitle) {
+  if (!localTitle || !candidateTitle || localTitle === candidateTitle) {
+    return false;
+  }
+
+  const shorter = localTitle.length <= candidateTitle.length ? localTitle : candidateTitle;
+  const longer = localTitle.length > candidateTitle.length ? localTitle : candidateTitle;
+  const tokenCount = shorter.split(' ').filter(Boolean).length;
+
+  return shorter.length >= 18 && tokenCount >= 4 && longer.includes(shorter);
+}
+
+function hasExactMalTitleMatchForEntry(entry, candidate) {
+  const localTitles = new Set(getLocalEntryTitles(entry).map(normalizeTitle));
+  const candidateTitles = [
+    candidate?.title,
+    candidate?.alternative_titles?.en,
+    candidate?.alternative_titles?.ja,
+    ...(candidate?.alternative_titles?.synonyms || []),
+  ]
+    .map(normalizeTitle)
+    .filter(Boolean);
+
+  return candidateTitles.some((title) => localTitles.has(title));
+}
+
+function hasStrongMalTitleMatchForEntry(entry, candidate) {
+  const localTitles = getLocalEntryTitles(entry).map(normalizeTitle);
+  const candidateTitles = [
+    candidate?.title,
+    candidate?.alternative_titles?.en,
+    candidate?.alternative_titles?.ja,
+    ...(candidate?.alternative_titles?.synonyms || []),
+  ]
+    .map(normalizeTitle)
+    .filter(Boolean);
+
+  return candidateTitles.some((candidateTitle) =>
+    localTitles.some((localTitle) => isStrongTitleContainment(localTitle, candidateTitle))
+  );
+}
+
+function canUseMalCandidateForEntry(entry, best) {
+  if (!best?.candidate) {
+    return false;
+  }
+
+  if (best.score >= 85) {
+    return true;
+  }
+
+  if (best.score >= 75 && hasExactMalTitleMatchForEntry(entry, best.candidate)) {
+    return true;
+  }
+
+  return best.score >= 65 && hasStrongMalTitleMatchForEntry(entry, best.candidate);
+}
+
+function isInvalidMalQueryError(error) {
+  const rawMessage = String(error?.data?.message || error?.message || '').toLowerCase();
+  return rawMessage === 'invalid q' || rawMessage.includes('rejected the title search query');
+}
+
 async function resolveMalAnimeIdForLocalEntry(entry, accessToken) {
   const directId = entry?.external_ids?.mal;
   if (directId) {
@@ -171,8 +260,17 @@ async function resolveMalAnimeIdForLocalEntry(entry, accessToken) {
   let best = null;
   const seen = new Set();
 
-  for (const title of getLocalEntryTitles(entry)) {
-    const candidates = await mal.searchAnime(title, { accessToken, limit: 10 });
+  for (const title of getLocalEntryTitles(entry).flatMap(getMalSearchTitleVariants)) {
+    let candidates = [];
+
+    try {
+      candidates = await mal.searchAnime(title, { accessToken, limit: 25 });
+    } catch (error) {
+      if (!isInvalidMalQueryError(error)) {
+        throw error;
+      }
+      continue;
+    }
 
     for (const candidate of candidates) {
       if (!candidate?.id || seen.has(String(candidate.id))) {
@@ -187,7 +285,7 @@ async function resolveMalAnimeIdForLocalEntry(entry, accessToken) {
     }
   }
 
-  if (!best || best.score < 85) {
+  if (!canUseMalCandidateForEntry(entry, best)) {
     return null;
   }
 
@@ -230,6 +328,38 @@ function getBackoffDate(attempts) {
   return new Date(Date.now() + seconds * 1000).toISOString();
 }
 
+function createMalOperationRunner(userId, initialAccount) {
+  let account = initialAccount;
+
+  return async function runMalOperation(operation) {
+    try {
+      return await operation(account);
+    } catch (error) {
+      if (!isUnauthorizedMalError(error)) {
+        throw error;
+      }
+
+      account = await refreshMalAccountByUserId(userId);
+      return await operation(account);
+    }
+  };
+}
+
+function createMalMappingCache() {
+  const cache = new Map();
+
+  return {
+    get(animeId) {
+      return cache.get(String(animeId));
+    },
+    set(animeId, malAnimeId) {
+      if (malAnimeId) {
+        cache.set(String(animeId), String(malAnimeId));
+      }
+    },
+  };
+}
+
 function scheduleAutoSync(userId) {
   if (!getAutoSyncEnabled(userId)) {
     return;
@@ -257,27 +387,84 @@ async function runSyncForUser(userId, options = {}) {
     };
   }
 
-  const linkedAniListAccount = getAniListAccountByUserId(userId);
-  const linkedMalAccount = await getFreshMalAccountByUserId(userId);
-
-  if (!linkedAniListAccount?.access_token && !linkedMalAccount?.access_token) {
-    return {
-      ok: false,
-      message: 'Link an AniList or MyAnimeList account before syncing.',
-      synced: 0,
-      failed: 0,
-      pending: getSyncQueueCount(userId),
-    };
-  }
-
   runningUsers.add(userId);
 
   try {
-    const jobs = getDueSyncQueueJobs(userId, options.limit ?? 50);
+    const jobs = getDueSyncQueueJobs(userId, options.limit ?? 50, {
+      includeFutureRetries: Boolean(options.forceRetry),
+    });
+    const linkedAniListAccount = getAniListAccountByUserId(userId);
+    const needsMalAccount =
+      !linkedAniListAccount?.access_token ||
+      jobs.some((job) => String(job.operation || '').includes('_mal_'));
+    const linkedMalAccount = needsMalAccount
+      ? await getFreshMalAccountByUserId(userId)
+      : null;
+
+    if (!linkedAniListAccount?.access_token && !linkedMalAccount?.access_token) {
+      return {
+        ok: false,
+        message: 'Link an AniList or MyAnimeList account before syncing.',
+        synced: 0,
+        failed: 0,
+        pending: getSyncQueueCount(userId),
+      };
+    }
+
     let synced = 0;
     let failed = 0;
+    const emitProgress =
+      typeof options.onProgress === 'function' ? options.onProgress : () => {};
+    const runMalOperation = linkedMalAccount?.access_token
+      ? createMalOperationRunner(userId, linkedMalAccount)
+      : null;
+    const malMappingCache = createMalMappingCache();
 
-    for (const job of jobs) {
+    async function resolveMalAnimeIdForJob(job) {
+      const cached = malMappingCache.get(job.anime_id);
+      if (cached) {
+        return cached;
+      }
+
+      let malAnimeId =
+        job.payload.malAnimeId ||
+        getAnimeExternalIdByAnimeId('mal', job.anime_id)?.external_id;
+
+      if (!malAnimeId && runMalOperation) {
+        malAnimeId = await runMalOperation(async (account) => {
+          if (!account?.access_token) {
+            throw new Error('Link a MyAnimeList account before syncing this entry.');
+          }
+
+          return await resolveMalAnimeIdForAnime(job.anime_id, account.access_token, {
+            submittedByUserId: userId,
+          });
+        });
+      }
+
+      malMappingCache.set(job.anime_id, malAnimeId);
+      return malAnimeId;
+    }
+
+    emitProgress({
+      operation: 'manual-sync',
+      stage: jobs.length ? 'processing' : 'complete',
+      label: jobs.length
+        ? `Syncing 0 of ${jobs.length} queued changes...`
+        : 'No queued changes are ready.',
+      current: 0,
+      total: jobs.length,
+    });
+
+    for (const [index, job] of jobs.entries()) {
+      emitProgress({
+        operation: 'manual-sync',
+        stage: 'processing',
+        label: `Syncing ${index + 1} of ${jobs.length}: ${job.animeTitle}`,
+        current: index,
+        total: jobs.length,
+      });
+
       try {
         if (job.operation === 'upsert_anilist_entry') {
           if (!linkedAniListAccount?.access_token) {
@@ -327,27 +514,19 @@ async function runSyncForUser(userId, options = {}) {
         }
 
         if (job.operation === 'upsert_mal_entry') {
-          if (!linkedMalAccount?.access_token) {
+          if (!runMalOperation) {
             throw new Error('Link a MyAnimeList account before syncing this entry.');
           }
 
-          let malAnimeId =
-            job.payload.malAnimeId ||
-            getAnimeExternalIdByAnimeId('mal', job.anime_id)?.external_id;
+          const malAnimeId = await resolveMalAnimeIdForJob(job);
 
-          await withFreshMalAccount(userId, async (account) => {
+          if (!malAnimeId) {
+            throw new Error('No MyAnimeList ID mapping exists for this anime.');
+          }
+
+          await runMalOperation(async (account) => {
             if (!account?.access_token) {
               throw new Error('Link a MyAnimeList account before syncing this entry.');
-            }
-
-            if (!malAnimeId) {
-              malAnimeId = await resolveMalAnimeIdForAnime(job.anime_id, account.access_token, {
-                submittedByUserId: userId,
-              });
-            }
-
-            if (!malAnimeId) {
-              throw new Error('No MyAnimeList ID mapping exists for this anime.');
             }
 
             return await mal.saveAnimeListStatus(account.access_token, malAnimeId, job.payload);
@@ -367,27 +546,19 @@ async function runSyncForUser(userId, options = {}) {
         }
 
         if (job.operation === 'delete_mal_entry') {
-          if (!linkedMalAccount?.access_token) {
+          if (!runMalOperation) {
             throw new Error('Link a MyAnimeList account before syncing this deletion.');
           }
 
-          let malAnimeId =
-            job.payload.malAnimeId ||
-            getAnimeExternalIdByAnimeId('mal', job.anime_id)?.external_id;
+          const malAnimeId = await resolveMalAnimeIdForJob(job);
 
-          await withFreshMalAccount(userId, async (account) => {
+          if (!malAnimeId) {
+            throw new Error('No MyAnimeList ID mapping exists for this anime.');
+          }
+
+          await runMalOperation(async (account) => {
             if (!account?.access_token) {
               throw new Error('Link a MyAnimeList account before syncing this deletion.');
-            }
-
-            if (!malAnimeId) {
-              malAnimeId = await resolveMalAnimeIdForAnime(job.anime_id, account.access_token, {
-                submittedByUserId: userId,
-              });
-            }
-
-            if (!malAnimeId) {
-              throw new Error('No MyAnimeList ID mapping exists for this anime.');
             }
 
             return await mal.deleteAnimeListStatus(account.access_token, malAnimeId);
@@ -420,24 +591,45 @@ async function runSyncForUser(userId, options = {}) {
           message,
         });
         failed += 1;
+      } finally {
+        emitProgress({
+          operation: 'manual-sync',
+          stage: 'processing',
+          label: `Processed ${index + 1} of ${jobs.length} queued changes.`,
+          current: index + 1,
+          total: jobs.length,
+        });
       }
     }
 
     const pending = getSyncQueueCount(userId);
     const ok = failed === 0;
+    const noDueJobs = jobs.length === 0 && synced === 0 && failed === 0;
 
-    return {
+    const result = {
       ok,
       synced,
       failed,
       pending,
       message:
-        synced === 0 && failed === 0
+        noDueJobs && pending > 0
+          ? `${pending} queued sync change${pending === 1 ? '' : 's'} waiting for retry.`
+          : synced === 0 && failed === 0
           ? 'No sync changes are waiting.'
           : failed > 0
             ? `Synced ${synced}, ${failed} waiting to retry.`
             : `Synced ${synced} change${synced === 1 ? '' : 's'}.`,
     };
+
+    emitProgress({
+      operation: 'manual-sync',
+      stage: ok ? 'complete' : 'failed',
+      label: result.message,
+      current: jobs.length,
+      total: jobs.length,
+    });
+
+    return result;
   } finally {
     runningUsers.delete(userId);
   }
@@ -501,7 +693,9 @@ async function runStatelessSyncForUser(userId, payload = {}) {
   const entries = Array.isArray(payload.entries) ? payload.entries : [];
   const deletedEntries = Array.isArray(payload.deletedEntries) ? payload.deletedEntries : [];
   const linkedAniListAccount = getAniListAccountByUserId(userId);
-  const linkedMalAccount = await getFreshMalAccountByUserId(userId);
+  const linkedMalAccount = linkedAniListAccount?.access_token
+    ? null
+    : await getFreshMalAccountByUserId(userId);
   const activity = [];
 
   if (!linkedAniListAccount?.access_token && !linkedMalAccount?.access_token) {
@@ -574,9 +768,21 @@ async function runStatelessSyncForUser(userId, payload = {}) {
         }
       }
     } else if (linkedMalAccount?.access_token) {
-      for (const entry of entries) {
-        try {
-          const malAnimeId = await withFreshMalAccount(userId, async (account) => {
+      const runMalOperation = createMalOperationRunner(userId, linkedMalAccount);
+      const malMappingCache = createMalMappingCache();
+
+      async function resolveMalAnimeIdForStatelessEntry(entry) {
+        const cached = malMappingCache.get(entry.anime_id);
+        if (cached) {
+          return cached;
+        }
+
+        let malAnimeId =
+          entry?.external_ids?.mal ||
+          getAnimeExternalIdByAnimeId('mal', entry.anime_id)?.external_id;
+
+        if (!malAnimeId) {
+          malAnimeId = await runMalOperation(async (account) => {
             return await resolveMalAnimeIdForLocalEntry(
               {
                 ...entry,
@@ -585,12 +791,21 @@ async function runStatelessSyncForUser(userId, payload = {}) {
               account.access_token
             );
           });
+        }
+
+        malMappingCache.set(entry.anime_id, malAnimeId);
+        return malAnimeId;
+      }
+
+      for (const entry of entries) {
+        try {
+          const malAnimeId = await resolveMalAnimeIdForStatelessEntry(entry);
 
           if (!malAnimeId) {
             throw new Error('No MyAnimeList ID mapping exists for this anime.');
           }
 
-          await withFreshMalAccount(userId, async (account) => {
+          await runMalOperation(async (account) => {
             return await mal.saveAnimeListStatus(
               account.access_token,
               malAnimeId,
@@ -619,13 +834,13 @@ async function runStatelessSyncForUser(userId, payload = {}) {
 
       for (const entry of deletedEntries) {
         try {
-          const malAnimeId = entry?.external_ids?.mal || getAnimeExternalIdByAnimeId('mal', entry.anime_id)?.external_id;
+          const malAnimeId = await resolveMalAnimeIdForStatelessEntry(entry);
 
           if (!malAnimeId) {
             throw new Error('No MyAnimeList ID mapping exists for this anime.');
           }
 
-          await withFreshMalAccount(userId, async (account) => {
+          await runMalOperation(async (account) => {
             return await mal.deleteAnimeListStatus(account.access_token, malAnimeId);
           });
           synced += 1;

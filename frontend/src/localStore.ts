@@ -1,21 +1,31 @@
-type LocalSettings = {
-  themeAccent: string;
-  titleLanguage: string;
-  showTrendingCarousel: boolean;
-  autoRotateTrending: boolean;
-  autoScrollHomeShelves: boolean;
-  hideAdultContent: boolean;
-};
+import type {
+  AnimeMedia,
+  AppSettings,
+  CardDensity,
+  DeletedListEntry,
+  ImportPayload,
+  ImportPreviewItem,
+  ListStatus,
+  LocalListEntry,
+  SaveListEntryPayload,
+  SeenaryBackup,
+  StoredAnime,
+  SyncActivityItem,
+  ThemeAccent,
+  TrackedAnimeEntry,
+} from "./types/domain";
+
+type LocalSettings = AppSettings;
 
 type LocalState = {
   version: 2;
   userId: number;
   settings: LocalSettings | null;
-  anime: Record<string, any>;
-  entries: Record<string, any>;
+  anime: Record<string, StoredAnime>;
+  entries: Record<string, LocalListEntry>;
   dirtyEntries: Record<string, boolean>;
-  deletedEntries: Record<string, any>;
-  syncHistory: any[];
+  deletedEntries: Record<string, DeletedListEntry>;
+  syncHistory: SyncActivityItem[];
   autoSyncEnabled: boolean;
 };
 
@@ -24,21 +34,81 @@ const DB_VERSION = 1;
 const STATE_STORE = "userStates";
 const LEGACY_STATE_PREFIX = "seenary.local-user.";
 const LEGACY_MIGRATED_PREFIX = "seenary.indexeddb-migrated.";
+const FALLBACK_STATE_PREFIX = "seenary.local-fallback.";
 const BACKUP_FORMAT = "seenary.local-backup";
 const BACKUP_VERSION = 1;
 
+type ValidSeenaryBackup = SeenaryBackup & {
+  format: string;
+  data: NonNullable<SeenaryBackup["data"]>;
+};
+
+function isSeenaryBackup(value: unknown): value is ValidSeenaryBackup {
+  if (!value || typeof value !== "object") return false;
+
+  const candidate = value as SeenaryBackup;
+  return candidate.format === BACKUP_FORMAT && Boolean(candidate.data);
+}
+
 let dbPromise: Promise<IDBDatabase> | null = null;
+let indexedDbUnavailable = false;
 
 export const DEFAULT_LOCAL_SETTINGS: LocalSettings = {
-  themeAccent: "cyan",
+  themeAccent: "violet",
+  customAccentColor: "#a78bfa",
   titleLanguage: "userPreferred",
   showTrendingCarousel: true,
   autoRotateTrending: true,
   autoScrollHomeShelves: true,
   hideAdultContent: true,
+  overlayOpacity: 100,
+  overlayBackground: "solid",
+  navbarStyle: "integrated",
+  browseCardStyle: "default",
+  backgroundDim: 65,
+  animationLevel: "full",
+  compactMode: false,
+  discoverDensity: "balanced",
+  homeDensity: "balanced",
+  myListDensity: "balanced",
+  startView: "home",
 };
 
+function normalizeAccentColor(value: unknown) {
+  const color = String(value || "").trim();
+  return /^#[0-9a-f]{6}$/i.test(color) ? color : DEFAULT_LOCAL_SETTINGS.customAccentColor;
+}
+
+function normalizeDensity(value: unknown): CardDensity {
+  const density = String(value || "");
+  return ["comfortable", "balanced", "compact"].includes(density)
+    ? (density as CardDensity)
+    : DEFAULT_LOCAL_SETTINGS.discoverDensity;
+}
+
+function normalizeSettings(settings: Partial<LocalSettings> | null | undefined): LocalSettings {
+  const themeAccent: ThemeAccent = ["violet", "rose", "amber", "emerald", "custom"].includes(
+    String(settings?.themeAccent || "")
+  )
+    ? (String(settings?.themeAccent) as ThemeAccent)
+    : DEFAULT_LOCAL_SETTINGS.themeAccent;
+
+  return {
+    ...DEFAULT_LOCAL_SETTINGS,
+    ...(settings ?? {}),
+    themeAccent,
+    customAccentColor: normalizeAccentColor(settings?.customAccentColor),
+    discoverDensity: normalizeDensity(settings?.discoverDensity),
+    homeDensity: normalizeDensity(settings?.homeDensity),
+    myListDensity: normalizeDensity(settings?.myListDensity),
+  };
+}
+
 function openDb() {
+  if (indexedDbUnavailable) {
+    return Promise.reject(new Error("IndexedDB is unavailable."));
+  }
+
   if (dbPromise) return dbPromise;
 
   dbPromise = new Promise((resolve, reject) => {
@@ -52,7 +122,11 @@ function openDb() {
     };
 
     request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
+    request.onerror = () => {
+      indexedDbUnavailable = true;
+      dbPromise = null;
+      reject(request.error);
+    };
   });
 
   return dbPromise;
@@ -104,7 +178,7 @@ function createEmptyState(userId: number): LocalState {
   };
 }
 
-function normalizeState(userId: number, value: any): LocalState {
+function normalizeState(userId: number, value: Partial<LocalState> | null | undefined): LocalState {
   return {
     version: 2,
     userId,
@@ -129,9 +203,37 @@ function getLegacyMigratedKey(userId: number) {
   return `${LEGACY_MIGRATED_PREFIX}${userId}`;
 }
 
-async function readLegacyState(userId: number) {
+function getFallbackStateKey(userId: number) {
+  return `${FALLBACK_STATE_PREFIX}${userId}`;
+}
+
+function readFallbackState(userId: number) {
   try {
-    if (window.localStorage.getItem(getLegacyMigratedKey(userId)) === "true") {
+    const raw = window.localStorage.getItem(getFallbackStateKey(userId));
+    return raw ? normalizeState(userId, JSON.parse(raw)) : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeFallbackState(userId: number, state: LocalState) {
+  try {
+    window.localStorage.setItem(
+      getFallbackStateKey(userId),
+      JSON.stringify(normalizeState(userId, state))
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function readLegacyState(userId: number, options: { ignoreMigrated?: boolean } = {}) {
+  try {
+    if (
+      !options.ignoreMigrated &&
+      window.localStorage.getItem(getLegacyMigratedKey(userId)) === "true"
+    ) {
       return null;
     }
 
@@ -151,25 +253,57 @@ function markLegacyMigrated(userId: number) {
 }
 
 async function readState(userId: number): Promise<LocalState> {
-  const stored = await runStore<LocalState | undefined>("readonly", (store) => store.get(userId));
+  if (!indexedDbUnavailable) {
+    try {
+      const stored = await runStore<LocalState | undefined>("readonly", (store) =>
+        store.get(userId)
+      );
 
-  if (stored) {
-    return normalizeState(userId, stored);
+      if (stored) {
+        return normalizeState(userId, stored);
+      }
+
+      const legacyState = await readLegacyState(userId);
+      const state = legacyState ?? readFallbackState(userId) ?? createEmptyState(userId);
+      await writeState(userId, state);
+
+      if (legacyState) {
+        markLegacyMigrated(userId);
+      }
+
+      return state;
+    } catch (error) {
+      indexedDbUnavailable = true;
+      dbPromise = null;
+      console.warn("Seenary local database unavailable; using browser storage fallback.", error);
+    }
   }
 
-  const legacyState = await readLegacyState(userId);
-  const state = legacyState ?? createEmptyState(userId);
-  await writeState(userId, state);
-
-  if (legacyState) {
-    markLegacyMigrated(userId);
-  }
+  const state =
+    readFallbackState(userId) ??
+    (await readLegacyState(userId, { ignoreMigrated: true })) ??
+    createEmptyState(userId);
+  writeFallbackState(userId, state);
 
   return state;
 }
 
 async function writeState(userId: number, state: LocalState) {
-  await runStore("readwrite", (store) => store.put(normalizeState(userId, state)));
+  const normalized = normalizeState(userId, state);
+
+  if (indexedDbUnavailable) {
+    writeFallbackState(userId, normalized);
+    return;
+  }
+
+  try {
+    await runStore("readwrite", (store) => store.put(normalized));
+  } catch (error) {
+    indexedDbUnavailable = true;
+    dbPromise = null;
+    writeFallbackState(userId, normalized);
+    console.warn("Seenary local database write failed; using browser storage fallback.", error);
+  }
 }
 
 function toDateValue(value: unknown) {
@@ -186,7 +320,7 @@ function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function normalizeAnime(media: any) {
+function normalizeAnime(media: AnimeMedia): StoredAnime | null {
   if (!media?.id) return null;
 
   return {
@@ -211,17 +345,22 @@ function normalizeAnime(media: any) {
     country_of_origin: media.countryOfOrigin ?? null,
     start_date: media.startDate ?? null,
     end_date: media.endDate ?? null,
+    next_airing_episode: media.nextAiringEpisode?.episode ?? null,
+    next_airing_at: media.nextAiringEpisode?.airingAt ?? null,
     genres: media.genres ?? [],
-    recommendations: media.recommendations?.nodes ?? media.recommendations ?? [],
+    recommendations: media.recommendations?.nodes ?? [],
     external_ids: {
       anilist: String(media.id),
-      mal: media.source?.provider === "mal" ? String(media.source.animeId) : null,
+      mal:
+        media.source && typeof media.source === "object" && media.source.provider === "mal"
+          ? String(media.source.animeId)
+          : null,
     },
     details: media,
   };
 }
 
-function normalizePreviewAnime(item: any) {
+function normalizePreviewAnime(item: ImportPreviewItem): StoredAnime | null {
   if (!item?.animeId) return null;
 
   return {
@@ -236,6 +375,8 @@ function normalizePreviewAnime(item: any) {
     season: item.season ?? null,
     season_year: item.seasonYear ?? null,
     average_score: item.averageScore ?? null,
+    next_airing_episode: item.media?.nextAiringEpisode?.episode ?? null,
+    next_airing_at: item.media?.nextAiringEpisode?.airingAt ?? null,
     genres: [],
     recommendations: [],
     external_ids: {
@@ -246,14 +387,18 @@ function normalizePreviewAnime(item: any) {
   };
 }
 
-function sanitizeStatus(status: unknown) {
+function sanitizeStatus(status: unknown): ListStatus {
   const value = String(status || "").trim().toLowerCase();
   return ["planned", "watching", "completed", "paused", "dropped"].includes(value)
-    ? value
+    ? (value as ListStatus)
     : "planned";
 }
 
-function buildEntry(animeId: number, payload: any, existing: any | null) {
+function buildEntry(
+  animeId: number,
+  payload: SaveListEntryPayload,
+  existing: LocalListEntry | null
+): LocalListEntry {
   const now = new Date().toISOString();
   const status = sanitizeStatus(payload?.status ?? existing?.status);
   let startedAt =
@@ -305,27 +450,46 @@ function buildEntry(animeId: number, payload: any, existing: any | null) {
   };
 }
 
-function mergeEntryWithAnime(entry: any, anime: any) {
+function entriesMatch(left: LocalListEntry | null, right: LocalListEntry | null) {
+  if (!left || !right) return false;
+
+  return (
+    left.status === right.status &&
+    Number(left.is_favorite ?? 0) === Number(right.is_favorite ?? 0) &&
+    Number(left.repeat_count ?? 0) === Number(right.repeat_count ?? 0) &&
+    Number(left.is_rewatching ?? 0) === Number(right.is_rewatching ?? 0) &&
+    Number(left.progress ?? 0) === Number(right.progress ?? 0) &&
+    (left.score ?? null) === (right.score ?? null) &&
+    (left.notes ?? null) === (right.notes ?? null) &&
+    (left.started_at ?? null) === (right.started_at ?? null) &&
+    (left.completed_at ?? null) === (right.completed_at ?? null)
+  );
+}
+
+function mergeEntryWithAnime(entry: LocalListEntry, anime: StoredAnime): TrackedAnimeEntry {
   return {
     ...anime,
     ...entry,
     anime_id: entry.anime_id,
+    next_airing_episode:
+      anime.next_airing_episode ?? anime.details?.nextAiringEpisode?.episode ?? null,
+    next_airing_at:
+      anime.next_airing_at ?? anime.details?.nextAiringEpisode?.airingAt ?? null,
   };
 }
 
 export const localStore = {
   async getSettings(userId: number) {
     const state = await readState(userId);
-    return state.settings ?? DEFAULT_LOCAL_SETTINGS;
+    return normalizeSettings(state.settings);
   },
 
   async updateSettings(userId: number, settings: Partial<LocalSettings>) {
     const state = await readState(userId);
-    state.settings = {
-      ...DEFAULT_LOCAL_SETTINGS,
+    state.settings = normalizeSettings({
       ...(state.settings ?? {}),
       ...settings,
-    };
+    });
     await writeState(userId, state);
     return state.settings;
   },
@@ -341,7 +505,7 @@ export const localStore = {
     return enabled;
   },
 
-  async cacheAnime(userId: number, media: any) {
+  async cacheAnime(userId: number, media: AnimeMedia) {
     const anime = normalizeAnime(media);
     if (!anime) return { ok: false, message: "Invalid anime data." };
 
@@ -354,7 +518,7 @@ export const localStore = {
     return { ok: true };
   },
 
-  async cachePreviewAnime(userId: number, item: any) {
+  async cachePreviewAnime(userId: number, item: ImportPreviewItem) {
     const anime = normalizePreviewAnime(item);
     if (!anime) return;
 
@@ -373,7 +537,7 @@ export const localStore = {
       .sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
   },
 
-  async importLegacyEntries(userId: number, entries: any[]) {
+  async importLegacyEntries(userId: number, entries: TrackedAnimeEntry[]) {
     const state = await readState(userId);
     let imported = 0;
 
@@ -397,6 +561,8 @@ export const localStore = {
         season: entry.season ?? null,
         season_year: entry.season_year ?? null,
         average_score: entry.average_score ?? null,
+        next_airing_episode: entry.next_airing_episode ?? null,
+        next_airing_at: entry.next_airing_at ?? null,
         genres: entry.genres ?? [],
         recommendations: entry.recommendations ?? [],
       };
@@ -434,15 +600,28 @@ export const localStore = {
   async saveEntry(
     userId: number,
     animeId: number,
-    payload: any,
+    payload: SaveListEntryPayload,
     options: { markDirty?: boolean } = {}
   ) {
     const state = await readState(userId);
     const key = String(animeId);
     const existing = state.entries[key] ?? null;
-    state.entries[key] = buildEntry(animeId, payload, existing);
+    const nextEntry = buildEntry(animeId, payload, existing);
+
+    if (existing && entriesMatch(existing, nextEntry)) {
+      return {
+        ok: true,
+        unchanged: true,
+        message: "List entry already up to date.",
+        entry: mergeEntryWithAnime(existing, state.anime[key] ?? {}),
+      };
+    }
+
+    state.entries[key] = nextEntry;
     if (options.markDirty !== false) {
       state.dirtyEntries[key] = true;
+    } else {
+      delete state.dirtyEntries[key];
     }
     delete state.deletedEntries[key];
     await writeState(userId, state);
@@ -543,7 +722,7 @@ export const localStore = {
     return Object.keys(state.dirtyEntries).length + Object.keys(state.deletedEntries).length;
   },
 
-  async markSynced(userId: number, result: any) {
+  async markSynced(userId: number, result: ImportPayload) {
     const state = await readState(userId);
     for (const item of result?.activity ?? []) {
       if (item?.status === "completed" && item?.anime_id) {
@@ -554,7 +733,7 @@ export const localStore = {
       }
     }
     state.syncHistory = [
-      ...(result?.activity ?? []).map((item: any) => ({
+      ...(result.activity ?? []).map((item) => ({
         ...item,
         created_at: item.created_at ?? new Date().toISOString(),
       })),
@@ -563,14 +742,32 @@ export const localStore = {
     await writeState(userId, state);
   },
 
-  async replaceEntriesFromImport(userId: number, importResult: any) {
-    const items = importResult?.localEntries ?? [];
+  async replaceEntriesFromImport(userId: number, importResult: ImportPayload) {
+    const items = importResult.localEntries ?? [];
+    const state = await readState(userId);
+    let created = 0;
+    let updated = 0;
+    let unchanged = 0;
+    const changes: Array<{ animeId: number; animeTitle: string }> = [];
 
     for (const item of items) {
-      await this.cachePreviewAnime(userId, item);
-      await this.saveEntry(
-        userId,
-        Number(item.animeId),
+      const animeId = Number(item?.animeId);
+      if (!Number.isInteger(animeId) || animeId <= 0) {
+        continue;
+      }
+
+      const key = String(animeId);
+      const anime = normalizePreviewAnime(item);
+      if (anime) {
+        state.anime[key] = {
+          ...(state.anime[key] ?? {}),
+          ...anime,
+        };
+      }
+
+      const existing = state.entries[key] ?? null;
+      const nextEntry = buildEntry(
+        animeId,
         {
           status: item.status,
           progress: item.progress ?? 0,
@@ -580,9 +777,43 @@ export const localStore = {
           completedAt: item.completedAt ?? null,
           repeatCount: item.repeatCount ?? 0,
         },
-        { markDirty: false }
+        existing
       );
+
+      if (existing && entriesMatch(existing, nextEntry)) {
+        unchanged += 1;
+        continue;
+      }
+
+      state.entries[key] = nextEntry;
+      delete state.dirtyEntries[key];
+      delete state.deletedEntries[key];
+
+      if (existing) {
+        updated += 1;
+      } else {
+        created += 1;
+      }
+
+      changes.push({
+        animeId,
+        animeTitle:
+          anime?.title_preferred ??
+          anime?.title_english ??
+          anime?.title_romaji ??
+          `Anime #${animeId}`,
+      });
     }
+
+    await writeState(userId, state);
+
+    return {
+      created,
+      updated,
+      unchanged,
+      imported: created + updated,
+      changes,
+    };
   },
 
   async getSyncActivity(userId: number) {
@@ -590,10 +821,11 @@ export const localStore = {
     return {
       pending: [
         ...Object.keys(state.dirtyEntries).flatMap((key) => {
-          const entry: any = state.entries[key];
+          const entry = state.entries[key];
           if (!entry) return [];
           return [
             {
+              id: -Math.abs(entry.anime_id),
               anime_id: entry.anime_id,
               animeTitle:
                 state.anime[String(entry.anime_id)]?.title_preferred ??
@@ -602,16 +834,17 @@ export const localStore = {
                 `Anime #${entry.anime_id}`,
               operation: "upsert_local_entry",
               status: "pending",
-              created_at: entry.updated_at,
+              created_at: entry.updated_at ?? new Date().toISOString(),
             },
           ];
         }),
-        ...Object.values(state.deletedEntries).map((entry: any) => ({
+        ...Object.values(state.deletedEntries).map((entry) => ({
+          id: -Math.abs(entry.anime_id) - 1_000_000,
           anime_id: entry.anime_id,
           animeTitle: entry.title,
           operation: "delete_local_entry",
           status: "pending",
-          created_at: entry.deleted_at,
+          created_at: entry.deleted_at ?? new Date().toISOString(),
         })),
       ],
       completed: state.syncHistory.filter((item) => item.status === "completed"),
@@ -635,8 +868,8 @@ export const localStore = {
     };
   },
 
-  async importBackup(userId: number, backup: any) {
-    if (backup?.format !== BACKUP_FORMAT || !backup?.data) {
+  async importBackup(userId: number, backup: unknown) {
+    if (!isSeenaryBackup(backup)) {
       return {
         ok: false,
         message: "This does not look like a Seenary backup file.",
@@ -650,14 +883,16 @@ export const localStore = {
       backup.data.anime && typeof backup.data.anime === "object" ? backup.data.anime : {};
     let imported = 0;
 
-    state.settings = backup.data.settings ?? state.settings;
+    state.settings = backup.data.settings
+      ? normalizeSettings(backup.data.settings as Partial<LocalSettings>)
+      : state.settings;
     state.anime = {
       ...state.anime,
       ...incomingAnime,
     };
 
     for (const [key, entry] of Object.entries(incomingEntries)) {
-      const animeId = Number((entry as any)?.anime_id ?? key);
+      const animeId = Number(entry.anime_id ?? key);
       if (!Number.isInteger(animeId) || animeId <= 0) {
         continue;
       }

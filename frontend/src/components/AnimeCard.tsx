@@ -3,40 +3,13 @@ import {
   PlusIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
-
-type Anime = {
-  id: number;
-  isAdult?: boolean;
-  title: {
-    romaji?: string;
-    english?: string;
-    native?: string;
-    userPreferred?: string;
-  };
-  coverImage: {
-    large: string;
-  };
-  episodes?: number | null;
-  format?: string | null;
-  averageScore?: number | null;
-  season?: string | null;
-  seasonYear?: number | null;
-};
-
-type TrackedAnimeEntry = {
-  anime_id: number;
-  status: "planned" | "watching" | "completed" | "paused" | "dropped";
-  progress: number;
-  score: number | null;
-  notes: string | null;
-  episodes?: number | null;
-};
+import type { SearchAnime, TrackedAnimeEntry } from "../types/domain";
 
 type AnimeCardProps = {
-  anime: Anime;
+  anime: SearchAnime;
   onSelect: (id: number) => void;
   trackedEntry?: TrackedAnimeEntry;
-  onQuickAdd: (anime: Anime) => void;
+  onQuickAdd: (anime: SearchAnime) => void;
   onEditEntry: (entry: TrackedAnimeEntry) => void;
   titleLanguage: TitleLanguage;
 };
@@ -82,7 +55,7 @@ export function AnimeCard({
 
   return (
     <div
-      className="group relative overflow-hidden rounded-2xl cursor-pointer focus:outline-none focus:ring-2 focus:ring-white/60"
+      className="browse-search-card group relative cursor-pointer focus:outline-none focus:ring-2 focus:ring-white/60"
       role="button"
       tabIndex={0}
       onClick={() => onSelect(anime.id)}
@@ -93,6 +66,7 @@ export function AnimeCard({
         }
       }}
     >
+      <div className="browse-search-poster relative aspect-2/3 overflow-hidden rounded-2xl">
       <img
         src={anime.coverImage.large}
         alt={title}
@@ -119,10 +93,10 @@ export function AnimeCard({
         className="
           absolute right-2 top-2 z-20
           inline-flex h-8 w-8 items-center justify-center
-          rounded-xl border border-[var(--app-accent)]/35 bg-black/55 text-[var(--app-accent)]
+          rounded-xl border border-[var(--app-accent)]/35 bg-black/55 text-white/90
           backdrop-blur-sm
           transition-all duration-300
-          hover:bg-[var(--app-accent-soft)] hover:text-[var(--app-accent)]
+          hover:bg-[var(--app-accent-soft)] hover:text-white
           opacity-100 scale-100
         "
         title={trackedEntry ? "Edit list entry" : "Add to list"}
@@ -179,6 +153,7 @@ export function AnimeCard({
 
       <div
         className="
+          browse-search-overlay
           absolute inset-0
           flex flex-col items-center justify-center
           px-3 text-center
@@ -218,6 +193,16 @@ export function AnimeCard({
             "
           >
             {seasonText}
+          </p>
+        )}
+      </div>
+      </div>
+
+      <div className="browse-search-gallery-info hidden pt-3">
+        <p className="line-clamp-2 text-sm font-semibold text-white">{title}</p>
+        {subtitleParts.length > 0 && (
+          <p className="mt-1 truncate text-xs text-white/45">
+            {subtitleParts.join(" • ")}
           </p>
         )}
       </div>
