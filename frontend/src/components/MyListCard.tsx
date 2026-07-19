@@ -30,6 +30,10 @@ type MyListEntry = {
   average_score?: number | null;
   season?: string | null;
   season_year?: number | null;
+  media_type?: "ANIME" | "MANGA";
+  chapters?: number | null;
+  volumes?: number | null;
+  volume_progress?: number;
 };
 
 type MyListCardProps = {
@@ -115,6 +119,8 @@ export function MyListCard({
   variant = "list",
   nowMs,
 }: MyListCardProps) {
+  const isManga = entry.media_type === "MANGA";
+  const progressUnit = isManga ? "chapters" : "episodes";
   const title = getPreferredTitle(
     {
       userPreferred: entry.title_preferred,
@@ -149,7 +155,7 @@ export function MyListCard({
   const remainingEpisodes = entry.episodes !== null && entry.episodes !== undefined
     ? Math.max(0, entry.episodes - entry.progress)
     : null;
-  const airingStatus = getAiringStatusLabel(entry.anime_status);
+  const airingStatus = getAiringStatusLabel(entry.anime_status, isManga);
   const updatedLabel = formatUpdatedLabel(entry.updated_at, nowMs);
   const nextEpisodeLabel = String(entry.anime_status || "").toUpperCase() === "RELEASING"
     ? formatNextEpisodeLabel(entry.next_airing_episode, entry.next_airing_at, nowMs)
@@ -204,7 +210,9 @@ export function MyListCard({
                 {isFavorite && <HeartIcon className="h-4 w-4 shrink-0 text-[var(--app-accent)]" />}
               </div>
               <p className="mt-1 truncate text-xs text-white/48">
-                {isHidden ? "Adult title hidden" : subtitleParts.join(" · ") || "Saved anime"}
+                {isHidden
+                  ? "Adult title hidden"
+                  : subtitleParts.join(" · ") || `Saved ${isManga ? "manga" : "anime"}`}
               </p>
               {!isGrid && (
                 <div className="mt-3 pr-10">
@@ -214,7 +222,9 @@ export function MyListCard({
                       style={{ width: `${progressPercent}%` }}
                     />
                   </div>
-                  <p className="mt-1.5 text-[11px] text-white/45">{progressLabel} episodes</p>
+                  <p className="mt-1.5 text-[11px] text-white/45">
+                    {progressLabel} {progressUnit}
+                  </p>
                 </div>
               )}
             </div>
@@ -223,7 +233,7 @@ export function MyListCard({
           {isGrid && (
             <div className="relative z-10 -mt-0.5 flex flex-1 flex-col space-y-3 bg-[#202020] p-4">
               <div className="flex items-center justify-between gap-3 text-xs">
-                <span className="text-white/55">{progressLabel} episodes</span>
+                <span className="text-white/55">{progressLabel} {progressUnit}</span>
                 <span className="font-medium text-white/75">{progressPercent}%</span>
               </div>
               <div className="h-1.5 overflow-hidden rounded-full bg-white/10">
@@ -335,6 +345,13 @@ export function MyListCard({
                   : ""}
               </span>
 
+              {isManga && (
+                <span className="rounded-full bg-white/8 px-3 py-1 text-xs text-white/65">
+                  Volumes: {entry.volume_progress ?? 0}
+                  {entry.volumes ? ` / ${entry.volumes}` : ""}
+                </span>
+              )}
+
               <span className="inline-flex items-center gap-1 rounded-full bg-white/8 px-3 py-1 text-xs text-white/65">
                 <StarIcon className="h-3.5 w-3.5" />
                 My score: {entry.score ?? "Not rated"}
@@ -444,18 +461,18 @@ function capitalize(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
 
-function getAiringStatusLabel(status?: string | null) {
+function getAiringStatusLabel(status?: string | null, isManga = false) {
   switch (String(status || "").toUpperCase()) {
     case "RELEASING":
-      return "Releasing";
+      return isManga ? "Publishing" : "Releasing";
     case "NOT_YET_RELEASED":
-      return "About to release";
+      return isManga ? "Not yet published" : "About to release";
     case "HIATUS":
       return "On hiatus";
     case "CANCELLED":
       return "Cancelled";
     case "FINISHED":
-      return "Finished airing";
+      return isManga ? "Finished publishing" : "Finished airing";
     default:
       return null;
   }

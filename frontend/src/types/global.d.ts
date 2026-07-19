@@ -1,11 +1,15 @@
 import type {
   AnimeMedia,
   DiscoverShelfResult,
+  ImportPayload,
   ImportPreviewItem,
+  MediaSearchResults,
+  MediaType,
   PersonDetails,
   SearchAnime,
   SeenaryBackup,
   TrackedAnimeEntry,
+  TrackedMangaEntry,
 } from "./domain";
 
 export {};
@@ -71,6 +75,8 @@ type SyncActivityItem = {
   id: number;
   user_id?: number;
   anime_id?: number | null;
+  manga_id?: number | null;
+  media_type?: "ANIME" | "MANGA";
   animeTitle?: string | null;
   anime_title?: string | null;
   operation: string;
@@ -126,6 +132,10 @@ declare global {
 
   interface Window {
     api: {
+      searchMedia: (
+        query: string,
+        hideAdultContent?: boolean
+      ) => Promise<MediaSearchResults>;
       searchAnime: (query: string, hideAdultContent?: boolean) => Promise<SearchAnime[]>;
       getTrendingAnime: (hideAdultContent?: boolean) => Promise<unknown>;
       getDiscoverAnime: (hideAdultContent?: boolean) => Promise<unknown>;
@@ -142,33 +152,15 @@ declare global {
           totalFound: number;
           groups: Array<{
             status: string;
-            items: Array<{
-              animeId: number;
-              status: string;
-              progress: number;
-              score: number | null;
-              notes: string | null;
-              title: {
-                romaji?: string | null;
-                english?: string | null;
-                native?: string | null;
-                userPreferred?: string | null;
-              };
-              coverImage?: {
-                large?: string | null;
-              };
-              episodes?: number | null;
-              format?: string | null;
-              season?: string | null;
-              seasonYear?: number | null;
-            }>;
+            mediaType?: "ANIME" | "MANGA";
+            items: ImportPreviewItem[];
           }>;
         };
       }>;
       importAniList: (
         username: string,
         selectedStatuses?: string[],
-        selectedAnimeIds?: number[],
+        selectedMediaKeys?: string[],
         options?: { signal?: AbortSignal }
       ) => Promise<{
         ok: boolean;
@@ -183,9 +175,17 @@ declare global {
           created: number;
           updated: number;
           skipped: number;
+          mappingFailures?: Array<{
+            malAnimeId?: number | null;
+            malMangaId?: number | null;
+            mediaType?: "ANIME" | "MANGA";
+            title?: string | null;
+            reason?: string | null;
+            message?: string | null;
+          }>;
         };
       }>;
-      previewMalImport: () => Promise<{
+      previewMalImport: (username: string) => Promise<{
         ok: boolean;
         message?: string;
         username?: string;
@@ -194,37 +194,15 @@ declare global {
           skipped?: number;
           groups: Array<{
             status: string;
-            items: Array<{
-              animeId: number;
-              status: string;
-              progress: number;
-              score: number | null;
-              notes: string | null;
-              title: {
-                romaji?: string | null;
-                english?: string | null;
-                native?: string | null;
-                userPreferred?: string | null;
-              };
-              coverImage?: {
-                large?: string | null;
-              };
-              episodes?: number | null;
-              format?: string | null;
-              season?: string | null;
-              seasonYear?: number | null;
-              source?: {
-                provider: "mal";
-                animeId: number;
-                title: string;
-              };
-            }>;
+            mediaType?: "ANIME" | "MANGA";
+            items: ImportPreviewItem[];
           }>;
         };
       }>;
       importMal: (
+        username: string,
         selectedStatuses?: string[],
-        selectedAnimeIds?: number[],
+        selectedMediaKeys?: string[],
         options?: { signal?: AbortSignal }
       ) => Promise<{
         ok: boolean;
@@ -241,6 +219,14 @@ declare global {
           skipped: number;
           mapped?: number;
           unmapped?: number;
+          mappingFailures?: Array<{
+            malAnimeId?: number | null;
+            malMangaId?: number | null;
+            mediaType?: "ANIME" | "MANGA";
+            title?: string | null;
+            reason?: string | null;
+            message?: string | null;
+          }>;
         };
       }>;
       previewTextImport: (text: string, hideAdultContent?: boolean, options?: { signal?: AbortSignal }) => Promise<{
@@ -342,6 +328,7 @@ declare global {
         linked?: boolean;
         provider?: "anilist" | "mal" | null;
         providerLabel?: string | null;
+        syncTargetsLabel?: string | null;
         autoSyncEnabled?: boolean;
         pendingCount?: number;
       }>;
@@ -351,6 +338,7 @@ declare global {
         linked?: boolean;
         provider?: "anilist" | "mal" | null;
         providerLabel?: string | null;
+        syncTargetsLabel?: string | null;
         autoSyncEnabled?: boolean;
         pendingCount?: number;
       }>;
@@ -361,8 +349,9 @@ declare global {
         failed?: number;
         pending?: number;
       }>;
-      pullFromAniList: () => Promise<{
+      pullFromAniList: () => Promise<ImportPayload & {
         ok: boolean;
+        partial?: boolean;
         message: string;
         summary?: {
           sourceUsername: string;
@@ -375,8 +364,9 @@ declare global {
           skipped: number;
         };
       }>;
-      pullFromMal: () => Promise<{
+      pullFromMal: () => Promise<ImportPayload & {
         ok: boolean;
+        partial?: boolean;
         message: string;
         summary?: {
           sourceUsername: string;
@@ -399,9 +389,11 @@ declare global {
         pending?: SyncActivityItem[];
         completed?: SyncActivityItem[];
         failed?: SyncActivityItem[];
+        pulled?: SyncActivityItem[];
       }>;
       onFocusSearch: (callback: () => void) => void;
       getAnimeDetails: (id: number) => Promise<AnimeMedia>;
+      getMediaDetails: (mediaType: MediaType, id: number) => Promise<AnimeMedia>;
       getCharacterDetails: (id: number) => Promise<PersonDetails>;
       getStaffDetails: (id: number) => Promise<PersonDetails>;
       cacheMinimalAnime: (media: AnimeMedia) => Promise<{ ok: boolean; message?: string }>;
@@ -571,6 +563,43 @@ declare global {
         message: string;
       }>;
 
+      getMyMangaList: () => Promise<{
+        ok: boolean;
+        message?: string;
+        entries: TrackedMangaEntry[];
+      }>;
+
+      getMyMangaListEntry: (mangaId: number) => Promise<{
+        ok: boolean;
+        message?: string;
+        entry: TrackedMangaEntry | null;
+      }>;
+
+      saveMyMangaListEntry: (
+        mangaId: number,
+        data: {
+          status?: string;
+          isFavorite?: boolean;
+          progress?: number;
+          volumeProgress?: number;
+          score?: number | null;
+          notes?: string | null;
+          startedAt?: string | null;
+          completedAt?: string | null;
+          isRereading?: boolean;
+          repeatCount?: number;
+        }
+      ) => Promise<{
+        ok: boolean;
+        message: string;
+        entry?: TrackedMangaEntry;
+      }>;
+
+      removeMyMangaListEntry: (mangaId: number) => Promise<{
+        ok: boolean;
+        message: string;
+      }>;
+
       clearMyList: () => Promise<{
         ok: boolean;
         message: string;
@@ -735,6 +764,7 @@ declare global {
         personalLayoutOrder?: string[];
         discoverLayoutOrder?: string[];
         myListSectionOrder?: string[];
+        mangaMyListSectionOrder?: string[];
       }>;
       setLayoutOrders: (
         userId: number,
@@ -742,6 +772,7 @@ declare global {
           personalLayoutOrder?: string[];
           discoverLayoutOrder?: string[];
           myListSectionOrder?: string[];
+          mangaMyListSectionOrder?: string[];
         }
       ) => {
         ok: boolean;
@@ -749,6 +780,7 @@ declare global {
         personalLayoutOrder?: string[];
         discoverLayoutOrder?: string[];
         myListSectionOrder?: string[];
+        mangaMyListSectionOrder?: string[];
       };
     };
     systemLocale?: {

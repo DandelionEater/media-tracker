@@ -9,6 +9,7 @@ const path = require('path');
 const anilist = require('./anilist');
 const mal = require('./mal');
 const { previewMalImport } = require('./malImport');
+const { previewMalMangaPull } = require('./malMangaImport');
 const { previewTextImport, previewPdfImport } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
@@ -710,7 +711,8 @@ function mapAniListDate(date) {
   return `${date.year}-${month}-${day}`;
 }
 
-function buildAniListImportPreview(collection) {
+function buildAniListImportPreview(collection, mediaType = 'ANIME') {
+  const normalizedMediaType = mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
   const lists = Array.isArray(collection?.lists) ? collection.lists : [];
   const grouped = {
     watching: [],
@@ -731,6 +733,9 @@ function buildAniListImportPreview(collection) {
 
       grouped[status].push({
         animeId: media.id,
+        mangaId: normalizedMediaType === 'MANGA' ? media.id : undefined,
+        mediaId: media.id,
+        mediaType: normalizedMediaType,
         status,
         progress: entry.progress ?? 0,
         score: entry.score ?? null,
@@ -746,6 +751,9 @@ function buildAniListImportPreview(collection) {
         },
         coverImage: { large: media.coverImage?.large ?? null },
         episodes: media.episodes ?? null,
+        chapters: media.chapters ?? null,
+        volumes: media.volumes ?? null,
+        volumeProgress: entry.progressVolumes ?? 0,
         format: media.format ?? null,
         season: media.season ?? null,
         seasonYear: media.seasonYear ?? null,
@@ -758,12 +766,112 @@ function buildAniListImportPreview(collection) {
     totalFound: Object.values(grouped).reduce((sum, items) => sum + items.length, 0),
     groups: IMPORT_STATUS_ORDER.map((status) => ({
       status,
+      mediaType: normalizedMediaType,
       items: grouped[status],
     })),
   };
 }
 
-function buildLocalImportResult(preview, selectedStatuses = [], selectedAnimeIds = [], sourceUsername) {
+function combineAniListImportPreviews(animeCollection, mangaCollection) {
+  const animePreview = buildAniListImportPreview(animeCollection, 'ANIME');
+  const mangaPreview = buildAniListImportPreview(mangaCollection, 'MANGA');
+  return {
+    totalFound: animePreview.totalFound + mangaPreview.totalFound,
+    animeFound: animePreview.totalFound,
+    mangaFound: mangaPreview.totalFound,
+    groups: [...animePreview.groups, ...mangaPreview.groups].filter(
+      (group) => group.items.length > 0
+    ),
+  };
+}
+
+function splitSelectedMediaKeys(selectedMediaKeys) {
+  const animeIds = [];
+  const mangaIds = [];
+  for (const key of Array.isArray(selectedMediaKeys) ? selectedMediaKeys : []) {
+    const match = /^(ANIME|MANGA):(\d+)$/.exec(String(key));
+    if (!match) continue;
+    const id = Number(match[2]);
+    if (match[1] === 'MANGA') mangaIds.push(id);
+    else animeIds.push(id);
+  }
+  return { animeIds, mangaIds };
+}
+
+function combineMalImportPreviews(animePreview, mangaPreview) {
+  return {
+    totalFound: (animePreview?.totalFound || 0) + (mangaPreview?.totalFound || 0),
+    animeFound: animePreview?.totalFound || 0,
+    mangaFound: mangaPreview?.totalFound || 0,
+    skipped: (animePreview?.skipped || 0) + (mangaPreview?.skipped || 0),
+    mappingFailures: [
+      ...(animePreview?.mappingFailures || []),
+      ...(mangaPreview?.mappingFailures || []),
+    ],
+    groups: [...(animePreview?.groups || []), ...(mangaPreview?.groups || [])].filter(
+      (group) => group.items.length > 0
+    ),
+  };
+}
+
+function filterLocalMangaImportEntries(
+  entries,
+  selectedStatuses = [],
+  selectedMangaIds = [],
+  selectionProvided = false
+) {
+  const allowedStatuses = new Set(
+    (Array.isArray(selectedStatuses) ? selectedStatuses : []).map((status) => sanitizeStatus(status))
+  );
+  const allowedMangaIds = new Set((selectedMangaIds || []).map(Number));
+  return (entries || []).filter((item) => {
+    const statusMatches =
+      !allowedStatuses.size || allowedStatuses.has(sanitizeStatus(item.status));
+    const idMatches =
+      (!selectionProvided && !allowedMangaIds.size) ||
+      allowedMangaIds.has(Number(item.mangaId));
+    return statusMatches && idMatches;
+  });
+}
+
+function buildAniListMangaPullEntries(collection) {
+  const entries = [];
+  for (const list of Array.isArray(collection?.lists) ? collection.lists : []) {
+    for (const entry of list?.entries || []) {
+      const media = entry?.media;
+      const status = sanitizeImportStatus(entry?.status);
+      if (!media?.id || !status) continue;
+      entries.push({
+        mangaId: media.id,
+        mediaType: 'MANGA',
+        status,
+        progress: entry.progress ?? 0,
+        volumeProgress: entry.progressVolumes ?? 0,
+        score: entry.score ?? null,
+        notes: entry.notes ?? null,
+        startedAt: mapAniListDate(entry.startedAt),
+        completedAt: mapAniListDate(entry.completedAt),
+        repeatCount: entry.repeat ?? 0,
+        isRereading: String(entry.status || '').toUpperCase() === 'REPEATING',
+        title: media.title,
+        coverImage: media.coverImage,
+        chapters: media.chapters ?? null,
+        volumes: media.volumes ?? null,
+        format: media.format ?? null,
+        media,
+      });
+    }
+  }
+  return entries;
+}
+
+function buildLocalImportResult(
+  preview,
+  selectedStatuses = [],
+  selectedAnimeIds = [],
+  sourceUsername,
+  selectionProvided = false
+) {
   const allowedStatuses = new Set(
     (Array.isArray(selectedStatuses) ? selectedStatuses : []).map((status) =>
       sanitizeStatus(status)
@@ -775,7 +883,7 @@ function buildLocalImportResult(preview, selectedStatuses = [], selectedAnimeIds
       .filter((animeId) => Number.isInteger(animeId) && animeId > 0)
   );
   const hasStatusFilter = allowedStatuses.size > 0;
-  const hasAnimeFilter = allowedAnimeIds.size > 0;
+  const hasAnimeFilter = selectionProvided || allowedAnimeIds.size > 0;
   const localEntries = [];
   let skipped = 0;
 
@@ -816,16 +924,52 @@ function buildLocalImportResult(preview, selectedStatuses = [], selectedAnimeIds
   };
 }
 
-async function importAuthenticatedAniListList(accessToken, viewer) {
-  const collection = await anilist.getViewerAnimeCollection(accessToken, viewer.id);
-  const preview = buildAniListImportPreview(collection);
-  const result = buildLocalImportResult(preview, IMPORT_STATUS_ORDER, [], viewer.name);
+function buildLocalMangaImportEntries(collection, selectedStatuses = [], selectedMangaIds = [], selectionProvided = false) {
+  const allowedStatuses = new Set(
+    (Array.isArray(selectedStatuses) ? selectedStatuses : []).map((status) => sanitizeStatus(status))
+  );
+  const allowedMangaIds = new Set(
+    (Array.isArray(selectedMangaIds) ? selectedMangaIds : [])
+      .map(Number)
+      .filter((id) => Number.isInteger(id) && id > 0)
+  );
+  return buildAniListMangaPullEntries(collection).filter((item) => {
+    const statusMatches =
+      !allowedStatuses.size || allowedStatuses.has(sanitizeStatus(item.status));
+    const idMatches =
+      (!selectionProvided && !allowedMangaIds.size) ||
+      allowedMangaIds.has(Number(item.mangaId));
+    return statusMatches && idMatches;
+  });
+}
 
-  if (result.ok) {
+async function importAuthenticatedAniListList(accessToken, viewer) {
+  const [animeCollection, mangaCollection] = await Promise.all([
+    anilist.getViewerAnimeCollection(accessToken, viewer.id),
+    anilist.getViewerMangaCollection(accessToken, viewer.id),
+  ]);
+  const preview = buildAniListImportPreview(animeCollection);
+  const result = buildLocalImportResult(preview, IMPORT_STATUS_ORDER, [], viewer.name);
+  const localMangaEntries = buildAniListMangaPullEntries(mangaCollection);
+  const combinedResult = {
+    ...result,
+    localMangaEntries,
+    message: `Prepared ${result.localEntries?.length || 0} Anime and ${
+      localMangaEntries.length
+    } Manga entries from AniList.`,
+    summary: {
+      ...(result.summary || {}),
+      totalFound: (result.summary?.totalFound || 0) + localMangaEntries.length,
+      imported: (result.summary?.imported || 0) + localMangaEntries.length,
+      mangaFound: localMangaEntries.length,
+    },
+  };
+
+  if (combinedResult.ok) {
     updateAniListAccountImportTime(viewer.id);
   }
 
-  return result;
+  return combinedResult;
 }
 
 async function finishAniListLogin({ accessToken, viewer, userId, res }) {
@@ -865,7 +1009,7 @@ async function finishAniListLogin({ accessToken, viewer, userId, res }) {
   return {
     ok: true,
     message: importResult.ok
-      ? 'Logged in with AniList and imported your list.'
+      ? 'Logged in with AniList and imported your Anime and Manga lists.'
       : 'Logged in with AniList, but list import failed.',
     user: loginResult.user,
     import: importResult,
@@ -897,7 +1041,7 @@ async function linkAniListToUser({ accessToken, viewer, userId }) {
     ok: true,
     linked: true,
     message: importResult.ok
-      ? `Linked AniList account ${viewer.name} and imported your list.`
+      ? `Linked AniList account ${viewer.name} and imported your Anime and Manga lists.`
       : `Linked AniList account ${viewer.name}, but list import failed.`,
     account: account
       ? buildAniListAccountPayload(account)
@@ -1363,6 +1507,16 @@ async function handleRpc(method, args, req, res) {
   });
 
   switch (method) {
+    case 'getMediaDetails': {
+      const mediaType = String(args[0] || '').toUpperCase();
+      const mediaId = Number(args[1]);
+
+      if (mediaType === 'ANIME') return await getAnimeDetails(mediaId);
+      if (mediaType === 'MANGA') return await anilist.getMangaDetails(mediaId);
+      throw new Error('Unsupported media type.');
+    }
+    case 'searchMedia':
+      return await anilist.searchMedia(args[0], { hideAdultContent: args[1] });
     case 'searchAnime':
       return await anilist.searchAnime(args[0], { hideAdultContent: args[1] });
     case 'getTrendingAnime':
@@ -1378,70 +1532,127 @@ async function handleRpc(method, args, req, res) {
     case 'previewAniListImport': {
       const username = String(args[0] || '').trim();
       if (!username) return { ok: false, message: 'Enter an AniList username first.' };
-      const collection = await anilist.getUserAnimeCollection(username);
-      const preview = buildAniListImportPreview(collection);
+      const [animeCollection, mangaCollection] = await Promise.all([
+        anilist.getUserAnimeCollection(username),
+        anilist.getUserMangaCollection(username),
+      ]);
+      const preview = combineAniListImportPreviews(animeCollection, mangaCollection);
       return preview.totalFound
         ? { ok: true, username, preview }
-        : { ok: false, message: `No anime list data was found for ${username}.` };
+        : { ok: false, message: `No Anime or Manga list data was found for ${username}.` };
     }
     case 'importAniList': {
       const username = String(args[0] || '').trim();
       if (!username) return { ok: false, message: 'Enter an AniList username first.' };
-      const collection = await anilist.getUserAnimeCollection(username);
-      const preview = buildAniListImportPreview(collection);
-      return buildLocalImportResult(preview, args[1], args[2], username);
+      const [animeCollection, mangaCollection] = await Promise.all([
+        anilist.getUserAnimeCollection(username),
+        anilist.getUserMangaCollection(username),
+      ]);
+      const selection = splitSelectedMediaKeys(args[2]);
+      const selectionProvided = Array.isArray(args[2]) && args[2].length > 0;
+      const animePreview = buildAniListImportPreview(animeCollection, 'ANIME');
+      const result = buildLocalImportResult(
+        animePreview,
+        args[1],
+        selection.animeIds,
+        username,
+        selectionProvided
+      );
+      const localMangaEntries = buildLocalMangaImportEntries(
+        mangaCollection,
+        args[1],
+        selection.mangaIds,
+        selectionProvided
+      );
+      return {
+        ...result,
+        localMangaEntries,
+        message: `Prepared ${(result.localEntries?.length || 0) + localMangaEntries.length} selected Anime and Manga entries from AniList.`,
+        summary: {
+          ...(result.summary || {}),
+          totalFound: animePreview.totalFound + buildAniListMangaPullEntries(mangaCollection).length,
+          imported: (result.localEntries?.length || 0) + localMangaEntries.length,
+          selectedMediaKeys: args[2],
+        },
+      };
     }
     case 'previewMalImport': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
         return { ok: false, message: 'You must be logged in.' };
       }
-
-      const malList = await withFreshMalAccount(currentSession.user.id, async (linkedAccount) => {
-        if (!linkedAccount?.access_token) {
-          throw new Error('Link a MyAnimeList account before importing.');
-        }
-
-        return await mal.getViewerAnimeList(linkedAccount.access_token);
-      });
-      const result = await previewMalImport(malList, {
+      const username = String(args[0] || '').trim();
+      if (!username) return { ok: false, message: 'Enter a MyAnimeList username first.' };
+      const [animeList, mangaList] = await Promise.all([
+        mal.getUserAnimeList(username),
+        mal.getUserMangaList(username),
+      ]);
+      const animeResult = await previewMalImport(animeList, {
         submittedByUserId: currentSession.user.id,
       });
+      const mangaResult = await previewMalMangaPull(mangaList);
+      const preview = combineMalImportPreviews(animeResult.preview, mangaResult.preview);
+      if (!preview.totalFound) {
+        const remoteTotal = (animeList.data?.length || 0) + (mangaList.data?.length || 0);
+        return {
+          ok: false,
+          message: remoteTotal
+            ? `MyAnimeList returned ${remoteTotal} entries for ${username}, but none could be safely matched to AniList.`
+            : `No public Anime or Manga list entries were found for ${username}.`,
+        };
+      }
       return {
         ok: true,
-        message: `Found ${result.preview.totalFound} MyAnimeList entries.`,
-        username: result.username,
-        preview: result.preview,
+        message: `Found ${preview.totalFound} matched MyAnimeList Anime and Manga entries.`,
+        username,
+        preview,
       };
     }
     case 'importMal': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
         return { ok: false, message: 'You must be logged in.' };
       }
-
-      let linkedAccount = null;
-      const malList = await withFreshMalAccount(currentSession.user.id, async (account) => {
-        if (!account?.access_token) {
-          throw new Error('Link a MyAnimeList account before importing.');
-        }
-
-      linkedAccount = account;
-        return await mal.getViewerAnimeList(account.access_token);
-      });
-      const result = await previewMalImport(malList, {
+      const username = String(args[0] || '').trim();
+      if (!username) return { ok: false, message: 'Enter a MyAnimeList username first.' };
+      const [animeList, mangaList] = await Promise.all([
+        mal.getUserAnimeList(username),
+        mal.getUserMangaList(username),
+      ]);
+      const animeResult = await previewMalImport(animeList, {
         submittedByUserId: currentSession.user.id,
       });
+      const mangaResult = await previewMalMangaPull(mangaList);
+      const selection = splitSelectedMediaKeys(args[2]);
+      const selectionProvided = Array.isArray(args[2]) && args[2].length > 0;
       const importResult = buildLocalImportResult(
-        result.preview,
-        args[0],
+        animeResult.preview,
         args[1],
-        result.username || linkedAccount?.mal_username || 'MyAnimeList'
+        selection.animeIds,
+        username,
+        selectionProvided
       );
-
-      if (importResult.ok) {
-        updateMalAccountImportTime(linkedAccount.mal_user_id);
-      }
-
-      return importResult;
+      const localMangaEntries = filterLocalMangaImportEntries(
+        mangaResult.localMangaEntries,
+        args[1],
+        selection.mangaIds,
+        selectionProvided
+      );
+      const imported = (importResult.localEntries?.length || 0) + localMangaEntries.length;
+      return {
+        ...importResult,
+        localMangaEntries,
+        message: `Prepared ${imported} selected Anime and Manga entries from MyAnimeList.`,
+        summary: {
+          ...(importResult.summary || {}),
+          totalFound: animeResult.preview.totalFound + mangaResult.preview.totalFound,
+          imported,
+          selectedMediaKeys: args[2],
+          mappingFailures: [
+            ...(animeResult.preview.mappingFailures || []),
+            ...(mangaResult.mappingFailures || []),
+          ],
+          unmapped: (animeResult.preview.skipped || 0) + (mangaResult.skipped || 0),
+        },
+      };
     }
     case 'previewTextImport':
       return await previewTextImport(args[0], { hideAdultContent: args[1] });
@@ -1487,19 +1698,39 @@ async function handleRpc(method, args, req, res) {
       if (!linkedAccount?.access_token || !linkedAccount?.anilist_user_id) {
         return { ok: false, message: 'Link an AniList account before updating from AniList.' };
       }
-      const collection = await anilist.getViewerAnimeCollection(
-        linkedAccount.access_token,
-        linkedAccount.anilist_user_id
-      );
-      const preview = buildAniListImportPreview(collection);
+      const [animeCollection, mangaCollection] = await Promise.all([
+        anilist.getViewerAnimeCollection(
+          linkedAccount.access_token,
+          linkedAccount.anilist_user_id
+        ),
+        anilist.getViewerMangaCollection(
+          linkedAccount.access_token,
+          linkedAccount.anilist_user_id
+        ),
+      ]);
+      const preview = buildAniListImportPreview(animeCollection);
       const result = buildLocalImportResult(
         preview,
         IMPORT_STATUS_ORDER,
         [],
         linkedAccount.anilist_username
       );
-      if (result.ok) updateAniListAccountImportTime(linkedAccount.anilist_user_id);
-      return result;
+      const localMangaEntries = buildAniListMangaPullEntries(mangaCollection);
+      const pullSucceeded = result.ok || localMangaEntries.length > 0;
+      if (pullSucceeded) updateAniListAccountImportTime(linkedAccount.anilist_user_id);
+      return {
+        ...result,
+        ok: pullSucceeded,
+        message: pullSucceeded
+          ? 'Updated Anime and Manga from AniList.'
+          : result.message,
+        localMangaEntries,
+        summary: {
+          ...(result.summary || {}),
+          totalFound: (result.summary?.totalFound || 0) + localMangaEntries.length,
+          mangaFound: localMangaEntries.length,
+        },
+      };
     }
     case 'pullFromMal': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
@@ -1507,29 +1738,78 @@ async function handleRpc(method, args, req, res) {
       }
 
       const linkedAccount = getMalAccountByUserId(currentSession.user.id);
-      const malList = await withFreshMalAccount(currentSession.user.id, async (account) => {
+      const lists = await withFreshMalAccount(currentSession.user.id, async (account) => {
         if (!account?.access_token) {
           throw new Error('Link a MyAnimeList account before updating from MyAnimeList.');
         }
 
-        return await mal.getViewerAnimeList(account.access_token);
+        const [anime, manga] = await Promise.all([
+          mal.getViewerAnimeList(account.access_token),
+          mal.getViewerMangaList(account.access_token),
+        ]);
+        return { anime, manga };
       });
-      const result = await previewMalImport(malList, {
+      const result = await previewMalImport(lists.anime, {
         submittedByUserId: currentSession.user.id,
       });
+      const mangaResult = await previewMalMangaPull(lists.manga);
       const importResult = buildLocalImportResult(
         result.preview,
         IMPORT_STATUS_ORDER,
         [],
         result.username || linkedAccount?.mal_username || 'MyAnimeList'
       );
-      if (importResult.ok && linkedAccount?.mal_user_id) {
+      const pullSucceeded = importResult.ok || mangaResult.localMangaEntries.length > 0;
+      const animeMappingFailures = result.preview?.mappingFailures || [];
+      const mappingFailures = [
+        ...animeMappingFailures.map((failure) => ({ ...failure, mediaType: 'ANIME' })),
+        ...(mangaResult.mappingFailures || []).map((failure) => ({
+          ...failure,
+          mediaType: 'MANGA',
+        })),
+      ];
+      const unmappedCount = Number(result.preview?.skipped || 0) + mangaResult.skipped;
+      const failedTitles = mappingFailures
+        .map((failure) => failure?.title)
+        .filter(Boolean);
+      const failedTitleLabel = failedTitles.length
+        ? ` (${failedTitles.slice(0, 3).join(', ')}${
+            failedTitles.length > 3 ? ', ...' : ''
+          })`
+        : '';
+      if (pullSucceeded && linkedAccount?.mal_user_id) {
         updateMalAccountImportTime(linkedAccount.mal_user_id);
       }
-      return importResult;
+      return {
+        ...importResult,
+        ok: pullSucceeded,
+        partial: unmappedCount > 0,
+        message: pullSucceeded
+          ? `Updated Anime and Manga from MyAnimeList.${
+              unmappedCount > 0
+                ? ` ${unmappedCount} remote entr${
+                    unmappedCount === 1 ? 'y' : 'ies'
+                  }${failedTitleLabel} could not be mapped one-to-one and ${
+                    unmappedCount === 1 ? 'was' : 'were'
+                  } skipped.`
+                : ''
+            }`
+          : importResult.message,
+        localMangaEntries: mangaResult.localMangaEntries,
+        summary: {
+          ...(importResult.summary || {}),
+          totalFound:
+            (importResult.summary?.totalFound || 0) + mangaResult.localMangaEntries.length,
+          mangaFound: mangaResult.localMangaEntries.length,
+          mangaMapped: mangaResult.mapped,
+          mangaUnmapped: mangaResult.skipped,
+          animeUnmapped: Number(result.preview?.skipped || 0),
+          mappingFailures,
+        },
+      };
     }
     case 'getSyncActivity':
-      return { ok: true, pending: [], completed: [], failed: [] };
+      return { ok: true, pending: [], completed: [], failed: [], pulled: [] };
     case 'getAnimeDetails':
       return await getAnimeDetails(args[0]);
     case 'getAnimeAdultFlags':

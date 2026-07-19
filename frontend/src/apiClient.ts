@@ -253,7 +253,10 @@ async function linkMalAccount() {
 async function saveAuthImportLocally(result: AuthImportResult) {
   const userId = result?.user?.id ?? activeUserId;
 
-  if (!userId || !result?.import?.localEntries?.length) {
+  if (
+    !userId ||
+    (!result?.import?.localEntries?.length && !result?.import?.localMangaEntries?.length)
+  ) {
     return;
   }
 
@@ -403,6 +406,8 @@ export function installApiClient() {
   }
 
   const api: ApiClient = {
+    searchMedia: (query, hideAdultContent = true) =>
+      rpc("searchMedia", [query, hideAdultContent]),
     searchAnime: (query, hideAdultContent = true) =>
       rpc("searchAnime", [query, hideAdultContent]),
     getTrendingAnime: (hideAdultContent = true) => rpc("getTrendingAnime", [hideAdultContent]),
@@ -410,15 +415,27 @@ export function installApiClient() {
     getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true) =>
       rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent]),
     previewAniListImport: (username) => rpc("previewAniListImport", [username]),
-    importAniList: async (username, selectedStatuses, selectedAnimeIds, options?: ImportOptions) => {
+    importAniList: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
         const userId = await requireActiveUserId();
         throwIfAborted(options?.signal);
-        const result = await rpc("importAniList", [username, selectedStatuses, selectedAnimeIds], {
+        const result = await rpc("importAniList", [username, selectedStatuses, selectedMediaKeys], {
           signal: options?.signal,
         });
-        return importLocalEntries(userId, result, selectedAnimeIds, "AniList", options?.signal);
+        throwIfAborted(options?.signal);
+        if (result?.localEntries || result?.localMangaEntries) {
+          const summary = await localStore.replaceEntriesFromImport(userId, result);
+          return {
+            ...result,
+            summary: {
+              ...(result.summary ?? {}),
+              ...summary,
+              selectedMediaKeys,
+            },
+          };
+        }
+        return result;
       } catch (error) {
         if (isAbortError(error)) {
           return buildCancelledImportResult();
@@ -427,16 +444,28 @@ export function installApiClient() {
         throw error;
       }
     },
-    previewMalImport: () => rpc("previewMalImport"),
-    importMal: async (selectedStatuses, selectedAnimeIds, options?: ImportOptions) => {
+    previewMalImport: (username) => rpc("previewMalImport", [username]),
+    importMal: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
         const userId = await requireActiveUserId();
         throwIfAborted(options?.signal);
-        const result = await rpc("importMal", [selectedStatuses, selectedAnimeIds], {
+        const result = await rpc("importMal", [username, selectedStatuses, selectedMediaKeys], {
           signal: options?.signal,
         });
-        return importLocalEntries(userId, result, selectedAnimeIds, "MyAnimeList", options?.signal);
+        throwIfAborted(options?.signal);
+        if (result?.localEntries || result?.localMangaEntries) {
+          const summary = await localStore.replaceEntriesFromImport(userId, result);
+          return {
+            ...result,
+            summary: {
+              ...(result.summary ?? {}),
+              ...summary,
+              selectedMediaKeys,
+            },
+          };
+        }
+        return result;
       } catch (error) {
         if (isAbortError(error)) {
           return buildCancelledImportResult();
@@ -506,9 +535,16 @@ export function installApiClient() {
       const result = await rpc("pullFromAniList");
       if (result.ok) {
         const summary = await localStore.replaceEntriesFromImport(userId, result);
+        const message = `Updated local Anime and Manga from AniList. ${summary.created} created, ${summary.updated} updated.${
+          result.partial ? " Some remote entries could not be matched and were skipped." : ""
+        }`;
+        await localStore.recordPullActivity(userId, "anilist", message, summary, {
+          partial: Boolean(result.partial),
+          mappingFailures: result.summary?.mappingFailures,
+        });
         return {
           ...result,
-          message: `Updated local list from AniList. ${summary.created} created, ${summary.updated} updated.`,
+          message,
           summary: {
             ...(result.summary ?? {}),
             ...summary,
@@ -523,9 +559,16 @@ export function installApiClient() {
       const result = await rpc("pullFromMal");
       if (result.ok) {
         const summary = await localStore.replaceEntriesFromImport(userId, result);
+        const message = `Updated local Anime and Manga from MyAnimeList. ${summary.created} created, ${summary.updated} updated.${
+          result.partial ? " Some remote entries could not be matched and were skipped." : ""
+        }`;
+        await localStore.recordPullActivity(userId, "mal", message, summary, {
+          partial: Boolean(result.partial),
+          mappingFailures: result.summary?.mappingFailures,
+        });
         return {
           ...result,
-          message: `Updated local list from MyAnimeList. ${summary.created} created, ${summary.updated} updated.`,
+          message,
           summary: {
             ...(result.summary ?? {}),
             ...summary,
@@ -544,6 +587,23 @@ export function installApiClient() {
       const media = await rpc("getAnimeDetails", [id]);
       if (userId && media?.id) {
         await localStore.cacheAnime(userId, media);
+      }
+      return media;
+    },
+    getMediaDetails: async (mediaType, id) => {
+      if (mediaType === "ANIME") {
+        const userId = await getActiveUserId();
+        const media = await rpc("getMediaDetails", [mediaType, id]);
+        if (userId && media?.id) {
+          await localStore.cacheAnime(userId, media);
+        }
+        return media;
+      }
+
+      const userId = await getActiveUserId();
+      const media = await rpc("getMediaDetails", [mediaType, id]);
+      if (userId && media?.id) {
+        await localStore.cacheManga(userId, media);
       }
       return media;
     },
@@ -617,6 +677,30 @@ export function installApiClient() {
     removeMyListEntry: async (animeId) => {
       const userId = await requireActiveUserId();
       const result = await localStore.removeEntry(userId, Number(animeId));
+      if (result.ok && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
+    },
+    getMyMangaList: async () => {
+      const userId = await requireActiveUserId();
+      return { ok: true, entries: await localStore.getMangaList(userId) };
+    },
+    getMyMangaListEntry: async (mangaId) => {
+      const userId = await requireActiveUserId();
+      return { ok: true, entry: await localStore.getMangaEntry(userId, Number(mangaId)) };
+    },
+    saveMyMangaListEntry: async (mangaId, data) => {
+      const userId = await requireActiveUserId();
+      const result = await localStore.saveMangaEntry(userId, Number(mangaId), data);
+      if (result.ok && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
+    },
+    removeMyMangaListEntry: async (mangaId) => {
+      const userId = await requireActiveUserId();
+      const result = await localStore.removeMangaEntry(userId, Number(mangaId));
       if (result.ok && (await localStore.getAutoSyncEnabled(userId))) {
         scheduleLocalAutoSync(userId);
       }

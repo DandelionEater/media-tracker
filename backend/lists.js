@@ -1,12 +1,19 @@
 const {
   getSafeUserById,
   getAnimeById,
+  getMangaById,
   getUserAnimeEntry,
   getUserAnimeList,
   addUserAnimeEntry,
   updateUserAnimeEntry,
   removeUserAnimeEntry,
   clearUserAnimeList,
+  getUserMangaEntry,
+  getUserMangaList,
+  addUserMangaEntry,
+  updateUserMangaEntry,
+  removeUserMangaEntry,
+  saveManga,
   saveAnimeSummary,
   updateAnimeAdultFlag,
   getAniListAccountByUserId,
@@ -21,8 +28,12 @@ const anilist = require('./anilist');
 const {
   buildAniListPayload,
   buildAniListDeletePayload,
+  buildAniListMangaPayload,
+  buildAniListMangaDeletePayload,
   buildMalPayload,
   buildMalDeletePayload,
+  buildMalMangaPayload,
+  buildMalMangaDeletePayload,
   scheduleAutoSync,
 } = require('./sync');
 
@@ -201,6 +212,94 @@ function getMyAnimeEntry(currentSession, animeId) {
   return { ok: true, entry: entry || null };
 }
 
+function getMyMangaList(currentSession) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message, entries: [] };
+  }
+
+  return { ok: true, entries: getUserMangaList(auth.user.id) };
+}
+
+function getMyMangaEntry(currentSession, mangaId) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) {
+    return { ok: false, message: auth.message, entry: null };
+  }
+
+  const numericMangaId = Number(mangaId);
+  if (!Number.isInteger(numericMangaId) || numericMangaId <= 0) {
+    return { ok: false, message: 'Invalid manga id.', entry: null };
+  }
+
+  return {
+    ok: true,
+    entry: getUserMangaEntry(auth.user.id, numericMangaId) || null,
+  };
+}
+
+function saveMyMangaEntry(currentSession, mangaId, payload = {}) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) return { ok: false, message: auth.message };
+
+  const numericMangaId = Number(mangaId);
+  if (!Number.isInteger(numericMangaId) || numericMangaId <= 0) {
+    return { ok: false, message: 'Invalid manga id.' };
+  }
+
+  if (!getMangaById(numericMangaId)) {
+    return { ok: false, message: 'Manga is not cached yet. Open its details first.' };
+  }
+
+  const existingEntry = getUserMangaEntry(auth.user.id, numericMangaId);
+  const status = sanitizeStatus(payload.status);
+  const entry = {
+    userId: auth.user.id,
+    mangaId: numericMangaId,
+    status,
+    isFavorite: sanitizeFavorite(payload.isFavorite, existingEntry?.is_favorite),
+    repeatCount: sanitizeRepeatCount(payload.repeatCount ?? existingEntry?.repeat_count ?? 0),
+    isRereading:
+      payload.isRereading === undefined
+        ? Boolean(existingEntry?.is_rereading)
+        : Boolean(payload.isRereading),
+    progress: sanitizeProgress(payload.progress),
+    volumeProgress: sanitizeProgress(payload.volumeProgress),
+    score: sanitizeScore(payload.score),
+    notes: sanitizeNotes(payload.notes),
+    ...buildDates(status, payload, existingEntry),
+  };
+
+  if (existingEntry) updateUserMangaEntry(entry);
+  else addUserMangaEntry(entry);
+
+  const savedEntry = getUserMangaEntry(auth.user.id, numericMangaId);
+  queueMangaSyncIfNeeded(auth.user.id, existingEntry, savedEntry);
+
+  return {
+    ok: true,
+    message: existingEntry ? 'Manga list entry updated.' : 'Manga added to your list.',
+    entry: savedEntry,
+  };
+}
+
+function removeMyMangaEntry(currentSession, mangaId) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) return { ok: false, message: auth.message };
+
+  const numericMangaId = Number(mangaId);
+  if (!Number.isInteger(numericMangaId) || numericMangaId <= 0) {
+    return { ok: false, message: 'Invalid manga id.' };
+  }
+
+  const existing = getUserMangaEntry(auth.user.id, numericMangaId);
+  if (!existing) return { ok: false, message: 'Manga list entry not found.' };
+
+  queueMangaDeleteSyncIfNeeded(auth.user.id, existing);
+  removeUserMangaEntry(auth.user.id, numericMangaId);
+  return { ok: true, message: 'Manga removed from your list.' };
+}
+
 function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) {
@@ -307,6 +406,8 @@ function queueSyncIfNeeded(userId, existingEntry, savedEntry) {
     return;
   }
 
+  let queued = false;
+
   if (getAniListAccountByUserId(userId)) {
     deleteSyncQueueJobByEntry(userId, savedEntry.anime_id, 'delete_anilist_entry');
     enqueueSyncJob({
@@ -316,8 +417,7 @@ function queueSyncIfNeeded(userId, existingEntry, savedEntry) {
       payload: buildAniListPayload(savedEntry),
       changedFields,
     });
-    scheduleAutoSync(userId);
-    return;
+    queued = true;
   }
 
   if (getMalAccountByUserId(userId)) {
@@ -332,19 +432,78 @@ function queueSyncIfNeeded(userId, existingEntry, savedEntry) {
         payload: buildMalPayload(savedEntry, null),
         changedFields,
       });
-      scheduleAutoSync(userId);
-      return;
+    } else {
+      enqueueSyncJob({
+        userId,
+        animeId: savedEntry.anime_id,
+        operation: 'upsert_mal_entry',
+        payload: buildMalPayload(savedEntry, malMapping.external_id),
+        changedFields,
+      });
     }
+    queued = true;
+  }
 
+  if (queued) scheduleAutoSync(userId);
+}
+
+function getMangaChangedFields(existingEntry, savedEntry) {
+  return [
+    ...getChangedFields(existingEntry, savedEntry),
+    {
+      field: 'volumeProgress',
+      from: existingEntry?.volume_progress ?? null,
+      to: savedEntry?.volume_progress ?? null,
+    },
+  ].filter((change) => change.from !== change.to);
+}
+
+function queueMangaSyncIfNeeded(userId, existingEntry, savedEntry) {
+  if (!savedEntry) return;
+  const changedFields = getMangaChangedFields(existingEntry, savedEntry);
+  if (!changedFields.length) return;
+  let queued = false;
+
+  if (getAniListAccountByUserId(userId)) {
+    deleteSyncQueueJobByEntry(
+      userId,
+      savedEntry.manga_id,
+      'delete_anilist_manga_entry',
+      'MANGA'
+    );
     enqueueSyncJob({
       userId,
-      animeId: savedEntry.anime_id,
-      operation: 'upsert_mal_entry',
-      payload: buildMalPayload(savedEntry, malMapping.external_id),
+      mangaId: savedEntry.manga_id,
+      mediaType: 'MANGA',
+      operation: 'upsert_anilist_manga_entry',
+      payload: buildAniListMangaPayload(savedEntry),
       changedFields,
     });
-    scheduleAutoSync(userId);
+    queued = true;
   }
+
+  if (getMalAccountByUserId(userId)) {
+    deleteSyncQueueJobByEntry(
+      userId,
+      savedEntry.manga_id,
+      'delete_mal_manga_entry',
+      'MANGA'
+    );
+    enqueueSyncJob({
+      userId,
+      mangaId: savedEntry.manga_id,
+      mediaType: 'MANGA',
+      operation: 'upsert_mal_manga_entry',
+      payload: buildMalMangaPayload(
+        savedEntry,
+        savedEntry.details?.idMal ?? null
+      ),
+      changedFields,
+    });
+    queued = true;
+  }
+
+  if (queued) scheduleAutoSync(userId);
 }
 
 function getDeleteChangedFields(existingEntry) {
@@ -371,23 +530,22 @@ function queueDeleteSyncIfNeeded(userId, existingEntry) {
   const linkedMalAccount = getMalAccountByUserId(userId);
   const changedFields = getDeleteChangedFields(existingEntry);
 
+  let queued = false;
+
   if (linkedAniListAccount?.access_token) {
     const pendingUpsert = getSyncQueueJob(userId, existingEntry.anime_id, 'upsert_anilist_entry');
     deleteSyncQueueJobByEntry(userId, existingEntry.anime_id, 'upsert_anilist_entry');
 
-    if (isPendingCreateJob(pendingUpsert)) {
-      return;
+    if (!isPendingCreateJob(pendingUpsert)) {
+      enqueueSyncJob({
+        userId,
+        animeId: existingEntry.anime_id,
+        operation: 'delete_anilist_entry',
+        payload: buildAniListDeletePayload(existingEntry, linkedAniListAccount.anilist_user_id),
+        changedFields,
+      });
+      queued = true;
     }
-
-    enqueueSyncJob({
-      userId,
-      animeId: existingEntry.anime_id,
-      operation: 'delete_anilist_entry',
-      payload: buildAniListDeletePayload(existingEntry, linkedAniListAccount.anilist_user_id),
-      changedFields,
-    });
-    scheduleAutoSync(userId);
-    return;
   }
 
   if (linkedMalAccount?.access_token) {
@@ -396,19 +554,84 @@ function queueDeleteSyncIfNeeded(userId, existingEntry) {
 
     deleteSyncQueueJobByEntry(userId, existingEntry.anime_id, 'upsert_mal_entry');
 
-    if (isPendingCreateJob(pendingUpsert)) {
-      return;
+    if (!isPendingCreateJob(pendingUpsert)) {
+      enqueueSyncJob({
+        userId,
+        animeId: existingEntry.anime_id,
+        operation: 'delete_mal_entry',
+        payload: buildMalDeletePayload(existingEntry, malMapping?.external_id ?? null),
+        changedFields,
+      });
+      queued = true;
     }
-
-    enqueueSyncJob({
-      userId,
-      animeId: existingEntry.anime_id,
-      operation: 'delete_mal_entry',
-      payload: buildMalDeletePayload(existingEntry, malMapping?.external_id ?? null),
-      changedFields,
-    });
-    scheduleAutoSync(userId);
   }
+
+  if (queued) scheduleAutoSync(userId);
+}
+
+function queueMangaDeleteSyncIfNeeded(userId, existingEntry) {
+  if (!existingEntry) return;
+  const changedFields = getDeleteChangedFields(existingEntry);
+  const linkedAniListAccount = getAniListAccountByUserId(userId);
+  const linkedMalAccount = getMalAccountByUserId(userId);
+  let queued = false;
+
+  if (linkedAniListAccount?.access_token) {
+    const pending = getSyncQueueJob(
+      userId,
+      existingEntry.manga_id,
+      'upsert_anilist_manga_entry',
+      'MANGA'
+    );
+    deleteSyncQueueJobByEntry(
+      userId,
+      existingEntry.manga_id,
+      'upsert_anilist_manga_entry',
+      'MANGA'
+    );
+    if (!isPendingCreateJob(pending)) {
+      enqueueSyncJob({
+        userId,
+        mangaId: existingEntry.manga_id,
+        mediaType: 'MANGA',
+        operation: 'delete_anilist_manga_entry',
+        payload: buildAniListMangaDeletePayload(
+          existingEntry,
+          linkedAniListAccount.anilist_user_id
+        ),
+        changedFields,
+      });
+      queued = true;
+    }
+  }
+
+  if (linkedMalAccount?.access_token) {
+    const pending = getSyncQueueJob(
+      userId,
+      existingEntry.manga_id,
+      'upsert_mal_manga_entry',
+      'MANGA'
+    );
+    deleteSyncQueueJobByEntry(
+      userId,
+      existingEntry.manga_id,
+      'upsert_mal_manga_entry',
+      'MANGA'
+    );
+    if (!isPendingCreateJob(pending)) {
+      enqueueSyncJob({
+        userId,
+        mangaId: existingEntry.manga_id,
+        mediaType: 'MANGA',
+        operation: 'delete_mal_manga_entry',
+        payload: buildMalMangaDeletePayload(existingEntry, existingEntry.details?.idMal ?? null),
+        changedFields,
+      });
+      queued = true;
+    }
+  }
+
+  if (queued) scheduleAutoSync(userId);
 }
 
 function removeMyAnimeEntry(currentSession, animeId) {
@@ -539,6 +762,18 @@ function entryDiffersFromAniList(existingEntry, nextEntry) {
   );
 }
 
+function clearPulledAnimeSyncJobs(userId, animeId, sourceProvider) {
+  if (sourceProvider === 'mal') {
+    deleteSyncQueueJobByEntry(userId, animeId, 'upsert_mal_entry', 'ANIME');
+    deleteSyncQueueJobByEntry(userId, animeId, 'delete_mal_entry', 'ANIME');
+    return;
+  }
+  if (sourceProvider === 'anilist') {
+    deleteSyncQueueJobByEntry(userId, animeId, 'upsert_anilist_entry', 'ANIME');
+    deleteSyncQueueJobByEntry(userId, animeId, 'delete_anilist_entry', 'ANIME');
+  }
+}
+
 function importAniListEntries(currentSession, collection, sourceUsername, options = {}) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) {
@@ -557,7 +792,7 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
     : [];
   const hasStatusFilter = selectedStatuses.length > 0;
   const allowedStatuses = new Set(selectedStatuses);
-  const hasAnimeFilter = selectedAnimeIds.length > 0;
+  const hasAnimeFilter = Boolean(options.selectionProvided) || selectedAnimeIds.length > 0;
   const allowedAnimeIds = new Set(selectedAnimeIds);
 
   if (!allEntries.length) {
@@ -630,6 +865,8 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
       startedAt,
       completedAt,
     };
+
+    clearPulledAnimeSyncJobs(auth.user.id, animeId, options.sourceProvider);
 
     if (!existingEntry) {
       addUserAnimeEntry({
@@ -722,11 +959,184 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
   };
 }
 
+function entryDiffersFromManga(existingEntry, nextEntry) {
+  if (!existingEntry) return true;
+  return (
+    valuesDiffer(existingEntry.status, nextEntry.status) ||
+    valuesDiffer(existingEntry.progress, nextEntry.progress) ||
+    valuesDiffer(existingEntry.volume_progress, nextEntry.volumeProgress) ||
+    valuesDiffer(existingEntry.score, nextEntry.score) ||
+    valuesDiffer(existingEntry.notes, nextEntry.notes) ||
+    valuesDiffer(existingEntry.started_at, nextEntry.startedAt) ||
+    valuesDiffer(existingEntry.completed_at, nextEntry.completedAt) ||
+    valuesDiffer(existingEntry.repeat_count, nextEntry.repeatCount) ||
+    Boolean(existingEntry.is_rereading) !== Boolean(nextEntry.isRereading)
+  );
+}
+
+function clearPulledMangaSyncJobs(userId, mangaId, sourceProvider) {
+  if (sourceProvider === 'mal') {
+    deleteSyncQueueJobByEntry(userId, mangaId, 'upsert_mal_manga_entry', 'MANGA');
+    deleteSyncQueueJobByEntry(userId, mangaId, 'delete_mal_manga_entry', 'MANGA');
+    return;
+  }
+  if (sourceProvider === 'anilist') {
+    deleteSyncQueueJobByEntry(userId, mangaId, 'upsert_anilist_manga_entry', 'MANGA');
+    deleteSyncQueueJobByEntry(userId, mangaId, 'delete_anilist_manga_entry', 'MANGA');
+  }
+}
+
+function importAniListMangaEntries(currentSession, collection, sourceUsername, options = {}) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) return { ok: false, message: auth.message };
+
+  const allEntries = (Array.isArray(collection?.lists) ? collection.lists : []).flatMap(
+    (list) => list?.entries || []
+  );
+  const selectedStatuses = Array.isArray(options.selectedStatuses)
+    ? options.selectedStatuses.map((status) => sanitizeStatus(status))
+    : [];
+  const selectedMangaIds = Array.isArray(options.selectedMangaIds)
+    ? options.selectedMangaIds
+        .map((mangaId) => Number(mangaId))
+        .filter((mangaId) => Number.isInteger(mangaId) && mangaId > 0)
+    : [];
+  const hasStatusFilter = selectedStatuses.length > 0;
+  const allowedStatuses = new Set(selectedStatuses);
+  const hasMangaFilter = Boolean(options.selectionProvided) || selectedMangaIds.length > 0;
+  const allowedMangaIds = new Set(selectedMangaIds);
+  let imported = 0;
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  const changes = [];
+  const emitProgress =
+    typeof options.onProgress === 'function' ? options.onProgress : () => {};
+
+  for (const [index, entry] of allEntries.entries()) {
+    const media = entry?.media;
+    const mangaId = Number(media?.id);
+    const status = sanitizeImportStatus(entry?.status);
+    const entryTitle =
+      media?.title?.userPreferred ||
+      media?.title?.english ||
+      media?.title?.romaji ||
+      `Manga #${mangaId || index + 1}`;
+
+    if (!Number.isInteger(mangaId) || mangaId <= 0 || !status || !media) {
+      skipped += 1;
+      emitProgress({ current: index + 1, total: allEntries.length, entryTitle });
+      continue;
+    }
+
+    if (
+      (hasStatusFilter && !allowedStatuses.has(status)) ||
+      (hasMangaFilter && !allowedMangaIds.has(mangaId))
+    ) {
+      skipped += 1;
+      emitProgress({ current: index + 1, total: allEntries.length, entryTitle });
+      continue;
+    }
+
+    saveManga(media);
+    const existingEntry = getUserMangaEntry(auth.user.id, mangaId);
+    const nextEntry = {
+      status,
+      progress: sanitizeProgress(entry.progress),
+      volumeProgress: sanitizeProgress(entry.progressVolumes),
+      score: sanitizeScore(entry.score),
+      notes: sanitizeNotes(entry.notes),
+      repeatCount: sanitizeRepeatCount(entry.repeat),
+      isRereading: String(entry.status || '').toUpperCase() === 'REPEATING',
+      startedAt: mapAniListDate(entry.startedAt),
+      completedAt: mapAniListDate(entry.completedAt),
+    };
+
+    clearPulledMangaSyncJobs(auth.user.id, mangaId, options.sourceProvider);
+
+    if (!entryDiffersFromManga(existingEntry, nextEntry)) {
+      skipped += 1;
+      emitProgress({ current: index + 1, total: allEntries.length, entryTitle });
+      continue;
+    }
+
+    const changedFields = [
+      { field: 'status', from: existingEntry?.status ?? null, to: nextEntry.status },
+      { field: 'progress', from: existingEntry?.progress ?? null, to: nextEntry.progress },
+      {
+        field: 'volumeProgress',
+        from: existingEntry?.volume_progress ?? null,
+        to: nextEntry.volumeProgress,
+      },
+      { field: 'score', from: existingEntry?.score ?? null, to: nextEntry.score },
+      { field: 'notes', from: existingEntry?.notes ?? null, to: nextEntry.notes },
+      { field: 'startedAt', from: existingEntry?.started_at ?? null, to: nextEntry.startedAt },
+      {
+        field: 'completedAt',
+        from: existingEntry?.completed_at ?? null,
+        to: nextEntry.completedAt,
+      },
+      {
+        field: 'repeatCount',
+        from: existingEntry?.repeat_count ?? null,
+        to: nextEntry.repeatCount,
+      },
+    ].filter((change) => valuesDiffer(change.from, change.to));
+
+    const payload = {
+      userId: auth.user.id,
+      mangaId,
+      status: nextEntry.status,
+      isFavorite: Boolean(existingEntry?.is_favorite),
+      repeatCount: nextEntry.repeatCount,
+      isRereading: nextEntry.isRereading,
+      progress: nextEntry.progress,
+      volumeProgress: nextEntry.volumeProgress,
+      score: nextEntry.score,
+      notes: nextEntry.notes,
+      startedAt: nextEntry.startedAt,
+      completedAt: nextEntry.completedAt,
+    };
+    if (existingEntry) {
+      updateUserMangaEntry(payload);
+      updated += 1;
+    } else {
+      addUserMangaEntry(payload);
+      created += 1;
+    }
+
+    imported += 1;
+    changes.push({ mangaId, animeTitle: entryTitle, changedFields });
+    emitProgress({ current: index + 1, total: allEntries.length, entryTitle });
+  }
+
+  return {
+    ok: true,
+    message: `Imported ${imported} Manga entr${imported === 1 ? 'y' : 'ies'}.`,
+    summary: {
+      sourceUsername,
+      totalFound: allEntries.length,
+      selectedStatuses,
+      selectedMangaIds,
+      imported,
+      created,
+      updated,
+      skipped,
+      changes,
+    },
+  };
+}
+
 module.exports = {
   getMyAnimeList,
   getMyAnimeEntry,
   saveMyAnimeEntry,
   removeMyAnimeEntry,
+  getMyMangaList,
+  getMyMangaEntry,
+  saveMyMangaEntry,
+  removeMyMangaEntry,
   clearMyAnimeList,
   importAniListEntries,
+  importAniListMangaEntries,
 };

@@ -57,6 +57,7 @@ export type AppSettings = {
 
 type ImportPreviewGroup = {
   status: string;
+  mediaType?: "ANIME" | "MANGA";
   items: ImportPreviewItem[];
 };
 
@@ -139,7 +140,7 @@ type SettingsPageProps = {
   onImportAniList: (
     username: string,
     selectedStatuses: string[],
-    selectedAnimeIds: number[],
+    selectedMediaKeys: string[],
     options?: { signal?: AbortSignal }
   ) => Promise<{
     ok: boolean;
@@ -157,8 +158,9 @@ type SettingsPageProps = {
     };
   }>;
   onImportMal: (
+    username: string,
     selectedStatuses: string[],
-    selectedAnimeIds: number[],
+    selectedMediaKeys: string[],
     options?: { signal?: AbortSignal }
   ) => Promise<{
     ok: boolean;
@@ -259,7 +261,7 @@ type SettingsPageProps = {
 };
 
 type SettingsSectionId = "appearance" | "home" | "content" | "account" | "sync" | "data" | "general";
-type SyncActivityTab = "pending" | "completed" | "failed";
+type SyncActivityTab = "pending" | "completed" | "failed" | "pulled";
 type DesktopShortcutState = {
   available: boolean;
   loading: boolean;
@@ -287,8 +289,14 @@ type DesktopWindowState = {
 type SyncActivityItem = {
   id: number;
   anime_id?: number | null;
+  manga_id?: number | null;
+  media_type?: "ANIME" | "MANGA";
   animeTitle?: string | null;
   anime_title?: string | null;
+  title_preferred?: string | null;
+  title_english?: string | null;
+  title_romaji?: string | null;
+  title_native?: string | null;
   operation: string;
   status: string;
   attempts?: number;
@@ -521,6 +529,28 @@ const IMPORT_STATUS_LABELS: Record<string, string> = {
   dropped: "Dropped",
 };
 
+const MANGA_IMPORT_STATUS_LABELS: Record<string, string> = {
+  watching: "Reading",
+  planned: "Plan to Read",
+  completed: "Completed",
+  paused: "Paused",
+  dropped: "Dropped",
+};
+
+function getImportItemMediaType(item: ImportPreviewItem): "ANIME" | "MANGA" {
+  return item.mediaType === "MANGA" ? "MANGA" : "ANIME";
+}
+
+function getImportItemKey(item: ImportPreviewItem) {
+  const mediaType = getImportItemMediaType(item);
+  const mediaId = Number(item.mediaId ?? item.mangaId ?? item.animeId);
+  return `${mediaType}:${mediaId}`;
+}
+
+function getImportGroupKey(group: ImportPreviewGroup) {
+  return `${group.mediaType === "MANGA" ? "MANGA" : "ANIME"}:${group.status}`;
+}
+
 const SHORTCUT_PRESETS = [
   "Control+Space",
   "Control+Shift+Space",
@@ -602,6 +632,7 @@ export function SettingsPage({
     readStoredSettingsSection
   );
   const [importUsername, setImportUsername] = useState(username);
+  const [malImportUsername, setMalImportUsername] = useState(username);
   const [importPreviewUsername, setImportPreviewUsername] = useState(username);
   const [importProvider, setImportProvider] = useState<ImportProvider>("anilist");
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -610,7 +641,7 @@ export function SettingsPage({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreviewResponse["preview"] | null>(null);
   const [textImportFileName, setTextImportFileName] = useState("");
-  const [selectedImportIds, setSelectedImportIds] = useState<number[]>([]);
+  const [selectedImportKeys, setSelectedImportKeys] = useState<string[]>([]);
   const [openImportGroups, setOpenImportGroups] = useState<Record<string, boolean>>({});
   const [importFeedback, setImportFeedback] = useState<ImportFeedback | null>(null);
   const [clearFeedback, setClearFeedback] = useState<{
@@ -630,6 +661,7 @@ export function SettingsPage({
     linked: false,
     provider: null as "anilist" | "mal" | null,
     providerLabel: null as string | null,
+    syncTargetsLabel: null as string | null,
     autoSyncEnabled: true,
     pendingCount: 0,
     feedback: null as { kind: "success" | "error"; message: string } | null,
@@ -677,11 +709,13 @@ export function SettingsPage({
     pending: SyncActivityItem[];
     completed: SyncActivityItem[];
     failed: SyncActivityItem[];
+    pulled: SyncActivityItem[];
   }>({
     loading: false,
     pending: [],
     completed: [],
     failed: [],
+    pulled: [],
   });
   const [aniListLink, setAniListLink] = useState<{
     loading: boolean;
@@ -732,6 +766,7 @@ export function SettingsPage({
   const accentSummary =
     settings.themeAccent === "custom" ? "Accent Custom" : `Accent ${capitalize(settings.themeAccent)}`;
   const syncProviderLabel = syncStatus.providerLabel ?? "external account";
+  const manualSyncTargetsLabel = syncStatus.syncTargetsLabel ?? syncProviderLabel;
   const isAniListSync = syncStatus.provider === "anilist";
   const syncTargetLabel = syncStatus.linked ? syncProviderLabel : "No linked account";
 
@@ -1242,6 +1277,7 @@ export function SettingsPage({
         linked: Boolean(result.linked),
         provider: result.provider ?? null,
         providerLabel: result.providerLabel ?? null,
+        syncTargetsLabel: result.syncTargetsLabel ?? null,
         autoSyncEnabled: result.autoSyncEnabled ?? true,
         pendingCount: result.pendingCount ?? 0,
         feedback: result.ok
@@ -1333,6 +1369,7 @@ export function SettingsPage({
         linked: Boolean(result.linked),
         provider: result.provider ?? null,
         providerLabel: result.providerLabel ?? null,
+        syncTargetsLabel: result.syncTargetsLabel ?? current.syncTargetsLabel,
         autoSyncEnabled: result.autoSyncEnabled ?? enabled,
         pendingCount: result.pendingCount ?? current.pendingCount,
         feedback: {
@@ -1444,6 +1481,7 @@ export function SettingsPage({
         pending: result.pending ?? [],
         completed: result.completed ?? [],
         failed: result.failed ?? [],
+        pulled: result.pulled ?? [],
       });
       setSyncActivityTab(tab);
     } finally {
@@ -1626,9 +1664,10 @@ export function SettingsPage({
     }
 
     return importPreview.groups
-      .filter((group) => group.items.some((item) => selectedImportIds.includes(item.animeId)))
-      .map((group) => group.status);
-  }, [importPreview, selectedImportIds]);
+      .filter((group) => group.items.some((item) => selectedImportKeys.includes(getImportItemKey(item))))
+      .map((group) => group.status)
+      .filter((status, index, statuses) => statuses.indexOf(status) === index);
+  }, [importPreview, selectedImportKeys]);
 
   function resetActiveImportAttempt() {
     activePreviewAbortRef.current?.abort();
@@ -1639,7 +1678,7 @@ export function SettingsPage({
     setIsImporting(false);
     setPreviewError(null);
     setImportPreview(null);
-    setSelectedImportIds([]);
+    setSelectedImportKeys([]);
     setOpenImportGroups({});
 
     if (textImportInputRef.current) {
@@ -1664,7 +1703,7 @@ export function SettingsPage({
       setImportFeedback(null);
       setImportPreview(null);
       setImportPreviewUsername(trimmedUsername);
-      setSelectedImportIds([]);
+      setSelectedImportKeys([]);
       setOpenImportGroups({});
       setIsImportModalOpen(true);
 
@@ -1678,12 +1717,12 @@ export function SettingsPage({
       }
 
       setImportPreview(result.preview);
-      setSelectedImportIds(
-        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      setSelectedImportKeys(
+        result.preview.groups.flatMap((group) => group.items.map(getImportItemKey))
       );
       setOpenImportGroups(
         Object.fromEntries(
-          result.preview.groups.map((group, index) => [group.status, index < 2])
+          result.preview.groups.map((group, index) => [getImportGroupKey(group), index < 2])
         )
       );
     } catch (error) {
@@ -1695,31 +1734,35 @@ export function SettingsPage({
   }
 
   async function openMalImportPreview() {
+    const trimmedUsername = malImportUsername.trim();
+    if (!trimmedUsername) return;
+
     try {
       setImportProvider("mal");
       setIsPreviewLoading(true);
       setPreviewError(null);
       setImportFeedback(null);
       setImportPreview(null);
-      setSelectedImportIds([]);
+      setImportPreviewUsername(trimmedUsername);
+      setSelectedImportKeys([]);
       setOpenImportGroups({});
       setIsImportModalOpen(true);
 
-      const result = (await window.api.previewMalImport()) as ImportPreviewResponse;
+      const result = (await window.api.previewMalImport(trimmedUsername)) as ImportPreviewResponse;
 
       if (!result.ok || !result.preview) {
         setPreviewError(result.message || "Failed to preview MyAnimeList list.");
         return;
       }
 
-      setImportPreviewUsername(result.username || "MyAnimeList");
+      setImportPreviewUsername(result.username || trimmedUsername);
       setImportPreview(result.preview);
-      setSelectedImportIds(
-        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      setSelectedImportKeys(
+        result.preview.groups.flatMap((group) => group.items.map(getImportItemKey))
       );
       setOpenImportGroups(
         Object.fromEntries(
-          result.preview.groups.map((group, index) => [group.status, index < 2])
+          result.preview.groups.map((group, index) => [getImportGroupKey(group), index < 2])
         )
       );
     } catch (error) {
@@ -1747,7 +1790,7 @@ export function SettingsPage({
       setImportFeedback(null);
       setImportPreview(null);
       setImportPreviewUsername(file.name);
-      setSelectedImportIds([]);
+      setSelectedImportKeys([]);
       setOpenImportGroups({});
       setIsImportModalOpen(true);
 
@@ -1772,12 +1815,12 @@ export function SettingsPage({
       }
 
       setImportPreview(result.preview);
-      setSelectedImportIds(
-        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      setSelectedImportKeys(
+        result.preview.groups.flatMap((group) => group.items.map(getImportItemKey))
       );
       setOpenImportGroups(
         Object.fromEntries(
-          result.preview.groups.map((group, index) => [group.status, index < 2])
+          result.preview.groups.map((group, index) => [getImportGroupKey(group), index < 2])
         )
       );
     } catch (error) {
@@ -1816,7 +1859,7 @@ export function SettingsPage({
       setImportFeedback(null);
       setImportPreview(null);
       setImportPreviewUsername(file.name);
-      setSelectedImportIds([]);
+      setSelectedImportKeys([]);
       setOpenImportGroups({});
       setIsImportModalOpen(true);
 
@@ -1841,12 +1884,12 @@ export function SettingsPage({
       }
 
       setImportPreview(result.preview);
-      setSelectedImportIds(
-        result.preview.groups.flatMap((group) => group.items.map((item) => item.animeId))
+      setSelectedImportKeys(
+        result.preview.groups.flatMap((group) => group.items.map(getImportItemKey))
       );
       setOpenImportGroups(
         Object.fromEntries(
-          result.preview.groups.map((group, index) => [group.status, index < 2])
+          result.preview.groups.map((group, index) => [getImportGroupKey(group), index < 2])
         )
       );
     } catch (error) {
@@ -3164,10 +3207,10 @@ export function SettingsPage({
           <div ref={rememberSectionRef("sync")} className="scroll-mt-24">
             <AccordionSection
               icon={ArrowPathIcon}
-              title={syncStatus.linked ? `${syncProviderLabel} Sync` : "External Sync"}
+              title={syncStatus.linked ? `${manualSyncTargetsLabel} Sync` : "External Sync"}
               description={
                 syncStatus.linked
-                  ? `Push local list changes to your linked ${syncProviderLabel} account.`
+                  ? `Push local Anime and Manga changes to ${manualSyncTargetsLabel}.`
                   : "Link an external account before syncing local list changes."
               }
               summary={[
@@ -3177,7 +3220,7 @@ export function SettingsPage({
                     : "Auto off"
                   : "Auto unavailable",
                 `${syncStatus.pendingCount} queued`,
-                syncStatus.linked ? syncProviderLabel : "Unavailable",
+                syncStatus.linked ? manualSyncTargetsLabel : "Unavailable",
               ]}
               open={openSection === "sync"}
               onToggle={() => toggleSection("sync")}
@@ -3188,7 +3231,7 @@ export function SettingsPage({
                 title="Sync controls"
                 description={
                   syncStatus.linked
-                    ? `Local edits are queued first, then pushed to ${syncProviderLabel} when sync runs.`
+                    ? `Local Anime and Manga edits are queued first, then pushed to ${manualSyncTargetsLabel} in one sync run.`
                     : "Sync is unavailable until you link AniList or MyAnimeList."
                 }
               />
@@ -3213,7 +3256,7 @@ export function SettingsPage({
                     {syncStatus.pendingCount > 0
                       ? `${syncStatus.pendingCount} queued change${syncStatus.pendingCount === 1 ? "" : "s"} waiting to sync or retry.`
                       : syncStatus.linked
-                        ? `No queued ${syncProviderLabel} changes right now.`
+                        ? `No queued ${manualSyncTargetsLabel} changes right now.`
                         : "Sync is unavailable because no external account is linked."}
                   </p>
 
@@ -3243,8 +3286,8 @@ export function SettingsPage({
                     {!syncStatus.linked
                       ? "Link an external account before pulling remote list updates."
                       : isAniListSync
-                      ? "Pull your full AniList library and replace local list fields that differ."
-                      : "Pull your full MyAnimeList library and replace local list fields that differ."}
+                      ? "Pull your Anime and Manga library from AniList and replace local list fields that differ."
+                      : "Pull your Anime and Manga library from MyAnimeList and replace local list fields that differ."}
                   </p>
 
                   <ProgressActionButton
@@ -3464,28 +3507,36 @@ export function SettingsPage({
                 <SectionHeading
                   icon={CloudArrowDownIcon}
                   title="Import from MyAnimeList"
-                  description="Preview your linked MyAnimeList library, then choose exact matched titles to bring over."
+                  description="Preview any public MyAnimeList library, then choose exact Anime and Manga titles to bring over."
                 />
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
-                  <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
-                    <div className="min-w-0 flex-1">
-                      <p className="font-semibold text-white">
-                        {malLink.linked
-                          ? `Ready to import ${malLink.account?.malUsername ?? "your MAL list"}`
-                          : "Link MyAnimeList first"}
-                      </p>
-                      <p className="mt-2 text-sm leading-6 text-white/45">
-                        MyAnimeList entries are matched to AniList anime records before import so they can fit the local library.
-                      </p>
-                    </div>
+                  <div className="grid grid-cols-1 gap-3 md:grid-cols-[1fr_auto]">
+                    <label className="block">
+                      <span className="mb-2 block text-sm font-medium text-white/70">
+                        MyAnimeList username
+                      </span>
+                      <input
+                        type="text"
+                        value={malImportUsername}
+                        onChange={(event) => setMalImportUsername(event.target.value)}
+                        onKeyDown={(event) => {
+                          if (event.key === "Enter" && !isPreviewLoading && malImportUsername.trim()) {
+                            event.preventDefault();
+                            openMalImportPreview();
+                          }
+                        }}
+                        placeholder="Enter MyAnimeList username"
+                        className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/30 focus:border-white/20 focus:bg-white/[0.07]"
+                      />
+                    </label>
 
                     <button
                       type="button"
-                      disabled={isPreviewLoading || !malLink.linked}
+                      disabled={isPreviewLoading || !malImportUsername.trim()}
                       onClick={openMalImportPreview}
-                      className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                        isPreviewLoading || !malLink.linked
+                      className={`mt-7 inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                        isPreviewLoading || !malImportUsername.trim()
                           ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
                           : "border border-white/10 bg-white text-black hover:opacity-90"
                       }`}
@@ -3501,7 +3552,7 @@ export function SettingsPage({
 
                   <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
                     <p className="text-sm leading-6 text-white/70">
-                      Some MAL entries may be skipped if the app cannot confidently match them to an AniList anime record.
+                      The MAL list must be public. Anime and Manga are matched to canonical AniList records before import, so entries without a safe match may be skipped. Private-list access and ongoing synchronization still require linking the account.
                     </p>
                   </div>
 
@@ -3515,7 +3566,7 @@ export function SettingsPage({
                 <SectionHeading
                   icon={DocumentTextIcon}
                   title="Import from text file"
-                  description="Bring in a simple notepad list, one anime title per line."
+                  description="ANIME ONLY. Bring in a simple notepad list with one Anime title per line."
                 />
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
@@ -3528,7 +3579,7 @@ export function SettingsPage({
                         Lines without progress are imported as completed. Lines like 3/12 are imported with that progress.
                       </p>
                       <p className="mt-2 text-sm leading-6 text-amber-100/75">
-                        Larger files can still take a moment, but Seenary now matches titles in faster batches before showing the import preview.
+                        Remove Manga entries before importing. Manga is not supported here and may be incorrectly matched as Anime, corrupting the imported list data.
                       </p>
                     </div>
 
@@ -3558,7 +3609,8 @@ export function SettingsPage({
 
                   <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
                     <p className="text-sm leading-6 text-white/70">
-                      Text imports use best-effort AniList matching. Review the preview before importing.
+                      <span className="font-semibold text-amber-100">ANIME-ONLY IMPORTER.</span>{" "}
+                      Text imports use best-effort AniList Anime matching. Review every match before importing.
                     </p>
                   </div>
 
@@ -3572,7 +3624,7 @@ export function SettingsPage({
                 <SectionHeading
                   icon={DocumentTextIcon}
                   title="Import from PDF"
-                  description="Extract anime titles from a text-based PDF, then review matched titles before importing."
+                  description="ANIME ONLY. Extract Anime titles from a text-based PDF, then review every match before importing."
                 />
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
@@ -3585,7 +3637,7 @@ export function SettingsPage({
                         Best for browser-exported pages and other PDFs with selectable text.
                       </p>
                       <p className="mt-2 text-sm leading-6 text-amber-100/75">
-                        PDF import is experimental. Scanned image PDFs may not contain readable titles.
+                        PDF import is experimental. Remove Manga entries first: they may be incorrectly matched as Anime and corrupt the imported list data. Scanned image PDFs may not contain readable titles.
                       </p>
                     </div>
 
@@ -3615,7 +3667,8 @@ export function SettingsPage({
 
                   <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
                     <p className="text-sm leading-6 text-white/70">
-                      Seenary extracts readable PDF text, matches likely title lines through AniList, and lets you confirm every matched anime.
+                      <span className="font-semibold text-amber-100">ANIME-ONLY IMPORTER.</span>{" "}
+                      Seenary extracts readable PDF text and matches likely title lines against AniList Anime records only.
                     </p>
                   </div>
 
@@ -3729,40 +3782,40 @@ export function SettingsPage({
         previewError={previewError}
         isPreviewLoading={isPreviewLoading}
         isImporting={isImporting}
-        selectedIds={selectedImportIds}
+        selectedKeys={selectedImportKeys}
         openGroups={openImportGroups}
         titleLanguage={settings.titleLanguage}
         onClose={() => setIsImportModalOpen(false)}
         onToggleGroup={(status) =>
           setOpenImportGroups((current) => ({ ...current, [status]: !current[status] }))
         }
-        onToggleAnime={(animeId) =>
-          setSelectedImportIds((current) =>
-            current.includes(animeId)
-              ? current.filter((value) => value !== animeId)
-              : [...current, animeId]
+        onToggleItem={(itemKey) =>
+          setSelectedImportKeys((current) =>
+            current.includes(itemKey)
+              ? current.filter((value) => value !== itemKey)
+              : [...current, itemKey]
           )
         }
         onSelectAll={() =>
-          setSelectedImportIds(
-            importPreview?.groups.flatMap((group) => group.items.map((item) => item.animeId)) ?? []
+          setSelectedImportKeys(
+            importPreview?.groups.flatMap((group) => group.items.map(getImportItemKey)) ?? []
           )
         }
-        onDeselectAll={() => setSelectedImportIds([])}
-        onSelectGroup={(status) =>
-          setSelectedImportIds((current) => {
+        onDeselectAll={() => setSelectedImportKeys([])}
+        onSelectGroup={(groupKey) =>
+          setSelectedImportKeys((current) => {
             const ids =
-              importPreview?.groups.find((group) => group.status === status)?.items.map((item) => item.animeId) ??
+              importPreview?.groups.find((group) => getImportGroupKey(group) === groupKey)?.items.map(getImportItemKey) ??
               [];
             return Array.from(new Set([...current, ...ids]));
           })
         }
-        onDeselectGroup={(status) =>
-          setSelectedImportIds((current) => {
+        onDeselectGroup={(groupKey) =>
+          setSelectedImportKeys((current) => {
             const ids = new Set(
-              importPreview?.groups.find((group) => group.status === status)?.items.map((item) => item.animeId) ?? []
+              importPreview?.groups.find((group) => getImportGroupKey(group) === groupKey)?.items.map(getImportItemKey) ?? []
             );
-            return current.filter((animeId) => !ids.has(animeId));
+            return current.filter((itemKey) => !ids.has(itemKey));
           })
         }
         onConfirm={async () => {
@@ -3772,21 +3825,28 @@ export function SettingsPage({
 
           try {
             setIsImporting(true);
+            const selectedAnimeIds = selectedImportKeys
+              .filter((key) => key.startsWith("ANIME:"))
+              .map((key) => Number(key.slice(6)))
+              .filter((id) => Number.isInteger(id) && id > 0);
             const result =
               feedbackProvider === "txt" || feedbackProvider === "pdf"
                 ? await onImportTextList(
                     importPreview?.groups.flatMap((group) => group.items) ?? [],
-                    selectedImportIds,
+                    selectedAnimeIds,
                     { signal: controller.signal }
                   )
                 : feedbackProvider === "mal"
-                  ? await onImportMal(selectedImportStatuses, selectedImportIds, {
-                      signal: controller.signal,
-                    })
+                  ? await onImportMal(
+                      malImportUsername.trim(),
+                      selectedImportStatuses,
+                      selectedImportKeys,
+                      { signal: controller.signal }
+                    )
                   : await onImportAniList(
                     importUsername.trim(),
                     selectedImportStatuses,
-                    selectedImportIds,
+                    selectedImportKeys,
                     { signal: controller.signal }
                   );
 
@@ -3835,6 +3895,7 @@ export function SettingsPage({
         isOpen={isSyncActivityOpen}
         activeTab={syncActivityTab}
         activity={syncActivity}
+        titleLanguage={settings.titleLanguage}
         onClose={() => setIsSyncActivityOpen(false)}
         onChangeTab={(tab) => {
           setSyncActivityTab(tab);
@@ -4104,6 +4165,7 @@ function SyncActivityModal({
   isOpen,
   activeTab,
   activity,
+  titleLanguage,
   onClose,
   onChangeTab,
 }: {
@@ -4114,7 +4176,9 @@ function SyncActivityModal({
     pending: SyncActivityItem[];
     completed: SyncActivityItem[];
     failed: SyncActivityItem[];
+    pulled: SyncActivityItem[];
   };
+  titleLanguage: TitleLanguage;
   onClose: () => void;
   onChangeTab: (tab: SyncActivityTab) => void;
 }) {
@@ -4135,13 +4199,13 @@ function SyncActivityModal({
         <div className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p className="text-sm uppercase tracking-[0.3em] text-white/35">
-              AniList sync
+              Third-party sync
             </p>
             <h2 className="mt-3 text-2xl font-bold tracking-tight text-white">
               Sync activity
             </h2>
             <p className="mt-2 text-sm leading-6 text-white/50">
-              Review queued changes, successful syncs, and failed attempts.
+              Review queued changes, successful syncs, failed attempts, and pulled updates.
             </p>
           </div>
 
@@ -4156,7 +4220,7 @@ function SyncActivityModal({
 
         <div className="border-b border-white/10 px-6 py-3">
           <div className="flex flex-wrap gap-2">
-            {(["pending", "completed", "failed"] as SyncActivityTab[]).map((tab) => (
+            {(["pending", "completed", "failed", "pulled"] as SyncActivityTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -4180,7 +4244,7 @@ function SyncActivityModal({
             </div>
           ) : items.length === 0 ? (
             <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-8 text-center text-sm text-white/45">
-              No {activeTab} sync items.
+              {activeTab === "pulled" ? "No pulled updates yet." : `No ${activeTab} sync items.`}
             </div>
           ) : (
             <div className="space-y-3">
@@ -4192,7 +4256,7 @@ function SyncActivityModal({
                   <div className="flex flex-wrap items-start justify-between gap-3">
                     <div>
                       <p className="font-semibold text-white">
-                        {item.animeTitle || item.anime_title || `Anime #${item.anime_id}`}
+                        {getSyncActivityTitle(item, titleLanguage)}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-2">
                         <span className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-white/70">
@@ -4227,24 +4291,37 @@ function SyncActivityModal({
                     ))}
                   </div>
 
-                  {(item.message || item.last_error) && (
+                  {(item.message || item.last_error) && (() => {
+                    const isFailure = item.status === "failed" || Boolean(item.last_error);
+                    const isPartial = item.status === "partial";
+                    const isPull = item.operation.startsWith("pull_");
+                    return (
                     <div
                       className={`mt-4 rounded-2xl border px-3 py-2 text-sm ${
-                        activeTab === "failed" || item.last_error
+                        isFailure
                           ? "border-rose-400/20 bg-rose-400/10 text-rose-100"
+                          : isPartial
+                            ? "border-amber-300/20 bg-amber-300/10 text-amber-100"
                           : "border-emerald-400/20 bg-emerald-400/10 text-emerald-100"
                       }`}
                     >
                       <p className="font-semibold">
-                        {activeTab === "failed" || item.last_error
-                          ? "Sync failed"
-                          : "Sync completed"}
+                        {isFailure
+                          ? isPull
+                            ? "Pull failed"
+                            : "Sync failed"
+                          : isPartial
+                            ? "Pull partially completed"
+                            : isPull
+                              ? "Pull completed"
+                              : "Sync completed"}
                       </p>
                       <p className="mt-1 whitespace-pre-wrap break-words text-white/75">
                         {formatSyncActivityMessage(item.message || item.last_error)}
                       </p>
                     </div>
-                  )}
+                    );
+                  })()}
                 </div>
               ))}
             </div>
@@ -4280,36 +4357,36 @@ function getImportModalCopy(
     return {
       title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
       description: isPreviewLoading
-        ? `Reading ${sourceName} and matching extracted title lines to AniList anime records.`
+        ? `Reading ${sourceName} and matching extracted title lines to AniList Anime records. Manga is not supported and may be misidentified as Anime.`
         : preview
-          ? `Matched ${matchedCount} of ${totalFound} line${totalFound === 1 ? "" : "s"} from ${sourceName}. Review the matches, then import only the titles you want.`
-          : `Previewing ${sourceName}. Review the matches, then import only the titles you want.`,
+          ? `Anime-only import: matched ${matchedCount} of ${totalFound} line${totalFound === 1 ? "" : "s"} from ${sourceName}. Manga entries may be misidentified as Anime and corrupt imported data, so review every match carefully.`
+          : `Anime-only import. Manga entries are unsupported and may be misidentified as Anime; review every match before importing.`,
       loadingTitle: `Matching titles from your ${sourceType}`,
       loadingDescription:
-        `Seenary checks each extracted line against AniList so the preview can show covers, episodes, and the exact anime that will be imported. Larger ${sourceType}s can take a few minutes.`,
+        `Seenary checks each extracted line against AniList Anime records so the preview can show covers, episodes, and the exact Anime that will be imported. Manga is not supported. Larger ${sourceType}s can take a few minutes.`,
     };
   }
 
   if (provider === "mal") {
     return {
-      title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
+      title: isPreviewLoading ? "Matching Anime and Manga" : "Choose Anime and Manga to import",
       description: isPreviewLoading
-        ? `Reading ${sourceName} and matching list entries to AniList anime records.`
-        : `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
+        ? `Reading ${sourceName} and matching its public Anime and Manga entries to AniList records.`
+        : `Previewing ${sourceName}. Anime and Manga are separated into clearly labeled groups; tick only the titles you want.`,
       loadingTitle: "Matching titles from your MyAnimeList account",
       loadingDescription:
-        "Seenary checks your linked MyAnimeList entries against AniList so the preview can show covers, episodes, and the exact anime that will be imported.",
+        "Seenary matches the public MyAnimeList library against AniList so the preview can show covers and the exact Anime and Manga records that will be imported. Large libraries can take a while.",
     };
   }
 
   return {
-    title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
+    title: isPreviewLoading ? "Loading Anime and Manga" : "Choose Anime and Manga to import",
     description: isPreviewLoading
-      ? `Reading ${sourceName} and preparing matched AniList anime records.`
-      : `Previewing ${sourceName}. Expand a group, tick the titles you want, then import only those.`,
-    loadingTitle: "Matching titles from your AniList account",
+      ? `Reading ${sourceName} and preparing its public Anime and Manga lists.`
+      : `Previewing ${sourceName}. Anime and Manga are separated into clearly labeled groups; tick only the titles you want.`,
+    loadingTitle: "Loading titles from the AniList account",
     loadingDescription:
-      "Seenary is reading the public AniList list so the preview can show covers, episodes, and the exact anime that will be imported.",
+      "Seenary is reading both public AniList lists so the preview can show covers, episode, chapter, and volume progress for the exact titles that will be imported.",
   };
 }
 
@@ -4344,12 +4421,12 @@ function ImportSelectionModal({
   previewError,
   isPreviewLoading,
   isImporting,
-  selectedIds,
+  selectedKeys,
   openGroups,
   titleLanguage,
   onClose,
   onToggleGroup,
-  onToggleAnime,
+  onToggleItem,
   onSelectAll,
   onDeselectAll,
   onSelectGroup,
@@ -4363,12 +4440,12 @@ function ImportSelectionModal({
   previewError: string | null;
   isPreviewLoading: boolean;
   isImporting: boolean;
-  selectedIds: number[];
+  selectedKeys: string[];
   openGroups: Record<string, boolean>;
   titleLanguage: TitleLanguage;
   onClose: () => void;
   onToggleGroup: (status: string) => void;
-  onToggleAnime: (animeId: number) => void;
+  onToggleItem: (itemKey: string) => void;
   onSelectAll: () => void;
   onDeselectAll: () => void;
   onSelectGroup: (status: string) => void;
@@ -4579,20 +4656,22 @@ function ImportSelectionModal({
               ) : null}
 
               {preview.groups.map((group) => {
+                const groupKey = getImportGroupKey(group);
+                const isManga = group.mediaType === "MANGA";
                 const groupSelectedCount = group.items.filter((item) =>
-                  selectedIds.includes(item.animeId)
+                  selectedKeys.includes(getImportItemKey(item))
                 ).length;
-                const isOpen = openGroups[group.status] ?? false;
+                const isOpen = openGroups[groupKey] ?? false;
 
                 return (
                   <section
-                    key={group.status}
+                    key={groupKey}
                     className="overflow-hidden rounded-3xl border border-white/10 bg-white/[0.03]"
                   >
                     <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 px-5 py-4">
                       <button
                         type="button"
-                        onClick={() => onToggleGroup(group.status)}
+                        onClick={() => onToggleGroup(groupKey)}
                         className="flex min-w-0 items-center gap-3 text-left"
                       >
                         <span
@@ -4605,7 +4684,8 @@ function ImportSelectionModal({
                         <div>
                           <div className="flex flex-wrap items-center gap-2">
                             <h3 className="text-lg font-semibold text-white">
-                              {IMPORT_STATUS_LABELS[group.status] ?? capitalize(group.status)}
+                              {isManga ? "Manga · " : "Anime · "}
+                              {(isManga ? MANGA_IMPORT_STATUS_LABELS : IMPORT_STATUS_LABELS)[group.status] ?? capitalize(group.status)}
                             </h3>
                             <span className="rounded-full bg-white/8 px-2.5 py-1 text-xs text-white/45">
                               {groupSelectedCount} / {group.items.length} selected
@@ -4617,14 +4697,14 @@ function ImportSelectionModal({
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => onSelectGroup(group.status)}
+                          onClick={() => onSelectGroup(groupKey)}
                           className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/75 transition hover:bg-white/8 hover:text-white"
                         >
                           Select group
                         </button>
                         <button
                           type="button"
-                          onClick={() => onDeselectGroup(group.status)}
+                          onClick={() => onDeselectGroup(groupKey)}
                           className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-white/75 transition hover:bg-white/8 hover:text-white"
                         >
                           Clear group
@@ -4635,14 +4715,16 @@ function ImportSelectionModal({
                     {isOpen && (
                       <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
                         {group.items.map((item) => {
-                          const selected = selectedIds.includes(item.animeId);
+                          const itemKey = getImportItemKey(item);
+                          const itemIsManga = getImportItemMediaType(item) === "MANGA";
+                          const selected = selectedKeys.includes(itemKey);
                           const title = getPreferredTitle(item.title, titleLanguage);
 
                           return (
                             <button
-                              key={item.animeId}
+                              key={itemKey}
                               type="button"
-                              onClick={() => onToggleAnime(item.animeId)}
+                              onClick={() => onToggleItem(itemKey)}
                               className={`flex items-start gap-4 rounded-3xl border p-4 text-left transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
                                 selected
                                   ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)]"
@@ -4699,8 +4781,15 @@ function ImportSelectionModal({
 
                                 <div className="mt-3 flex flex-wrap gap-2">
                                   <span className="rounded-full bg-black/15 px-2.5 py-1 text-[11px] text-white/70">
-                                    Progress {item.episodes ? `${item.progress} / ${item.episodes}` : item.progress}
+                                    {itemIsManga ? "Chapters" : "Progress"} {itemIsManga
+                                      ? item.chapters ? `${item.progress} / ${item.chapters}` : item.progress
+                                      : item.episodes ? `${item.progress} / ${item.episodes}` : item.progress}
                                   </span>
+                                  {itemIsManga && (
+                                    <span className="rounded-full bg-black/15 px-2.5 py-1 text-[11px] text-white/70">
+                                      Volumes {item.volumes ? `${item.volumeProgress ?? 0} / ${item.volumes}` : item.volumeProgress ?? 0}
+                                    </span>
+                                  )}
                                   {typeof item.score === "number" && item.score > 0 && (
                                     <span className="rounded-full bg-black/15 px-2.5 py-1 text-[11px] text-white/70">
                                       Score {item.score}
@@ -4729,9 +4818,13 @@ function ImportSelectionModal({
         <div className="border-t border-white/10 px-6 py-4">
           <div className="flex items-center justify-between gap-4 rounded-3xl border border-white/10 bg-white/[0.03] px-4 py-3">
             <p className="text-sm text-white/60">
-              {selectedIds.length > 0
-                ? `${selectedIds.length} anime selected`
-                : "Choose at least one anime to import"}
+              {selectedKeys.length > 0
+                ? provider === "anilist" || provider === "mal"
+                  ? `${selectedKeys.filter((key) => key.startsWith("ANIME:")).length} Anime · ${selectedKeys.filter((key) => key.startsWith("MANGA:")).length} Manga selected`
+                  : `${selectedKeys.length} anime selected`
+                : provider === "anilist" || provider === "mal"
+                  ? "Choose at least one title to import"
+                  : "Choose at least one anime to import"}
             </p>
 
             <div className="flex items-center gap-3">
@@ -4744,10 +4837,10 @@ function ImportSelectionModal({
               </button>
               <button
                 type="button"
-                disabled={!preview || selectedIds.length === 0 || isImporting || isPreviewLoading}
+                disabled={!preview || selectedKeys.length === 0 || isImporting || isPreviewLoading}
                 onClick={onConfirm}
                 className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                  !preview || selectedIds.length === 0 || isImporting || isPreviewLoading
+                  !preview || selectedKeys.length === 0 || isImporting || isPreviewLoading
                     ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
                     : "border border-white/10 bg-white text-black hover:opacity-90"
                 }`}
@@ -5057,6 +5150,25 @@ function getSyncActivityTabLabel(tab: SyncActivityTab) {
   return tab === "pending" ? "Queued" : capitalize(tab);
 }
 
+function getSyncActivityTitle(item: SyncActivityItem, titleLanguage: TitleLanguage) {
+  const fallback =
+    item.animeTitle ||
+    item.anime_title ||
+    `${item.media_type === "MANGA" || item.manga_id ? "Manga" : "Anime"} #${
+      item.manga_id ?? item.anime_id ?? "unknown"
+    }`;
+
+  return getPreferredTitle(
+    {
+      userPreferred: item.title_preferred || fallback,
+      english: item.title_english,
+      romaji: item.title_romaji,
+      native: item.title_native,
+    },
+    titleLanguage
+  );
+}
+
 function ProgressActionButton({
   children,
   onClick,
@@ -5112,15 +5224,27 @@ function formatOperation(value: string) {
     case "upsert_anilist_entry":
       return "Pushed list entry";
     case "upsert_mal_entry":
+    case "upsert_anilist_manga_entry":
+    case "upsert_mal_manga_entry":
       return "Pushed list entry";
     case "delete_anilist_entry":
       return "Deleted list entry";
     case "delete_mal_entry":
+    case "delete_anilist_manga_entry":
+    case "delete_mal_manga_entry":
       return "Deleted list entry";
     case "pull_from_anilist":
+    case "pull_from_anilist_manga":
       return "Pulled remote update";
     case "pull_from_mal":
+    case "pull_from_mal_manga":
       return "Pulled remote update";
+    case "pull_from_anilist_unmapped":
+    case "pull_from_mal_unmapped":
+      return "Pull mapping conflict";
+    case "pull_summary_anilist":
+    case "pull_summary_mal":
+      return "Pull summary";
     default:
       return value
         .replace(/_/g, " ")

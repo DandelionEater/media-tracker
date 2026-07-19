@@ -1,12 +1,20 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
 } from "@heroicons/react/24/outline";
 import { ResultsGrid } from "./components/ResultsGrid";
-import { searchAnime } from "./services/anilist";
-import AnimeDetails from "./components/AnimeDetails";
+import { searchMedia } from "./services/anilist";
+import MediaDetails from "./components/AnimeDetails";
 import { TopNavbar } from "./components/TopNavbar";
 import { HomePage } from "./components/HomePage";
 import { AuthScreen } from "./components/AuthScreen";
@@ -16,7 +24,17 @@ import { SettingsPage, type AppSettings } from "./components/SettingsPage";
 import { getPreferredTitle } from "./utils/titlePreference";
 import { SyncToast, type SyncToastState } from "./components/SyncToast";
 import { UpdateModal } from "./components/UpdateModal";
-import type { ImportPreviewItem, SearchAnime, TrackedAnimeEntry } from "./types/domain";
+import type {
+  ImportPreviewItem,
+  MediaSearchResults,
+  MediaType,
+  SearchAnime,
+  SearchMedia,
+  TrackedAnimeEntry,
+  TrackedMangaEntry,
+} from "./types/domain";
+
+const EMPTY_MEDIA_SEARCH_RESULTS: MediaSearchResults = { anime: [], manga: [] };
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   themeAccent: "violet",
@@ -43,6 +61,11 @@ type AuthUser = {
   id: number;
   username: string;
   tutorial_dismissed: number;
+};
+
+type MediaReference = {
+  id: number;
+  type: MediaType;
 };
 
 type AniListImportResult = {
@@ -190,19 +213,22 @@ function redactAdultListEntry(entry: TrackedAnimeEntry): TrackedAnimeEntry {
 }
 
 function App() {
-  const [results, setResults] = useState<SearchAnime[]>([]);
+  const [results, setResults] = useState<MediaSearchResults>(EMPTY_MEDIA_SEARCH_RESULTS);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResultsVisible, setSearchResultsVisible] = useState(false);
   const [selectedAnimeId, setSelectedAnimeId] = useState<number | null>(null);
+  const [selectedMediaType, setSelectedMediaType] = useState<MediaType>("ANIME");
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [currentView, setCurrentView] = useState<AppView>("home");
   const [trackedEntries, setTrackedEntries] = useState<TrackedAnimeEntry[]>([]);
+  const [trackedMangaEntries, setTrackedMangaEntries] = useState<TrackedMangaEntry[]>([]);
   const [editingListEntry, setEditingListEntry] = useState<TrackedAnimeEntry | null>(null);
   const [previousView, setPreviousView] = useState<AppView>("home");
   const [previousAnimeId, setPreviousAnimeId] = useState<number | null>(null);
+  const [previousMediaType, setPreviousMediaType] = useState<MediaType>("ANIME");
   const [detailsReturnView, setDetailsReturnView] = useState<AppView>("home");
-  const [detailsHistory, setDetailsHistory] = useState<number[]>([]);
+  const [detailsHistory, setDetailsHistory] = useState<MediaReference[]>([]);
   const [showTutorial, setShowTutorial] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
@@ -230,10 +256,43 @@ function App() {
         : trackedEntries,
     [settings.hideAdultContent, trackedEntries]
   );
+  const privacySafeTrackedMangaEntries = useMemo(
+    () =>
+      settings.hideAdultContent
+        ? trackedMangaEntries.map((entry) =>
+            entry.is_adult === null || entry.is_adult === undefined || Boolean(entry.is_adult)
+              ? {
+                  ...entry,
+                  hidden_by_adult_filter: true,
+                  title_romaji: "Hidden by 18+ filter",
+                  title_english: "Hidden by 18+ filter",
+                  title_native: null,
+                  title_preferred: "Hidden by 18+ filter",
+                  cover_image_large: null,
+                  banner_image: null,
+                  notes: null,
+                  genres: [],
+                  recommendations: [],
+                  details: null,
+                }
+              : entry
+          )
+        : trackedMangaEntries,
+    [settings.hideAdultContent, trackedMangaEntries]
+  );
   const privacySafeResults = useMemo(
-    () => (settings.hideAdultContent ? results.filter((anime) => !anime.isAdult) : results),
+    () =>
+      settings.hideAdultContent
+        ? {
+            anime: results.anime.filter((media) => !media.isAdult),
+            manga: results.manga.filter((media) => !media.isAdult),
+          }
+        : results,
     [results, settings.hideAdultContent]
   );
+  const visibleSearchResultCount =
+    privacySafeResults.anime.length + privacySafeResults.manga.length;
+  const searchResultCount = results.anime.length + results.manga.length;
 
   const showSyncToast = useCallback((
     kind: "success" | "error" | "warning",
@@ -317,17 +376,22 @@ function App() {
 
   const loadTrackedEntries = useCallback(async () => {
     try {
-      const result = await window.api.getMyList();
+      const [result, mangaResult] = await Promise.all([
+        window.api.getMyList(),
+        window.api.getMyMangaList(),
+      ]);
 
       if (!result.ok) {
         setTrackedEntries([]);
-        return;
+      } else {
+        setTrackedEntries(result.entries || []);
       }
 
-      setTrackedEntries(result.entries || []);
+      setTrackedMangaEntries(mangaResult.ok ? mangaResult.entries || [] : []);
     } catch (error) {
-      console.error("Failed to load tracked anime entries:", error);
+      console.error("Failed to load tracked media entries:", error);
       setTrackedEntries([]);
+      setTrackedMangaEntries([]);
     }
   }, []);
 
@@ -483,6 +547,7 @@ function App() {
           setAuthUser(null);
           setShowTutorial(false);
           setTrackedEntries([]);
+          setTrackedMangaEntries([]);
           showSyncToast(
             "warning",
             "Session expired",
@@ -564,13 +629,13 @@ function App() {
   const handleImportAniList = async (
     username: string,
     selectedStatuses: string[],
-    selectedAnimeIds: number[],
+    selectedMediaKeys: string[],
     options?: ImportOptions
   ): Promise<AniListImportResult> => {
     const result = await window.api.importAniList(
       username,
       selectedStatuses,
-      selectedAnimeIds,
+      selectedMediaKeys,
       options
     );
 
@@ -589,11 +654,17 @@ function App() {
   };
 
   const handleImportMal = async (
+    username: string,
     selectedStatuses: string[],
-    selectedAnimeIds: number[],
+    selectedMediaKeys: string[],
     options?: ImportOptions
   ): Promise<MalImportResult> => {
-    const result = await window.api.importMal(selectedStatuses, selectedAnimeIds, options);
+    const result = await window.api.importMal(
+      username,
+      selectedStatuses,
+      selectedMediaKeys,
+      options
+    );
 
     if (result.cancelled) {
       return result;
@@ -680,8 +751,12 @@ function App() {
     }
 
     showSyncToast(
-      result.ok ? "success" : "error",
-      result.ok ? "AniList update complete" : "AniList update failed",
+      result.ok ? (result.partial ? "warning" : "success") : "error",
+      result.ok
+        ? result.partial
+          ? "AniList update partially complete"
+          : "AniList update complete"
+        : "AniList update failed",
       result.message
     );
 
@@ -696,8 +771,12 @@ function App() {
     }
 
     showSyncToast(
-      result.ok ? "success" : "error",
-      result.ok ? "MyAnimeList update complete" : "MyAnimeList update failed",
+      result.ok ? (result.partial ? "warning" : "success") : "error",
+      result.ok
+        ? result.partial
+          ? "MyAnimeList update partially complete"
+          : "MyAnimeList update complete"
+        : "MyAnimeList update failed",
       result.message
     );
 
@@ -800,7 +879,7 @@ function App() {
     }
 
     setSearchQuery("");
-    setResults([]);
+    setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
     setCurrentView("home");
     setPreviousView("home");
@@ -820,7 +899,7 @@ function App() {
       setSearchResultsVisible(false);
       setSearchError(null);
       setIsSearching(false);
-      setResults([]);
+      setResults(EMPTY_MEDIA_SEARCH_RESULTS);
       if (selectedAnimeId === null) {
         setCurrentView("home");
       }
@@ -832,7 +911,7 @@ function App() {
     setSearchError(null);
 
     try {
-      const data = await searchAnime(query, settings.hideAdultContent);
+      const data = await searchMedia(query, settings.hideAdultContent);
 
       if (searchRequestIdRef.current !== requestId) {
         return;
@@ -848,7 +927,7 @@ function App() {
         return;
       }
 
-      setResults([]);
+      setResults(EMPTY_MEDIA_SEARCH_RESULTS);
       setSelectedAnimeId(null);
       setCurrentView("home");
       setSearchError(
@@ -917,10 +996,11 @@ function App() {
     setAuthUser(null);
     setShowTutorial(false);
     setSearchQuery("");
-    setResults([]);
+    setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
     setCurrentView("home");
     setTrackedEntries([]);
+    setTrackedMangaEntries([]);
     setPreviousAnimeId(null);
     setDetailsReturnView("home");
     setPreviousView("home");
@@ -951,28 +1031,37 @@ function App() {
     }));
   };
 
-  const handleOpenAnimeDetails = (animeId: number) => {
+  const handleOpenMediaDetails = (mediaId: number, mediaType: MediaType) => {
     captureHomeScrollTop();
 
     if (currentView === "details" && selectedAnimeId !== null) {
-      if (selectedAnimeId === animeId) {
+      if (selectedAnimeId === mediaId && selectedMediaType === mediaType) {
         return;
       }
 
-      setDetailsHistory((current) => [...current, selectedAnimeId]);
+      setDetailsHistory((current) => [
+        ...current,
+        { id: selectedAnimeId, type: selectedMediaType },
+      ]);
     } else {
       setDetailsHistory([]);
       setDetailsReturnView(currentView);
     }
 
-    setSelectedAnimeId(animeId);
+    setSelectedAnimeId(mediaId);
+    setSelectedMediaType(mediaType);
     setCurrentView("details");
+  };
+
+  const handleOpenAnimeDetails = (animeId: number) => {
+    handleOpenMediaDetails(animeId, "ANIME");
   };
 
   const handleOpenMyList = () => {
     if (currentView === "list") {
       if (previousView === "details") {
         setSelectedAnimeId(previousAnimeId);
+        setSelectedMediaType(previousMediaType);
       }
 
       setCurrentView(previousView);
@@ -984,6 +1073,7 @@ function App() {
 
     if (currentView === "details") {
       setPreviousAnimeId(selectedAnimeId);
+      setPreviousMediaType(selectedMediaType);
     } else {
       setPreviousAnimeId(null);
     }
@@ -993,7 +1083,7 @@ function App() {
 
   const handleOpenHome = () => {
     setSearchQuery("");
-    setResults([]);
+    setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
     setCurrentView("home");
     setPreviousView("home");
@@ -1013,6 +1103,7 @@ function App() {
 
     if (currentView === "details") {
       setPreviousAnimeId(selectedAnimeId);
+      setPreviousMediaType(selectedMediaType);
     } else {
       setPreviousAnimeId(null);
     }
@@ -1021,11 +1112,12 @@ function App() {
   };
 
   const handleBackFromDetails = async () => {
-    const previousDetailsAnimeId = detailsHistory.at(-1);
+    const previousDetailsMedia = detailsHistory.at(-1);
 
-    if (previousDetailsAnimeId !== undefined) {
+    if (previousDetailsMedia !== undefined) {
       setDetailsHistory((current) => current.slice(0, -1));
-      setSelectedAnimeId(previousDetailsAnimeId);
+      setSelectedAnimeId(previousDetailsMedia.id);
+      setSelectedMediaType(previousDetailsMedia.type);
       await loadTrackedEntries();
       return;
     }
@@ -1044,7 +1136,7 @@ function App() {
       return;
     }
 
-    setResults([]);
+    setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSearchQuery("");
     setCurrentView("home");
   };
@@ -1099,7 +1191,7 @@ function App() {
                 onClear={() => {
                   searchRequestIdRef.current += 1;
                   setSearchQuery("");
-                  setResults([]);
+                  setResults(EMPTY_MEDIA_SEARCH_RESULTS);
                   setSearchError(null);
                   setIsSearching(false);
                   setSearchResultsVisible(false);
@@ -1127,10 +1219,11 @@ function App() {
 
               <div className="min-h-0 flex-1">
                 {currentView === "details" && selectedAnimeId !== null ? (
-                  <AnimeDetails
-                    animeId={selectedAnimeId}
+                  <MediaDetails
+                    mediaId={selectedAnimeId}
+                    mediaType={selectedMediaType}
                     onBack={handleBackFromDetails}
-                    onSelectAnime={handleOpenAnimeDetails}
+                    onSelectMedia={handleOpenMediaDetails}
                     onListChanged={loadTrackedEntries}
                     onNotify={showSyncToast}
                     titleLanguage={settings.titleLanguage}
@@ -1140,7 +1233,8 @@ function App() {
                   <MyListPage
                     userId={authUser.id}
                     entries={privacySafeTrackedEntries}
-                    onSelectAnime={handleOpenAnimeDetails}
+                    mangaEntries={privacySafeTrackedMangaEntries}
+                    onSelectMedia={handleOpenMediaDetails}
                     onRefreshList={loadTrackedEntries}
                     onListChanged={loadTrackedEntries}
                     onNotify={showSyncToast}
@@ -1198,29 +1292,54 @@ function App() {
                           isRetrying={isSearching}
                           onRetry={handleRetrySearch}
                         />
-                      ) : isSearching && !privacySafeResults.length ? (
+                      ) : isSearching && !visibleSearchResultCount ? (
                         <div className="flex min-h-72 items-center justify-center text-white/55">
                           <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-4">
                             <ArrowPathIcon className="h-5 w-5 animate-spin" />
                             <span className="text-sm">Searching AniList...</span>
                           </div>
                         </div>
-                      ) : searchQuery.trim() && !privacySafeResults.length ? (
+                      ) : searchQuery.trim() && !visibleSearchResultCount ? (
                         <SearchEmptyPanel
                           query={searchQuery.trim()}
                           filteredByAdultContent={
-                            settings.hideAdultContent && results.some((anime) => anime.isAdult)
+                            settings.hideAdultContent && searchResultCount > 0
                           }
                         />
                       ) : (
-                        <ResultsGrid
-                          results={privacySafeResults}
-                          onSelectAnime={handleOpenAnimeDetails}
-                          trackedEntries={privacySafeTrackedEntries}
-                          onQuickAdd={handleQuickAddToList}
-                          onEditEntry={setEditingListEntry}
-                          titleLanguage={settings.titleLanguage}
-                        />
+                        <div className="space-y-12 px-10 pb-10 pt-10">
+                          <SearchResultSection
+                            title="Anime results"
+                            emptyMessage="No anime matches"
+                            results={privacySafeResults.anime}
+                          >
+                            <ResultsGrid
+                              results={privacySafeResults.anime}
+                              onSelectAnime={handleOpenAnimeDetails}
+                              trackedEntries={privacySafeTrackedEntries}
+                              onQuickAdd={handleQuickAddToList}
+                              onEditEntry={setEditingListEntry}
+                              titleLanguage={settings.titleLanguage}
+                            />
+                          </SearchResultSection>
+
+                          <SearchResultSection
+                            title="Manga results"
+                            emptyMessage="No manga matches"
+                            results={privacySafeResults.manga}
+                            description="Manga details and list tracking are being connected next."
+                          >
+                            <ResultsGrid
+                              results={privacySafeResults.manga}
+                              onSelectAnime={(mediaId) =>
+                                handleOpenMediaDetails(mediaId, "MANGA")
+                              }
+                              trackedEntries={privacySafeTrackedEntries}
+                              onEditEntry={setEditingListEntry}
+                              titleLanguage={settings.titleLanguage}
+                            />
+                          </SearchResultSection>
+                        </div>
                       )}
                     </div>
                   </HomePage>
@@ -1294,6 +1413,49 @@ function App() {
 
 export default App;
 
+function SearchResultSection({
+  title,
+  emptyMessage,
+  description,
+  results,
+  children,
+}: {
+  title: string;
+  emptyMessage: string;
+  description?: string;
+  results: SearchMedia[];
+  children: ReactNode;
+}) {
+  return (
+    <section aria-labelledby={`search-${title.toLowerCase().replace(/\s+/g, "-")}`}>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3 border-b border-white/10 pb-4">
+        <div>
+          <div className="flex items-center gap-3">
+            <h2
+              id={`search-${title.toLowerCase().replace(/\s+/g, "-")}`}
+              className="text-lg font-semibold text-white"
+            >
+              {title}
+            </h2>
+            <span className="rounded-full border border-white/10 bg-white/[0.05] px-2.5 py-1 text-xs font-semibold text-white/55">
+              {results.length}
+            </span>
+          </div>
+          {description && <p className="mt-1.5 text-xs text-white/40">{description}</p>}
+        </div>
+      </div>
+
+      {results.length ? (
+        children
+      ) : (
+        <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.025] px-5 py-8 text-center text-sm text-white/40">
+          {emptyMessage}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function SearchErrorPanel({
   message,
   isRetrying,
@@ -1339,7 +1501,9 @@ function SearchEmptyPanel({
           <MagnifyingGlassIcon className="h-7 w-7" />
         </div>
         <h2 className="mt-5 text-lg font-semibold">
-          {filteredByAdultContent ? "Results hidden by the 18+ filter" : "No anime found"}
+          {filteredByAdultContent
+            ? "Results hidden by the 18+ filter"
+            : "No anime or manga found"}
         </h2>
         <p className="mt-2 text-sm leading-6 text-white/55">
           {filteredByAdultContent

@@ -170,6 +170,64 @@ db.prepare(
 
 db.prepare(
   `
+  CREATE TABLE IF NOT EXISTS manga (
+    id INTEGER PRIMARY KEY,
+    title_romaji TEXT,
+    title_english TEXT,
+    title_native TEXT,
+    title_preferred TEXT,
+    cover_image_large TEXT,
+    banner_image TEXT,
+    is_adult INTEGER,
+    chapters INTEGER,
+    volumes INTEGER,
+    format TEXT,
+    status TEXT,
+    average_score INTEGER,
+    mean_score INTEGER,
+    popularity INTEGER,
+    favourites INTEGER,
+    source TEXT,
+    country_of_origin TEXT,
+    start_date TEXT,
+    end_date TEXT,
+    site_url TEXT,
+    genres TEXT NOT NULL DEFAULT '[]',
+    recommendations TEXT NOT NULL DEFAULT '[]',
+    details_json TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    cached_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  )
+`
+).run();
+
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS user_manga_lists (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER NOT NULL,
+    manga_id INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'planned',
+    is_favorite INTEGER NOT NULL DEFAULT 0,
+    repeat_count INTEGER NOT NULL DEFAULT 0,
+    is_rereading INTEGER NOT NULL DEFAULT 0,
+    progress INTEGER NOT NULL DEFAULT 0,
+    volume_progress INTEGER NOT NULL DEFAULT 0,
+    score REAL,
+    notes TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE,
+    UNIQUE(user_id, manga_id)
+  )
+`
+).run();
+
+db.prepare(
+  `
   CREATE TABLE IF NOT EXISTS anime_external_ids (
     provider TEXT NOT NULL,
     external_id TEXT NOT NULL,
@@ -256,7 +314,8 @@ db.prepare(
   CREATE TABLE IF NOT EXISTS sync_queue (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    anime_id INTEGER NOT NULL,
+    media_type TEXT NOT NULL DEFAULT 'ANIME',
+    media_id INTEGER NOT NULL,
     operation TEXT NOT NULL,
     payload_json TEXT NOT NULL,
     changed_fields_json TEXT NOT NULL DEFAULT '[]',
@@ -267,8 +326,7 @@ db.prepare(
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (anime_id) REFERENCES anime(id) ON DELETE CASCADE,
-    UNIQUE(user_id, anime_id, operation)
+    UNIQUE(user_id, media_type, media_id, operation)
   )
 `
 ).run();
@@ -278,18 +336,92 @@ db.prepare(
   CREATE TABLE IF NOT EXISTS sync_history (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER NOT NULL,
-    anime_id INTEGER,
-    anime_title TEXT,
+    media_type TEXT NOT NULL DEFAULT 'ANIME',
+    media_id INTEGER,
+    media_title TEXT,
     operation TEXT NOT NULL,
     changed_fields_json TEXT NOT NULL DEFAULT '[]',
     status TEXT NOT NULL,
     message TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
-    FOREIGN KEY (anime_id) REFERENCES anime(id) ON DELETE SET NULL
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
   )
 `
 ).run();
+
+function migrateSyncTablesToMediaAwareSchema() {
+  const queueColumns = db.prepare('PRAGMA table_info(sync_queue)').all();
+  if (!queueColumns.some((column) => column.name === 'media_type')) {
+    db.transaction(() => {
+      db.prepare('ALTER TABLE sync_queue RENAME TO sync_queue_anime_legacy').run();
+      db.prepare(`
+        CREATE TABLE sync_queue (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          media_type TEXT NOT NULL DEFAULT 'ANIME',
+          media_id INTEGER NOT NULL,
+          operation TEXT NOT NULL,
+          payload_json TEXT NOT NULL,
+          changed_fields_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL DEFAULT 'pending',
+          attempts INTEGER NOT NULL DEFAULT 0,
+          last_error TEXT,
+          next_attempt_at TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+          UNIQUE(user_id, media_type, media_id, operation)
+        )
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_queue (
+          id, user_id, media_type, media_id, operation, payload_json,
+          changed_fields_json, status, attempts, last_error, next_attempt_at,
+          created_at, updated_at
+        )
+        SELECT id, user_id, 'ANIME', anime_id, operation, payload_json,
+          changed_fields_json, status, attempts, last_error, next_attempt_at,
+          created_at, updated_at
+        FROM sync_queue_anime_legacy
+      `).run();
+      db.prepare('DROP TABLE sync_queue_anime_legacy').run();
+    })();
+  }
+
+  const historyColumns = db.prepare('PRAGMA table_info(sync_history)').all();
+  if (!historyColumns.some((column) => column.name === 'media_type')) {
+    db.transaction(() => {
+      db.prepare('ALTER TABLE sync_history RENAME TO sync_history_anime_legacy').run();
+      db.prepare(`
+        CREATE TABLE sync_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL,
+          media_type TEXT NOT NULL DEFAULT 'ANIME',
+          media_id INTEGER,
+          media_title TEXT,
+          operation TEXT NOT NULL,
+          changed_fields_json TEXT NOT NULL DEFAULT '[]',
+          status TEXT NOT NULL,
+          message TEXT,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+        )
+      `).run();
+      db.prepare(`
+        INSERT INTO sync_history (
+          id, user_id, media_type, media_id, media_title, operation,
+          changed_fields_json, status, message, created_at
+        )
+        SELECT id, user_id, 'ANIME', anime_id, anime_title, operation,
+          changed_fields_json, status, message, created_at
+        FROM sync_history_anime_legacy
+      `).run();
+      db.prepare('DROP TABLE sync_history_anime_legacy').run();
+    })();
+  }
+}
+
+migrateSyncTablesToMediaAwareSchema();
 
 db.prepare(
   `
@@ -854,13 +986,14 @@ const updateMalAccountImportTimeStmt = db.prepare(`
 const getSyncQueueJobStmt = db.prepare(`
   SELECT *
   FROM sync_queue
-  WHERE user_id = ? AND anime_id = ? AND operation = ?
+  WHERE user_id = ? AND media_type = ? AND media_id = ? AND operation = ?
 `);
 
 const upsertSyncQueueJobStmt = db.prepare(`
   INSERT INTO sync_queue (
     user_id,
-    anime_id,
+    media_type,
+    media_id,
     operation,
     payload_json,
     changed_fields_json,
@@ -869,8 +1002,8 @@ const upsertSyncQueueJobStmt = db.prepare(`
     last_error,
     next_attempt_at,
     updated_at
-  ) VALUES (?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, CURRENT_TIMESTAMP)
-  ON CONFLICT(user_id, anime_id, operation) DO UPDATE SET
+  ) VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, NULL, NULL, CURRENT_TIMESTAMP)
+  ON CONFLICT(user_id, media_type, media_id, operation) DO UPDATE SET
     payload_json = excluded.payload_json,
     changed_fields_json = excluded.changed_fields_json,
     status = 'pending',
@@ -882,11 +1015,12 @@ const upsertSyncQueueJobStmt = db.prepare(`
 const getDueSyncQueueJobsStmt = db.prepare(`
   SELECT
     q.*,
-    a.title_preferred,
-    a.title_english,
-    a.title_romaji
+    COALESCE(a.title_preferred, m.title_preferred) AS title_preferred,
+    COALESCE(a.title_english, m.title_english) AS title_english,
+    COALESCE(a.title_romaji, m.title_romaji) AS title_romaji
   FROM sync_queue q
-  LEFT JOIN anime a ON a.id = q.anime_id
+  LEFT JOIN anime a ON q.media_type = 'ANIME' AND a.id = q.media_id
+  LEFT JOIN manga m ON q.media_type = 'MANGA' AND m.id = q.media_id
   WHERE q.user_id = ?
     AND (q.status = 'pending' OR q.status = 'failed')
     AND (q.next_attempt_at IS NULL OR q.next_attempt_at <= CURRENT_TIMESTAMP)
@@ -897,11 +1031,12 @@ const getDueSyncQueueJobsStmt = db.prepare(`
 const getRunnableSyncQueueJobsStmt = db.prepare(`
   SELECT
     q.*,
-    a.title_preferred,
-    a.title_english,
-    a.title_romaji
+    COALESCE(a.title_preferred, m.title_preferred) AS title_preferred,
+    COALESCE(a.title_english, m.title_english) AS title_english,
+    COALESCE(a.title_romaji, m.title_romaji) AS title_romaji
   FROM sync_queue q
-  LEFT JOIN anime a ON a.id = q.anime_id
+  LEFT JOIN anime a ON q.media_type = 'ANIME' AND a.id = q.media_id
+  LEFT JOIN manga m ON q.media_type = 'MANGA' AND m.id = q.media_id
   WHERE q.user_id = ?
     AND (q.status = 'pending' OR q.status = 'failed')
   ORDER BY q.updated_at ASC
@@ -911,11 +1046,12 @@ const getRunnableSyncQueueJobsStmt = db.prepare(`
 const getSyncQueueItemsStmt = db.prepare(`
   SELECT
     q.*,
-    a.title_preferred,
-    a.title_english,
-    a.title_romaji
+    COALESCE(a.title_preferred, m.title_preferred) AS title_preferred,
+    COALESCE(a.title_english, m.title_english) AS title_english,
+    COALESCE(a.title_romaji, m.title_romaji) AS title_romaji
   FROM sync_queue q
-  LEFT JOIN anime a ON a.id = q.anime_id
+  LEFT JOIN anime a ON q.media_type = 'ANIME' AND a.id = q.media_id
+  LEFT JOIN manga m ON q.media_type = 'MANGA' AND m.id = q.media_id
   WHERE q.user_id = ?
   ORDER BY q.updated_at DESC
   LIMIT ?
@@ -945,27 +1081,48 @@ const deleteSyncQueueJobStmt = db.prepare(`
 
 const deleteSyncQueueJobByEntryStmt = db.prepare(`
   DELETE FROM sync_queue
-  WHERE user_id = ? AND anime_id = ? AND operation = ?
+  WHERE user_id = ? AND media_type = ? AND media_id = ? AND operation = ?
 `);
 
 const insertSyncHistoryStmt = db.prepare(`
   INSERT INTO sync_history (
     user_id,
-    anime_id,
-    anime_title,
+    media_type,
+    media_id,
+    media_title,
     operation,
     changed_fields_json,
     status,
     message
-  ) VALUES (?, ?, ?, ?, ?, ?, ?)
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const getSyncHistoryItemsStmt = db.prepare(`
-  SELECT *
-  FROM sync_history
-  WHERE user_id = ? AND status = ?
-  ORDER BY created_at DESC
+  SELECT
+    h.*,
+    COALESCE(a.title_preferred, m.title_preferred) AS title_preferred,
+    COALESCE(a.title_english, m.title_english) AS title_english,
+    COALESCE(a.title_romaji, m.title_romaji) AS title_romaji,
+    COALESCE(a.title_native, m.title_native) AS title_native
+  FROM sync_history h
+  LEFT JOIN anime a
+    ON h.media_type = 'ANIME'
+    AND h.media_id = a.id
+    AND h.operation NOT LIKE '%_unmapped'
+  LEFT JOIN manga m
+    ON h.media_type = 'MANGA'
+    AND h.media_id = m.id
+    AND h.operation NOT LIKE '%_unmapped'
+  WHERE h.user_id = ? AND h.status = ?
+  ORDER BY h.created_at DESC, h.id DESC
   LIMIT ?
+`);
+
+const hasCompletedSyncHistoryStmt = db.prepare(`
+  SELECT 1
+  FROM sync_history
+  WHERE user_id = ? AND media_type = ? AND media_id = ? AND operation = ? AND status = 'completed'
+  LIMIT 1
 `);
 
 const getUserAnimeEntryStmt = db.prepare(`
@@ -1082,6 +1239,93 @@ const removeUserAnimeEntryStmt = db.prepare(`
 const clearUserAnimeListStmt = db.prepare(`
   DELETE FROM user_anime_lists
   WHERE user_id = ?
+`);
+
+const upsertMangaStmt = db.prepare(`
+  INSERT INTO manga (
+    id, title_romaji, title_english, title_native, title_preferred,
+    cover_image_large, banner_image, is_adult, chapters, volumes,
+    format, status, average_score, mean_score, popularity, favourites,
+    source, country_of_origin, start_date, end_date, site_url, genres,
+    recommendations, details_json, updated_at, cached_at
+  ) VALUES (
+    @id, @title_romaji, @title_english, @title_native, @title_preferred,
+    @cover_image_large, @banner_image, @is_adult, @chapters, @volumes,
+    @format, @status, @average_score, @mean_score, @popularity, @favourites,
+    @source, @country_of_origin, @start_date, @end_date, @site_url, @genres,
+    @recommendations, @details_json, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+  )
+  ON CONFLICT(id) DO UPDATE SET
+    title_romaji = excluded.title_romaji,
+    title_english = excluded.title_english,
+    title_native = excluded.title_native,
+    title_preferred = excluded.title_preferred,
+    cover_image_large = excluded.cover_image_large,
+    banner_image = excluded.banner_image,
+    is_adult = excluded.is_adult,
+    chapters = excluded.chapters,
+    volumes = excluded.volumes,
+    format = excluded.format,
+    status = excluded.status,
+    average_score = excluded.average_score,
+    mean_score = excluded.mean_score,
+    popularity = excluded.popularity,
+    favourites = excluded.favourites,
+    source = excluded.source,
+    country_of_origin = excluded.country_of_origin,
+    start_date = excluded.start_date,
+    end_date = excluded.end_date,
+    site_url = excluded.site_url,
+    genres = excluded.genres,
+    recommendations = excluded.recommendations,
+    details_json = excluded.details_json,
+    updated_at = CURRENT_TIMESTAMP,
+    cached_at = CURRENT_TIMESTAMP
+`);
+
+const getMangaByIdStmt = db.prepare(`SELECT * FROM manga WHERE id = ?`);
+const getUserMangaEntryStmt = db.prepare(`
+  SELECT l.*, l.manga_id AS anime_id, l.is_rereading AS is_rewatching,
+    'MANGA' AS media_type,
+    m.title_romaji, m.title_english, m.title_native, m.title_preferred,
+    m.cover_image_large, m.banner_image, m.is_adult, m.chapters,
+    m.chapters AS episodes, m.volumes, m.format, m.status AS anime_status,
+    m.average_score, m.mean_score, m.popularity, m.favourites,
+    m.source, m.country_of_origin, m.start_date, m.end_date, m.genres,
+    m.recommendations, m.details_json
+  FROM user_manga_lists l
+  JOIN manga m ON m.id = l.manga_id
+  WHERE l.user_id = ? AND l.manga_id = ?
+`);
+const getUserMangaListStmt = db.prepare(`
+  SELECT l.*, l.manga_id AS anime_id, l.is_rereading AS is_rewatching,
+    'MANGA' AS media_type,
+    m.title_romaji, m.title_english, m.title_native, m.title_preferred,
+    m.cover_image_large, m.banner_image, m.is_adult, m.chapters,
+    m.chapters AS episodes, m.volumes, m.format, m.status AS anime_status,
+    m.average_score, m.mean_score, m.popularity, m.favourites,
+    m.source, m.country_of_origin, m.start_date, m.end_date, m.genres,
+    m.recommendations, m.details_json
+  FROM user_manga_lists l
+  JOIN manga m ON m.id = l.manga_id
+  WHERE l.user_id = ?
+  ORDER BY l.updated_at DESC
+`);
+const addUserMangaEntryStmt = db.prepare(`
+  INSERT INTO user_manga_lists (
+    user_id, manga_id, status, is_favorite, repeat_count, is_rereading,
+    progress, volume_progress, score, notes, started_at, completed_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const updateUserMangaEntryStmt = db.prepare(`
+  UPDATE user_manga_lists SET
+    status = ?, is_favorite = ?, repeat_count = ?, is_rereading = ?,
+    progress = ?, volume_progress = ?, score = ?, notes = ?,
+    started_at = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+  WHERE user_id = ? AND manga_id = ?
+`);
+const removeUserMangaEntryStmt = db.prepare(`
+  DELETE FROM user_manga_lists WHERE user_id = ? AND manga_id = ?
 `);
 
 const deleteAnimeTagsStmt = db.prepare(`
@@ -1373,6 +1617,126 @@ function updateLastLogin(id) {
   updateLastLoginStmt.run(id);
 }
 
+function saveManga(media) {
+  if (!media?.id) return null;
+
+  upsertMangaStmt.run({
+    id: Number(media.id),
+    title_romaji: media.title?.romaji ?? null,
+    title_english: media.title?.english ?? null,
+    title_native: media.title?.native ?? null,
+    title_preferred: media.title?.userPreferred ?? null,
+    cover_image_large: media.coverImage?.extraLarge ?? media.coverImage?.large ?? null,
+    banner_image: media.bannerImage ?? null,
+    is_adult:
+      media.isAdult === null || media.isAdult === undefined ? null : media.isAdult ? 1 : 0,
+    chapters: media.chapters ?? null,
+    volumes: media.volumes ?? null,
+    format: media.format ?? null,
+    status: media.status ?? null,
+    average_score: media.averageScore ?? null,
+    mean_score: media.meanScore ?? null,
+    popularity: media.popularity ?? null,
+    favourites: media.favourites ?? null,
+    source: typeof media.source === 'string' ? media.source : null,
+    country_of_origin: media.countryOfOrigin ?? null,
+    start_date: media.startDate ? JSON.stringify(media.startDate) : null,
+    end_date: media.endDate ? JSON.stringify(media.endDate) : null,
+    site_url: media.siteUrl ?? null,
+    genres: JSON.stringify(media.genres ?? []),
+    recommendations: JSON.stringify(media.recommendations?.nodes ?? []),
+    details_json: JSON.stringify(media),
+  });
+
+  return getMangaById(Number(media.id));
+}
+
+function mapMangaRow(row) {
+  if (!row) return null;
+  return {
+    ...row,
+    genres: safeJsonParse(row.genres, []),
+    recommendations: safeJsonParse(row.recommendations, []),
+    details: safeJsonParse(row.details_json, null),
+  };
+}
+
+function getMangaById(id) {
+  return mapMangaRow(getMangaByIdStmt.get(Number(id)));
+}
+
+function getUserMangaEntry(userId, mangaId) {
+  return mapMangaRow(getUserMangaEntryStmt.get(userId, mangaId));
+}
+
+function getUserMangaList(userId) {
+  return getUserMangaListStmt.all(userId).map(mapMangaRow);
+}
+
+function addUserMangaEntry({
+  userId,
+  mangaId,
+  status,
+  isFavorite,
+  repeatCount,
+  isRereading,
+  progress,
+  volumeProgress,
+  score,
+  notes,
+  startedAt,
+  completedAt,
+}) {
+  return addUserMangaEntryStmt.run(
+    userId,
+    mangaId,
+    status,
+    isFavorite ? 1 : 0,
+    repeatCount,
+    isRereading ? 1 : 0,
+    progress,
+    volumeProgress,
+    score,
+    notes,
+    startedAt,
+    completedAt
+  ).lastInsertRowid;
+}
+
+function updateUserMangaEntry({
+  userId,
+  mangaId,
+  status,
+  isFavorite,
+  repeatCount,
+  isRereading,
+  progress,
+  volumeProgress,
+  score,
+  notes,
+  startedAt,
+  completedAt,
+}) {
+  updateUserMangaEntryStmt.run(
+    status,
+    isFavorite ? 1 : 0,
+    repeatCount,
+    isRereading ? 1 : 0,
+    progress,
+    volumeProgress,
+    score,
+    notes,
+    startedAt,
+    completedAt,
+    userId,
+    mangaId
+  );
+}
+
+function removeUserMangaEntry(userId, mangaId) {
+  return removeUserMangaEntryStmt.run(userId, mangaId).changes;
+}
+
 function getUserAnimeEntry(userId, animeId) {
   return getUserAnimeEntryStmt.get(userId, animeId);
 }
@@ -1640,8 +2004,15 @@ function mergeChangedFields(existingFields, nextFields) {
   return Array.from(byField.values()).filter((change) => change.from !== change.to);
 }
 
-function enqueueSyncJob({ userId, animeId, operation, payload, changedFields }) {
-  const existing = getSyncQueueJobStmt.get(userId, animeId, operation);
+function enqueueSyncJob({ userId, animeId, mangaId, mediaType = 'ANIME', mediaId, operation, payload, changedFields }) {
+  const normalizedMediaType = mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+  const normalizedMediaId = Number(mediaId ?? mangaId ?? animeId);
+  const existing = getSyncQueueJobStmt.get(
+    userId,
+    normalizedMediaType,
+    normalizedMediaId,
+    operation
+  );
   const existingFields = existing
     ? safeJsonParse(existing.changed_fields_json, [])
     : [];
@@ -1653,17 +2024,18 @@ function enqueueSyncJob({ userId, animeId, operation, payload, changedFields }) 
 
   upsertSyncQueueJobStmt.run(
     userId,
-    animeId,
+    normalizedMediaType,
+    normalizedMediaId,
     operation,
     JSON.stringify(payload),
     JSON.stringify(mergedFields)
   );
 
-  return getSyncQueueJobStmt.get(userId, animeId, operation);
+  return getSyncQueueJobStmt.get(userId, normalizedMediaType, normalizedMediaId, operation);
 }
 
-function getSyncQueueJob(userId, animeId, operation) {
-  const row = getSyncQueueJobStmt.get(userId, animeId, operation);
+function getSyncQueueJob(userId, mediaId, operation, mediaType = 'ANIME') {
+  const row = getSyncQueueJobStmt.get(userId, mediaType, mediaId, operation);
   return row ? mapSyncQueueRow(row) : null;
 }
 
@@ -1690,21 +2062,20 @@ function deleteSyncQueueJob(id) {
   deleteSyncQueueJobStmt.run(id);
 }
 
-function deleteSyncQueueJobByEntry(userId, animeId, operation) {
-  deleteSyncQueueJobByEntryStmt.run(userId, animeId, operation);
+function deleteSyncQueueJobByEntry(userId, mediaId, operation, mediaType = 'ANIME') {
+  deleteSyncQueueJobByEntryStmt.run(userId, mediaType, mediaId, operation);
 }
 
-function insertSyncHistory({ userId, animeId, animeTitle, operation, changedFields, status, message }) {
-  const numericAnimeId = Number(animeId);
-  const safeAnimeId =
-    Number.isInteger(numericAnimeId) && getAnimeByIdStmt.get(numericAnimeId)
-      ? numericAnimeId
-      : null;
+function insertSyncHistory({ userId, animeId, mangaId, mediaType = 'ANIME', mediaId, animeTitle, mediaTitle, operation, changedFields, status, message }) {
+  const normalizedMediaType = mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+  const numericMediaId = Number(mediaId ?? mangaId ?? animeId);
+  const safeMediaId = Number.isInteger(numericMediaId) ? numericMediaId : null;
 
   insertSyncHistoryStmt.run(
     userId,
-    safeAnimeId,
-    animeTitle,
+    normalizedMediaType,
+    safeMediaId,
+    mediaTitle ?? animeTitle,
     operation,
     JSON.stringify(changedFields || []),
     status,
@@ -1715,16 +2086,30 @@ function insertSyncHistory({ userId, animeId, animeTitle, operation, changedFiel
 function getSyncHistoryItems(userId, status, limit = 50) {
   return getSyncHistoryItemsStmt.all(userId, status, limit).map((row) => ({
     ...row,
+    anime_id: row.media_type === 'ANIME' ? row.media_id : null,
+    manga_id: row.media_type === 'MANGA' ? row.media_id : null,
+    anime_title: row.media_title,
     changedFields: safeJsonParse(row.changed_fields_json, []),
   }));
 }
 
+function hasCompletedSyncHistory(userId, mediaType, mediaId, operation) {
+  return Boolean(hasCompletedSyncHistoryStmt.get(userId, mediaType, mediaId, operation));
+}
+
 function mapSyncQueueRow(row) {
+  const mediaType = row.media_type === 'MANGA' ? 'MANGA' : 'ANIME';
   return {
     ...row,
+    anime_id: mediaType === 'ANIME' ? row.media_id : null,
+    manga_id: mediaType === 'MANGA' ? row.media_id : null,
     payload: safeJsonParse(row.payload_json, {}),
     changedFields: safeJsonParse(row.changed_fields_json, []),
-    animeTitle: row.title_preferred || row.title_english || row.title_romaji || `Anime #${row.anime_id}`,
+    animeTitle:
+      row.title_preferred ||
+      row.title_english ||
+      row.title_romaji ||
+      `${mediaType === 'MANGA' ? 'Manga' : 'Anime'} #${row.media_id}`,
   };
 }
 
@@ -1732,9 +2117,11 @@ module.exports = {
   db,
   dbPath,
   saveAnime,
+  saveManga,
   saveAnimeSummary,
   updateAnimeAdultFlag,
   getAnimeById,
+  getMangaById,
   getPersonDetails,
   savePersonDetails,
   createUser,
@@ -1751,6 +2138,11 @@ module.exports = {
   updateUserAnimeEntry,
   removeUserAnimeEntry,
   clearUserAnimeList,
+  getUserMangaEntry,
+  getUserMangaList,
+  addUserMangaEntry,
+  updateUserMangaEntry,
+  removeUserMangaEntry,
   updateTutorialDismissed,
   getAppSetting,
   setAppSetting,
@@ -1782,4 +2174,5 @@ module.exports = {
   deleteSyncQueueJobByEntry,
   insertSyncHistory,
   getSyncHistoryItems,
+  hasCompletedSyncHistory,
 };

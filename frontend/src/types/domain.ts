@@ -1,4 +1,5 @@
 export type ListStatus = "planned" | "watching" | "completed" | "paused" | "dropped";
+export type MediaType = "ANIME" | "MANGA";
 export type ThemeAccent = "violet" | "rose" | "amber" | "emerald" | "custom";
 export type TitleLanguage = "userPreferred" | "english" | "romaji" | "native";
 export type CardDensity = "comfortable" | "balanced" | "compact";
@@ -100,12 +101,15 @@ export type MediaSourceReference = {
 
 export type AnimeMedia = {
   id: number;
-  type?: "ANIME" | "MANGA" | string | null;
+  idMal?: number | null;
+  type?: MediaType | string | null;
   isAdult?: boolean;
   title: AnimeTitle;
   coverImage: { extraLarge?: string | null; large: string; medium?: string | null };
   bannerImage?: string | null;
   episodes?: number | null;
+  chapters?: number | null;
+  volumes?: number | null;
   format?: string | null;
   status?: string | null;
   season?: string | null;
@@ -140,6 +144,15 @@ export type SearchAnime = AnimeMedia & {
   coverImage: { extraLarge?: string | null; large: string };
 };
 
+export type SearchMedia = Omit<SearchAnime, "type"> & {
+  type: MediaType;
+};
+
+export type MediaSearchResults = {
+  anime: SearchMedia[];
+  manga: SearchMedia[];
+};
+
 export type DiscoverShelfResult = {
   id?: string;
   title?: string;
@@ -168,12 +181,15 @@ export type RecommendationNode = {
 
 export type RecommendationMedia = {
   id: number;
+  type?: MediaType | string | null;
   title?: AnimeTitle | null;
   coverImage?: AnimeImage | null;
   description?: string | null;
   format?: string | null;
   status?: string | null;
   episodes?: number | null;
+  chapters?: number | null;
+  volumes?: number | null;
   season?: string | null;
   seasonYear?: number | null;
   averageScore?: number | null;
@@ -218,6 +234,7 @@ export type EditableListEntry = Omit<LocalListEntry, "anime_id"> & {
 };
 
 export type TrackedAnimeEntry = LocalListEntry & {
+  media_type?: "ANIME";
   is_adult?: number | boolean | null;
   hidden_by_adult_filter?: boolean;
   title_romaji?: string | null;
@@ -243,6 +260,55 @@ export type TrackedAnimeEntry = LocalListEntry & {
   details?: AnimeMedia | null;
 };
 
+export type LocalMangaListEntry = {
+  manga_id: number;
+  status: ListStatus;
+  is_favorite?: number | boolean;
+  repeat_count?: number;
+  is_rereading?: number | boolean;
+  progress: number;
+  volume_progress: number;
+  score: number | null;
+  notes: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+};
+
+export type TrackedMangaEntry = LocalMangaListEntry & {
+  media_type: "MANGA";
+  anime_id: number;
+  is_rewatching?: number | boolean;
+  is_adult?: number | boolean | null;
+  hidden_by_adult_filter?: boolean;
+  title_romaji?: string | null;
+  title_english?: string | null;
+  title_native?: string | null;
+  title_preferred?: string | null;
+  cover_image_large?: string | null;
+  banner_image?: string | null;
+  chapters?: number | null;
+  episodes?: number | null;
+  volumes?: number | null;
+  format?: string | null;
+  anime_status?: string | null;
+  average_score?: number | null;
+  mean_score?: number | null;
+  popularity?: number | null;
+  favourites?: number | null;
+  source?: string | null;
+  country_of_origin?: string | null;
+  genres?: string[];
+  recommendations?: RecommendationNode[];
+  details?: AnimeMedia | null;
+};
+
+export type StoredManga = Omit<TrackedMangaEntry, keyof LocalMangaListEntry> & {
+  manga_id: number;
+  external_ids?: { anilist?: string | null; mal?: string | null };
+};
+
 export type StoredAnime = Omit<
   TrackedAnimeEntry,
   keyof LocalListEntry | "status" | "recommendations"
@@ -259,7 +325,10 @@ export type StoredAnime = Omit<
 };
 
 export type DeletedListEntry = {
-  anime_id: number;
+  anime_id?: number;
+  manga_id?: number;
+  media_type?: MediaType;
+  external_ids?: { anilist?: string | null; mal?: string | null };
   title?: string | null;
   deleted_at?: string | null;
   status?: ListStatus;
@@ -269,6 +338,8 @@ export type DeletedListEntry = {
 export type SyncActivityItem = {
   id: number;
   anime_id?: number | null;
+  manga_id?: number | null;
+  media_type?: MediaType;
   animeTitle?: string | null;
   operation: string;
   status: string;
@@ -279,6 +350,9 @@ export type SyncActivityItem = {
 
 export type ImportPreviewItem = {
   animeId: number;
+  mangaId?: number;
+  mediaId?: number;
+  mediaType?: "ANIME" | "MANGA";
   status: string;
   progress: number;
   score: number | null;
@@ -289,6 +363,9 @@ export type ImportPreviewItem = {
   title: AnimeTitle;
   coverImage?: AnimeImage | null;
   episodes?: number | null;
+  chapters?: number | null;
+  volumes?: number | null;
+  volumeProgress?: number;
   format?: string | null;
   season?: string | null;
   seasonYear?: number | null;
@@ -301,8 +378,30 @@ export type ImportPreviewItem = {
   media?: AnimeMedia | null;
 };
 
+export type MangaImportItem = {
+  mangaId: number;
+  mediaType: "MANGA";
+  status: string;
+  progress: number;
+  volumeProgress: number;
+  score: number | null;
+  notes: string | null;
+  startedAt?: string | PersonDate | null;
+  completedAt?: string | PersonDate | null;
+  repeatCount?: number;
+  isRereading?: boolean;
+  title: AnimeTitle;
+  coverImage?: AnimeImage | null;
+  chapters?: number | null;
+  volumes?: number | null;
+  format?: string | null;
+  source?: Record<string, unknown> | null;
+  media?: AnimeMedia | null;
+};
+
 export type ImportPayload = {
   localEntries?: ImportPreviewItem[];
+  localMangaEntries?: MangaImportItem[];
   preview?: { groups?: Array<{ status: string; items: ImportPreviewItem[] }> };
   activity?: SyncActivityItem[];
   [key: string]: unknown;
@@ -332,7 +431,9 @@ export type SaveListEntryPayload = {
   isFavorite?: boolean;
   repeatCount?: number;
   isRewatching?: boolean;
+  isRereading?: boolean;
   progress?: number;
+  volumeProgress?: number;
   score?: number | string | null;
   notes?: string | null;
   startedAt?: string | null;
@@ -348,5 +449,7 @@ export type SeenaryBackup = {
     settings?: unknown;
     anime?: Record<string, StoredAnime>;
     entries?: Record<string, LocalListEntry>;
+    manga?: Record<string, StoredManga>;
+    mangaEntries?: Record<string, LocalMangaListEntry>;
   };
 };

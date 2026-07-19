@@ -134,6 +134,7 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
   let skipped = 0;
   let skippedMissingStatus = 0;
   let skippedNoMatch = 0;
+  const mappingFailures = [];
 
   for (const [index, item] of entries.entries()) {
     const node = item?.node;
@@ -150,6 +151,12 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
     if (!node?.id || !status) {
       skipped += 1;
       skippedMissingStatus += 1;
+      mappingFailures.push({
+        malAnimeId: node?.id ?? null,
+        title: node?.title || `MAL anime #${node?.id || index + 1}`,
+        reason: 'missing_status',
+        message: 'The MyAnimeList entry has no supported list status.',
+      });
       emitProgress({
         stage: 'mapping',
         current: index + 1,
@@ -164,6 +171,13 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
     if (!media?.id) {
       skipped += 1;
       skippedNoMatch += 1;
+      mappingFailures.push({
+        malAnimeId: node.id,
+        title: node.title,
+        reason: 'no_one_to_one_match',
+        message:
+          'No safe one-to-one AniList match was found. The providers may group this title differently.',
+      });
       emitProgress({
         stage: 'mapping',
         current: index + 1,
@@ -226,6 +240,7 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
     skipped,
     skippedMissingStatus,
     skippedNoMatch,
+    mappingFailures,
     sourceUsername: malList?.userName || '@me',
   };
 }
@@ -239,6 +254,8 @@ function buildMalImportPreview(mappedList) {
     for (const entry of list.entries || []) {
       grouped[localStatus].push({
         animeId: entry.media.id,
+        mediaId: entry.media.id,
+        mediaType: 'ANIME',
         status: localStatus,
         progress: entry.progress ?? 0,
         score: entry.score ?? null,
@@ -274,8 +291,10 @@ function buildMalImportPreview(mappedList) {
     skipped: mappedList.skipped,
     skippedMissingStatus: mappedList.skippedMissingStatus,
     skippedNoMatch: mappedList.skippedNoMatch,
+    mappingFailures: mappedList.mappingFailures,
     groups: IMPORT_STATUS_ORDER.map((status) => ({
       status,
+      mediaType: 'ANIME',
       items: grouped[status],
     })),
   };
@@ -297,6 +316,8 @@ async function importMalEntries(currentSession, malList, options = {}) {
   const result = importAniListEntries(currentSession, mappedList.collection, mappedList.sourceUsername, {
     selectedStatuses: options.selectedStatuses,
     selectedAnimeIds: options.selectedAnimeIds,
+    selectionProvided: options.selectionProvided,
+    sourceProvider: options.sourceProvider,
     onProgress: options.onImportProgress,
   });
 
@@ -305,6 +326,7 @@ async function importMalEntries(currentSession, malList, options = {}) {
     result.summary.skipped += mappedList.skipped;
     result.summary.mapped = mappedList.mapped;
     result.summary.unmapped = mappedList.skipped;
+    result.summary.mappingFailures = mappedList.mappingFailures;
   }
 
   return {

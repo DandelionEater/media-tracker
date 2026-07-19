@@ -199,6 +199,7 @@ async function refreshAccessToken(refreshToken) {
 
 async function malRequest(path, { accessToken, method = 'GET', body = null, query = null } = {}) {
   const url = new URL(`${MAL_API_URL}${path}`);
+  const clientId = accessToken ? getClientId() : requireClientId();
 
   for (const [key, value] of Object.entries(query || {})) {
     if (value !== null && value !== undefined && value !== '') {
@@ -210,6 +211,7 @@ async function malRequest(path, { accessToken, method = 'GET', body = null, quer
     method,
     headers: {
       Accept: 'application/json',
+      ...(clientId ? { 'X-MAL-CLIENT-ID': clientId } : {}),
       ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
     },
@@ -239,6 +241,53 @@ async function getViewerAnimeList(accessToken, options = {}) {
   });
 }
 
+async function getViewerMangaList(accessToken, options = {}) {
+  return await getUserMangaList('@me', {
+    ...options,
+    accessToken,
+  });
+}
+
+async function getUserMangaList(username, options = {}) {
+  const limit = Math.min(Math.max(Number(options.limit || 100), 1), 1000);
+  const fields = [
+    'id',
+    'title',
+    'main_picture',
+    'alternative_titles',
+    'start_date',
+    'end_date',
+    'synopsis',
+    'mean',
+    'rank',
+    'popularity',
+    'num_chapters',
+    'num_volumes',
+    'media_type',
+    'status',
+    'genres',
+    'list_status{status,score,num_chapters_read,num_volumes_read,is_rereading,num_times_reread,start_date,finish_date,comments}',
+  ].join(',');
+  const data = [];
+  let nextUrl = null;
+  let offset = 0;
+
+  do {
+    const page = nextUrl
+      ? await fetchNextPage(nextUrl, options.accessToken)
+      : await malRequestWithRetry(`/users/${encodeURIComponent(username)}/mangalist`, {
+          accessToken: options.accessToken,
+          query: { fields, limit, offset, nsfw: 'true' },
+        });
+
+    data.push(...(page?.data || []));
+    nextUrl = page?.paging?.next || null;
+    offset += limit;
+  } while (nextUrl && data.length < (options.maxEntries || 5000));
+
+  return { userName: username, data };
+}
+
 async function getUserAnimeList(username, options = {}) {
   const limit = Math.min(Math.max(Number(options.limit || 100), 1), 1000);
   const fields = [
@@ -256,7 +305,7 @@ async function getUserAnimeList(username, options = {}) {
     'media_type',
     'status',
     'genres',
-    'my_list_status',
+    'list_status{status,score,num_episodes_watched,is_rewatching,num_times_rewatched,start_date,finish_date,comments}',
   ].join(',');
   const data = [];
   let nextUrl = null;
@@ -316,6 +365,37 @@ async function searchAnime(search, options = {}) {
   return (data?.data || []).map((item) => item.node).filter(Boolean);
 }
 
+async function searchManga(search, options = {}) {
+  const query = String(search || '').trim();
+
+  if (!query) {
+    return [];
+  }
+
+  const data = await malRequestWithRetry('/manga', {
+    accessToken: options.accessToken,
+    query: {
+      q: query,
+      limit: Math.min(Math.max(Number(options.limit || 10), 1), 100),
+      nsfw: 'true',
+      fields: [
+        'id',
+        'title',
+        'main_picture',
+        'alternative_titles',
+        'start_date',
+        'end_date',
+        'num_chapters',
+        'num_volumes',
+        'media_type',
+        'status',
+      ].join(','),
+    },
+  });
+
+  return (data?.data || []).map((item) => item.node).filter(Boolean);
+}
+
 async function getAnimeDetails(malAnimeId, options = {}) {
   return await malRequestWithRetry(`/anime/${encodeURIComponent(malAnimeId)}`, {
     accessToken: options.accessToken,
@@ -334,10 +414,12 @@ async function getAnimeDetails(malAnimeId, options = {}) {
 }
 
 async function fetchNextPage(url, accessToken) {
+  const clientId = accessToken ? getClientId() : requireClientId();
   return await withMalRetry(async () => {
     const { data } = await fetchMalJson(url, {
       headers: {
         Accept: 'application/json',
+        ...(clientId ? { 'X-MAL-CLIENT-ID': clientId } : {}),
         ...(accessToken ? { Authorization: `Bearer ${accessToken}` } : {}),
       },
     }, 'MyAnimeList request failed while loading the next list page.');
@@ -369,13 +451,13 @@ function buildListStatusPayload(entry) {
     num_watched_episodes: String(entry.progress ?? 0),
   });
 
-  if (entry.score !== null && entry.score !== undefined && entry.score !== '') {
-    body.set('score', String(Math.min(10, Math.max(0, Math.round(Number(entry.score) || 0)))));
-  }
-
-  if (entry.notes !== null && entry.notes !== undefined) {
-    body.set('comments', String(entry.notes));
-  }
+  body.set(
+    'score',
+    entry.score === null || entry.score === undefined || entry.score === ''
+      ? '0'
+      : String(Math.min(10, Math.max(0, Math.round(Number(entry.score) || 0))))
+  );
+  body.set('comments', entry.notes === null || entry.notes === undefined ? '' : String(entry.notes));
 
   if (entry.started_at) {
     body.set('start_date', entry.started_at);
@@ -414,15 +496,83 @@ async function deleteAnimeListStatus(accessToken, malAnimeId) {
   }
 }
 
+function mapMangaStatus(status) {
+  switch (status) {
+    case 'watching':
+      return 'reading';
+    case 'planned':
+      return 'plan_to_read';
+    case 'completed':
+      return 'completed';
+    case 'paused':
+      return 'on_hold';
+    case 'dropped':
+      return 'dropped';
+    default:
+      return 'plan_to_read';
+  }
+}
+
+function buildMangaListStatusPayload(entry) {
+  const body = new URLSearchParams({
+    status: mapMangaStatus(entry.status),
+    num_chapters_read: String(entry.progress ?? 0),
+    num_volumes_read: String(entry.volume_progress ?? entry.volumeProgress ?? 0),
+  });
+
+  body.set(
+    'score',
+    entry.score === null || entry.score === undefined || entry.score === ''
+      ? '0'
+      : String(Math.min(10, Math.max(0, Math.round(Number(entry.score) || 0))))
+  );
+  body.set('comments', entry.notes === null || entry.notes === undefined ? '' : String(entry.notes));
+  if (entry.started_at) body.set('start_date', entry.started_at);
+  if (entry.completed_at) body.set('finish_date', entry.completed_at);
+  if (entry.repeat_count !== null && entry.repeat_count !== undefined) {
+    body.set('num_times_reread', String(Math.max(0, Math.floor(Number(entry.repeat_count) || 0))));
+  }
+  body.set('is_rereading', entry.is_rereading ? 'true' : 'false');
+
+  return body;
+}
+
+async function saveMangaListStatus(accessToken, malMangaId, entry) {
+  return await malRequest(`/manga/${malMangaId}/my_list_status`, {
+    accessToken,
+    method: 'PATCH',
+    body: buildMangaListStatusPayload(entry),
+  });
+}
+
+async function deleteMangaListStatus(accessToken, malMangaId) {
+  try {
+    return await malRequest(`/manga/${malMangaId}/my_list_status`, {
+      accessToken,
+      method: 'DELETE',
+    });
+  } catch (error) {
+    if (Number(error?.status) === 404) return { deleted: true, alreadyDeleted: true };
+    throw error;
+  }
+}
+
 module.exports = {
   exchangeCodeForToken,
   refreshAccessToken,
   getViewer,
   getViewerAnimeList,
   getUserAnimeList,
+  getViewerMangaList,
+  getUserMangaList,
   searchAnime,
+  searchManga,
   getAnimeDetails,
   saveAnimeListStatus,
   deleteAnimeListStatus,
+  saveMangaListStatus,
+  deleteMangaListStatus,
+  buildListStatusPayload,
+  buildMangaListStatusPayload,
   requireClientId,
 };

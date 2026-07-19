@@ -7,24 +7,32 @@ import type {
   ImportPreviewItem,
   ListStatus,
   LocalListEntry,
+  LocalMangaListEntry,
+  MangaImportItem,
   SaveListEntryPayload,
   SeenaryBackup,
   StoredAnime,
+  StoredManga,
   SyncActivityItem,
   ThemeAccent,
   TrackedAnimeEntry,
+  TrackedMangaEntry,
 } from "./types/domain";
 
 type LocalSettings = AppSettings;
 
 type LocalState = {
-  version: 2;
+  version: 5;
   userId: number;
   settings: LocalSettings | null;
   anime: Record<string, StoredAnime>;
   entries: Record<string, LocalListEntry>;
+  manga: Record<string, StoredManga>;
+  mangaEntries: Record<string, LocalMangaListEntry>;
   dirtyEntries: Record<string, boolean>;
   deletedEntries: Record<string, DeletedListEntry>;
+  dirtyMangaEntries: Record<string, boolean>;
+  deletedMangaEntries: Record<string, DeletedListEntry>;
   syncHistory: SyncActivityItem[];
   autoSyncEnabled: boolean;
 };
@@ -166,29 +174,49 @@ function runStore<T>(
 
 function createEmptyState(userId: number): LocalState {
   return {
-    version: 2,
+    version: 5,
     userId,
     settings: null,
     anime: {},
     entries: {},
+    manga: {},
+    mangaEntries: {},
     dirtyEntries: {},
     deletedEntries: {},
+    dirtyMangaEntries: {},
+    deletedMangaEntries: {},
     syncHistory: [],
     autoSyncEnabled: true,
   };
 }
 
 function normalizeState(userId: number, value: Partial<LocalState> | null | undefined): LocalState {
+  const mangaEntries =
+    value?.mangaEntries && typeof value.mangaEntries === "object" ? value.mangaEntries : {};
+  const needsMangaSyncBootstrap = Number(value?.version ?? 0) < 5;
+
   return {
-    version: 2,
+    version: 5,
     userId,
     settings: value?.settings ?? null,
     anime: value?.anime && typeof value.anime === "object" ? value.anime : {},
     entries: value?.entries && typeof value.entries === "object" ? value.entries : {},
+    manga: value?.manga && typeof value.manga === "object" ? value.manga : {},
+    mangaEntries,
     dirtyEntries:
       value?.dirtyEntries && typeof value.dirtyEntries === "object" ? value.dirtyEntries : {},
     deletedEntries:
       value?.deletedEntries && typeof value.deletedEntries === "object" ? value.deletedEntries : {},
+    dirtyMangaEntries:
+      needsMangaSyncBootstrap
+        ? Object.fromEntries(Object.keys(mangaEntries).map((key) => [key, true]))
+        : value?.dirtyMangaEntries && typeof value.dirtyMangaEntries === "object"
+          ? value.dirtyMangaEntries
+          : {},
+    deletedMangaEntries:
+      value?.deletedMangaEntries && typeof value.deletedMangaEntries === "object"
+        ? value.deletedMangaEntries
+        : {},
     syncHistory: Array.isArray(value?.syncHistory) ? value.syncHistory : [],
     autoSyncEnabled:
       typeof value?.autoSyncEnabled === "boolean" ? value.autoSyncEnabled : true,
@@ -309,6 +337,15 @@ async function writeState(userId: number, state: LocalState) {
 function toDateValue(value: unknown) {
   if (value === null || value === undefined || value === "") return null;
 
+  if (typeof value === "object") {
+    const fuzzyDate = value as { year?: unknown; month?: unknown; day?: unknown };
+    const year = Number(fuzzyDate.year);
+    if (!Number.isInteger(year) || year <= 0) return null;
+    const month = Math.min(12, Math.max(1, Number(fuzzyDate.month) || 1));
+    const day = Math.min(31, Math.max(1, Number(fuzzyDate.day) || 1));
+    return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+  }
+
   const text = String(value).trim();
   if (/^\d{4}-\d{2}-\d{2}$/.test(text)) return text;
 
@@ -362,6 +399,42 @@ function normalizeAnime(media: AnimeMedia): StoredAnime | null {
   };
 }
 
+function normalizeManga(media: AnimeMedia): StoredManga | null {
+  if (!media?.id) return null;
+
+  return {
+    manga_id: Number(media.id),
+    anime_id: Number(media.id),
+    media_type: "MANGA",
+    is_adult:
+      media.isAdult === null || media.isAdult === undefined ? null : media.isAdult ? 1 : 0,
+    title_romaji: media.title?.romaji ?? null,
+    title_english: media.title?.english ?? null,
+    title_native: media.title?.native ?? null,
+    title_preferred: media.title?.userPreferred ?? null,
+    cover_image_large: media.coverImage?.extraLarge ?? media.coverImage?.large ?? null,
+    banner_image: media.bannerImage ?? null,
+    chapters: media.chapters ?? null,
+    episodes: media.chapters ?? null,
+    volumes: media.volumes ?? null,
+    format: media.format ?? null,
+    anime_status: media.status ?? null,
+    average_score: media.averageScore ?? null,
+    mean_score: media.meanScore ?? null,
+    popularity: media.popularity ?? null,
+    favourites: media.favourites ?? null,
+    source: typeof media.source === "string" ? media.source : null,
+    country_of_origin: media.countryOfOrigin ?? null,
+    genres: media.genres ?? [],
+    recommendations: media.recommendations?.nodes ?? [],
+    external_ids: {
+      anilist: String(media.id),
+      mal: media.idMal ? String(media.idMal) : null,
+    },
+    details: media,
+  };
+}
+
 function normalizePreviewAnime(item: ImportPreviewItem): StoredAnime | null {
   if (!item?.animeId) return null;
 
@@ -379,6 +452,7 @@ function normalizePreviewAnime(item: ImportPreviewItem): StoredAnime | null {
     title_preferred: item.title?.userPreferred ?? null,
     cover_image_large: item.coverImage?.extraLarge ?? item.coverImage?.large ?? null,
     episodes: item.episodes ?? null,
+    duration: item.media?.duration ?? null,
     format: item.format ?? null,
     season: item.season ?? null,
     season_year: item.seasonYear ?? null,
@@ -486,6 +560,75 @@ function mergeEntryWithAnime(entry: LocalListEntry, anime: StoredAnime): Tracked
   };
 }
 
+function buildMangaEntry(
+  mangaId: number,
+  payload: SaveListEntryPayload,
+  existing: LocalMangaListEntry | null
+): LocalMangaListEntry {
+  const compatibilityEntry: LocalListEntry | null = existing
+    ? {
+        ...existing,
+        anime_id: mangaId,
+        is_rewatching: existing.is_rereading,
+      }
+    : null;
+  const base = buildEntry(mangaId, payload, compatibilityEntry);
+
+  return {
+    manga_id: mangaId,
+    status: base.status,
+    is_favorite: base.is_favorite,
+    repeat_count: base.repeat_count,
+    is_rereading:
+      payload.isRereading === undefined
+        ? existing?.is_rereading ?? 0
+        : payload.isRereading
+          ? 1
+          : 0,
+    progress: base.progress,
+    volume_progress: Math.max(
+      0,
+      Math.floor(Number(payload.volumeProgress ?? existing?.volume_progress ?? 0))
+    ),
+    score: base.score,
+    notes: base.notes,
+    started_at: base.started_at,
+    completed_at: base.completed_at,
+    created_at: base.created_at,
+    updated_at: base.updated_at,
+  };
+}
+
+function mergeEntryWithManga(
+  entry: LocalMangaListEntry,
+  manga: StoredManga
+): TrackedMangaEntry {
+  return {
+    ...manga,
+    ...entry,
+    anime_id: entry.manga_id,
+    media_type: "MANGA",
+    episodes: manga.chapters ?? null,
+    is_rewatching: entry.is_rereading,
+  };
+}
+
+function mangaEntriesMatch(left: LocalMangaListEntry | null, right: LocalMangaListEntry | null) {
+  return Boolean(
+    left &&
+      right &&
+      left.status === right.status &&
+      Number(left.repeat_count ?? 0) === Number(right.repeat_count ?? 0) &&
+      Number(left.is_rereading ?? 0) === Number(right.is_rereading ?? 0) &&
+      Number(left.progress ?? 0) === Number(right.progress ?? 0) &&
+      Number(left.volume_progress ?? 0) === Number(right.volume_progress ?? 0) &&
+      (left.score ?? null) === (right.score ?? null) &&
+      (left.notes ?? null) === (right.notes ?? null) &&
+      (left.started_at ?? null) === (right.started_at ?? null) &&
+      (left.completed_at ?? null) === (right.completed_at ?? null)
+  );
+}
+
 export const localStore = {
   async getSettings(userId: number) {
     const state = await readState(userId);
@@ -521,6 +664,19 @@ export const localStore = {
     state.anime[String(anime.anime_id)] = {
       ...(state.anime[String(anime.anime_id)] ?? {}),
       ...anime,
+    };
+    await writeState(userId, state);
+    return { ok: true };
+  },
+
+  async cacheManga(userId: number, media: AnimeMedia) {
+    const manga = normalizeManga(media);
+    if (!manga) return { ok: false, message: "Invalid manga data." };
+
+    const state = await readState(userId);
+    state.manga[String(manga.manga_id)] = {
+      ...(state.manga[String(manga.manga_id)] ?? {}),
+      ...manga,
     };
     await writeState(userId, state);
     return { ok: true };
@@ -563,6 +719,69 @@ export const localStore = {
     return Object.values(state.entries)
       .map((entry) => mergeEntryWithAnime(entry, state.anime[String(entry.anime_id)] ?? {}))
       .sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
+  },
+
+  async getMangaList(userId: number) {
+    const state = await readState(userId);
+    return Object.values(state.mangaEntries)
+      .flatMap((entry) => {
+        const manga = state.manga[String(entry.manga_id)];
+        return manga ? [mergeEntryWithManga(entry, manga)] : [];
+      })
+      .sort((a, b) => String(b.updated_at ?? "").localeCompare(String(a.updated_at ?? "")));
+  },
+
+  async getMangaEntry(userId: number, mangaId: number) {
+    const state = await readState(userId);
+    const entry = state.mangaEntries[String(mangaId)];
+    const manga = state.manga[String(mangaId)];
+    if (!entry || !manga) return null;
+    return mergeEntryWithManga(entry, manga);
+  },
+
+  async saveMangaEntry(userId: number, mangaId: number, payload: SaveListEntryPayload) {
+    const state = await readState(userId);
+    const key = String(mangaId);
+    const manga = state.manga[key];
+    if (!manga) {
+      return { ok: false, message: "Manga is not cached yet. Open its details first." };
+    }
+
+    const existing = state.mangaEntries[key] ?? null;
+    state.mangaEntries[key] = buildMangaEntry(mangaId, payload, existing);
+    state.dirtyMangaEntries[key] = true;
+    delete state.deletedMangaEntries[key];
+    await writeState(userId, state);
+    return {
+      ok: true,
+      message: existing ? "Manga list entry updated." : "Manga added to your list.",
+      entry: mergeEntryWithManga(state.mangaEntries[key], manga),
+    };
+  },
+
+  async removeMangaEntry(userId: number, mangaId: number) {
+    const state = await readState(userId);
+    const key = String(mangaId);
+    if (!state.mangaEntries[key]) {
+      return { ok: false, message: "Manga list entry not found." };
+    }
+
+    const manga = state.manga[key];
+    state.deletedMangaEntries[key] = {
+      manga_id: mangaId,
+      media_type: "MANGA",
+      external_ids: manga?.external_ids ?? { anilist: key, mal: null },
+      title:
+        manga?.title_preferred ??
+        manga?.title_english ??
+        manga?.title_romaji ??
+        `Manga #${mangaId}`,
+      deleted_at: new Date().toISOString(),
+    };
+    delete state.mangaEntries[key];
+    delete state.dirtyMangaEntries[key];
+    await writeState(userId, state);
+    return { ok: true, message: "Manga removed from your list." };
   },
 
   async importLegacyEntries(userId: number, entries: TrackedAnimeEntry[]) {
@@ -739,24 +958,70 @@ export const localStore = {
       ];
     });
 
+    const mangaEntries = Object.keys(state.dirtyMangaEntries).flatMap((key) => {
+      const entry = state.mangaEntries[key];
+      if (!entry) return [];
+      const manga = state.manga[String(entry.manga_id)] ?? {};
+
+      return [
+        {
+          ...entry,
+          media_type: "MANGA" as const,
+          title_romaji: manga.title_romaji ?? null,
+          title_english: manga.title_english ?? null,
+          title_native: manga.title_native ?? null,
+          title_preferred: manga.title_preferred ?? null,
+          chapters: manga.chapters ?? null,
+          volumes: manga.volumes ?? null,
+          external_ids: manga.external_ids ?? { anilist: String(entry.manga_id), mal: null },
+        },
+      ];
+    });
+
     return {
       entries,
       deletedEntries: Object.values(state.deletedEntries),
+      mangaEntries,
+      deletedMangaEntries: Object.values(state.deletedMangaEntries),
     };
   },
 
   async getPendingSyncCount(userId: number) {
     const state = await readState(userId);
-    return Object.keys(state.dirtyEntries).length + Object.keys(state.deletedEntries).length;
+    return (
+      Object.keys(state.dirtyEntries).length +
+      Object.keys(state.deletedEntries).length +
+      Object.keys(state.dirtyMangaEntries).length +
+      Object.keys(state.deletedMangaEntries).length
+    );
   },
 
   async markSynced(userId: number, result: ImportPayload) {
     const state = await readState(userId);
+    const failedKeys = new Set(
+      (result?.activity ?? [])
+        .filter((item) => item?.status !== "completed")
+        .map((item) =>
+          item.media_type === "MANGA" || item.manga_id
+            ? `MANGA:${item.manga_id ?? item.anime_id}`
+            : `ANIME:${item.anime_id}`
+        )
+    );
     for (const item of result?.activity ?? []) {
-      if (item?.status === "completed" && item?.anime_id) {
-        delete state.dirtyEntries[String(item.anime_id)];
+      if (item?.status !== "completed") continue;
+      const isManga = item.media_type === "MANGA" || Boolean(item.manga_id);
+      const mediaId = isManga ? item.manga_id ?? item.anime_id : item.anime_id;
+      if (!mediaId || failedKeys.has(`${isManga ? "MANGA" : "ANIME"}:${mediaId}`)) continue;
+
+      if (isManga) {
+        delete state.dirtyMangaEntries[String(mediaId)];
         if (String(item.operation || "").startsWith("delete_")) {
-          delete state.deletedEntries[String(item.anime_id)];
+          delete state.deletedMangaEntries[String(mediaId)];
+        }
+      } else {
+        delete state.dirtyEntries[String(mediaId)];
+        if (String(item.operation || "").startsWith("delete_")) {
+          delete state.deletedEntries[String(mediaId)];
         }
       }
     }
@@ -772,6 +1037,7 @@ export const localStore = {
 
   async replaceEntriesFromImport(userId: number, importResult: ImportPayload) {
     const items = importResult.localEntries ?? [];
+    const mangaItems = (importResult.localMangaEntries ?? []) as MangaImportItem[];
     const state = await readState(userId);
     let created = 0;
     let updated = 0;
@@ -801,8 +1067,8 @@ export const localStore = {
           progress: item.progress ?? 0,
           score: item.score ?? null,
           notes: item.notes ?? null,
-          startedAt: item.startedAt ?? null,
-          completedAt: item.completedAt ?? null,
+          startedAt: toDateValue(item.startedAt),
+          completedAt: toDateValue(item.completedAt),
           repeatCount: item.repeatCount ?? 0,
         },
         existing
@@ -810,6 +1076,8 @@ export const localStore = {
 
       if (existing && entriesMatch(existing, nextEntry)) {
         unchanged += 1;
+        delete state.dirtyEntries[key];
+        delete state.deletedEntries[key];
         continue;
       }
 
@@ -833,6 +1101,57 @@ export const localStore = {
       });
     }
 
+    for (const item of mangaItems) {
+      const mangaId = Number(item?.mangaId);
+      if (!Number.isInteger(mangaId) || mangaId <= 0 || !item.media) continue;
+
+      const key = String(mangaId);
+      const manga = normalizeManga(item.media);
+      if (manga) {
+        state.manga[key] = { ...(state.manga[key] ?? {}), ...manga };
+      }
+
+      const existing = state.mangaEntries[key] ?? null;
+      const nextEntry = buildMangaEntry(
+        mangaId,
+        {
+          status: item.status,
+          progress: item.progress ?? 0,
+          volumeProgress: item.volumeProgress ?? 0,
+          score: item.score ?? null,
+          notes: item.notes ?? null,
+          startedAt: toDateValue(item.startedAt),
+          completedAt: toDateValue(item.completedAt),
+          repeatCount: item.repeatCount ?? 0,
+          isRereading: item.isRereading ?? false,
+        },
+        existing
+      );
+      nextEntry.started_at = toDateValue(item.startedAt);
+      nextEntry.completed_at = toDateValue(item.completedAt);
+
+      if (existing && mangaEntriesMatch(existing, nextEntry)) {
+        unchanged += 1;
+        delete state.dirtyMangaEntries[key];
+        delete state.deletedMangaEntries[key];
+        continue;
+      }
+
+      state.mangaEntries[key] = nextEntry;
+      delete state.dirtyMangaEntries[key];
+      delete state.deletedMangaEntries[key];
+      if (existing) updated += 1;
+      else created += 1;
+      changes.push({
+        animeId: mangaId,
+        animeTitle:
+          manga?.title_preferred ??
+          manga?.title_english ??
+          manga?.title_romaji ??
+          `Manga #${mangaId}`,
+      });
+    }
+
     await writeState(userId, state);
 
     return {
@@ -844,10 +1163,98 @@ export const localStore = {
     };
   },
 
+  async recordPullActivity(
+    userId: number,
+    provider: "anilist" | "mal",
+    message: string,
+    summary: { created: number; updated: number; unchanged: number },
+    options: {
+      partial?: boolean;
+      mappingFailures?: Array<{
+        malAnimeId?: number | null;
+        malMangaId?: number | null;
+        mediaType?: "ANIME" | "MANGA";
+        title?: string | null;
+        reason?: string | null;
+        message?: string | null;
+      }>;
+    } = {}
+  ) {
+    const state = await readState(userId);
+    const now = new Date().toISOString();
+    const providerLabel = provider === "mal" ? "MyAnimeList" : "AniList";
+    const failures = options.mappingFailures ?? [];
+    const baseId = Date.now();
+    const failureItems: SyncActivityItem[] = failures.map((failure, index) => {
+      const isManga = failure.mediaType === "MANGA" || Boolean(failure.malMangaId);
+      const mediaId = Number(failure.malMangaId ?? failure.malAnimeId);
+      return {
+        id: baseId + index,
+        anime_id: isManga || !Number.isInteger(mediaId) ? null : mediaId,
+        manga_id: isManga && Number.isInteger(mediaId) ? mediaId : null,
+        media_type: isManga ? "MANGA" : "ANIME",
+        animeTitle: failure.title || `${providerLabel} mapping conflict`,
+        operation: `pull_from_${provider}_unmapped`,
+        status: "partial",
+        created_at: now,
+        message:
+          failure.message ||
+          `No safe one-to-one ${providerLabel} mapping was available for this entry.`,
+        changedFields: [
+          {
+            field: provider === "mal" ? "MyAnimeList ID" : "External ID",
+            from: null,
+            to: Number.isInteger(mediaId) ? mediaId : null,
+          },
+          { field: "reason", from: null, to: failure.reason || "mapping_conflict" },
+        ],
+      };
+    });
+    const summaryItem: SyncActivityItem = {
+      id: baseId + failures.length,
+      anime_id: null,
+      media_type: "ANIME",
+      animeTitle: `${providerLabel} pull summary`,
+      operation: `pull_summary_${provider}`,
+      status: options.partial ? "partial" : "completed",
+      created_at: now,
+      message,
+      changedFields: [
+        { field: "created", from: null, to: summary.created },
+        { field: "updated", from: null, to: summary.updated },
+        { field: "unchanged", from: null, to: summary.unchanged },
+        { field: "mapping conflicts", from: null, to: failures.length },
+      ],
+    };
+
+    state.syncHistory = [summaryItem, ...failureItems, ...state.syncHistory].slice(0, 150);
+    await writeState(userId, state);
+  },
+
   async getSyncActivity(userId: number) {
     const state = await readState(userId);
+    const isPullActivity = (item: SyncActivityItem) =>
+      String(item.operation || "").startsWith("pull_");
+    const enrichTitleFields = (item: SyncActivityItem): SyncActivityItem => {
+      const isManga = item.media_type === "MANGA" || Boolean(item.manga_id);
+      const mediaId = Number(isManga ? item.manga_id : item.anime_id);
+      const media = Number.isInteger(mediaId)
+        ? isManga
+          ? state.manga[String(mediaId)]
+          : state.anime[String(mediaId)]
+        : null;
+      return media
+        ? {
+            ...item,
+            title_preferred: media.title_preferred ?? null,
+            title_english: media.title_english ?? null,
+            title_romaji: media.title_romaji ?? null,
+            title_native: media.title_native ?? null,
+          }
+        : item;
+    };
     return {
-      pending: [
+      pending: ([
         ...Object.keys(state.dirtyEntries).flatMap((key) => {
           const entry = state.entries[key];
           if (!entry) return [];
@@ -867,16 +1274,49 @@ export const localStore = {
           ];
         }),
         ...Object.values(state.deletedEntries).map((entry) => ({
-          id: -Math.abs(entry.anime_id) - 1_000_000,
+          id: -Math.abs(Number(entry.anime_id)) - 1_000_000,
           anime_id: entry.anime_id,
           animeTitle: entry.title,
           operation: "delete_local_entry",
           status: "pending",
           created_at: entry.deleted_at ?? new Date().toISOString(),
         })),
-      ],
-      completed: state.syncHistory.filter((item) => item.status === "completed"),
-      failed: state.syncHistory.filter((item) => item.status === "failed"),
+        ...Object.keys(state.dirtyMangaEntries).flatMap((key) => {
+          const entry = state.mangaEntries[key];
+          if (!entry) return [];
+          return [
+            {
+              id: -Math.abs(entry.manga_id) - 2_000_000,
+              manga_id: entry.manga_id,
+              media_type: "MANGA" as const,
+              animeTitle:
+                state.manga[key]?.title_preferred ??
+                state.manga[key]?.title_english ??
+                state.manga[key]?.title_romaji ??
+                `Manga #${entry.manga_id}`,
+              operation: "upsert_local_manga_entry",
+              status: "pending",
+              created_at: entry.updated_at ?? new Date().toISOString(),
+            },
+          ];
+        }),
+        ...Object.values(state.deletedMangaEntries).map((entry) => ({
+          id: -Math.abs(Number(entry.manga_id)) - 3_000_000,
+          manga_id: entry.manga_id,
+          media_type: "MANGA" as const,
+          animeTitle: entry.title,
+          operation: "delete_local_manga_entry",
+          status: "pending",
+          created_at: entry.deleted_at ?? new Date().toISOString(),
+        })),
+      ] as SyncActivityItem[]).map(enrichTitleFields),
+      completed: state.syncHistory.filter(
+        (item) => item.status === "completed" && !isPullActivity(item)
+      ).map(enrichTitleFields),
+      failed: state.syncHistory.filter(
+        (item) => item.status === "failed" && !isPullActivity(item)
+      ).map(enrichTitleFields),
+      pulled: state.syncHistory.filter(isPullActivity).map(enrichTitleFields),
     };
   },
 

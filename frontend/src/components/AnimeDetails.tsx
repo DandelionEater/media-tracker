@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   ArrowLeftIcon,
@@ -36,6 +36,7 @@ import type {
   AnimeMedia,
   EditableListEntry,
   ExternalLink,
+  MediaType,
   Person,
   PersonDetails,
   PersonEdge,
@@ -44,16 +45,21 @@ import type {
 } from "../types/domain";
 
 type AnimeDetailsProps = {
-  animeId: number;
+  mediaId: number;
+  mediaType: MediaType;
   onBack: () => void;
-  onSelectAnime?: (animeId: number) => void;
+  onSelectMedia?: (mediaId: number, mediaType: MediaType) => void;
   onListChanged?: () => void | Promise<void>;
   onNotify?: (kind: "success" | "error" | "warning", title: string, message: string) => void;
   titleLanguage: TitleLanguage;
   hideAdultContent: boolean;
 };
 
-type ListEntry = EditableListEntry;
+type ListEntry = EditableListEntry & {
+  manga_id?: number;
+  volume_progress?: number;
+  is_rereading?: number | boolean;
+};
 
 type MetaItem = {
   label: string;
@@ -79,6 +85,8 @@ type RelatedMedia = {
   coverImage?: { large?: string | null } | null;
   format?: string | null;
   episodes?: number | null;
+  chapters?: number | null;
+  volumes?: number | null;
   averageScore?: number | null;
 };
 
@@ -111,10 +119,11 @@ const STATUS_LABELS: Record<ListEntry["status"], string> = {
   dropped: "Dropped",
 };
 
-export default function AnimeDetails({
-  animeId,
+export default function MediaDetails({
+  mediaId,
+  mediaType,
   onBack,
-  onSelectAnime,
+  onSelectMedia,
   onListChanged,
   onNotify,
   titleLanguage,
@@ -135,9 +144,12 @@ export default function AnimeDetails({
     onNotify?.("success", title, message);
   }
 
-  async function loadListEntry(currentAnimeId: number) {
+  const loadListEntry = useCallback(async (currentAnimeId: number) => {
     try {
-      const result = await window.api.getMyListEntry(currentAnimeId);
+      const result =
+        mediaType === "MANGA"
+          ? await window.api.getMyMangaListEntry(currentAnimeId)
+          : await window.api.getMyListEntry(currentAnimeId);
 
       if (result.ok) {
         setListEntry(result.entry);
@@ -145,7 +157,7 @@ export default function AnimeDetails({
     } catch (err) {
       console.error("Failed to load list entry:", err);
     }
-  }
+  }, [mediaType]);
 
   useEffect(() => {
     let mounted = true;
@@ -155,16 +167,16 @@ export default function AnimeDetails({
         setLoading(true);
         setError(null);
 
-        const data = await window.api.getAnimeDetails(animeId);
+        const data = await window.api.getMediaDetails(mediaType, mediaId);
 
         if (mounted) {
           setAnime(data);
-          await loadListEntry(animeId);
+          await loadListEntry(mediaId);
         }
       } catch (err) {
         console.error(err);
         if (mounted) {
-          setError("Failed to load anime details.");
+          setError(`Failed to load ${mediaType === "MANGA" ? "manga" : "anime"} details.`);
         }
       } finally {
         if (mounted) {
@@ -178,7 +190,7 @@ export default function AnimeDetails({
     return () => {
       mounted = false;
     };
-  }, [animeId, retryKey]);
+  }, [loadListEntry, mediaId, mediaType, retryKey]);
 
   async function handleAddToList() {
     if (listBusy) return;
@@ -187,13 +199,18 @@ export default function AnimeDetails({
       setListBusy(true);
       setListMessage(null);
 
-      const result = await window.api.saveMyListEntry(animeId, {
+      const payload = {
         status: "planned",
         isFavorite: Boolean(listEntry?.is_favorite),
         progress: 0,
         score: null,
         notes: null,
-      });
+        volumeProgress: 0,
+      };
+      const result =
+        mediaType === "MANGA"
+          ? await window.api.saveMyMangaListEntry(mediaId, payload)
+          : await window.api.saveMyListEntry(mediaId, payload);
 
       if (!result.ok) {
         setListMessage(result.message);
@@ -206,11 +223,11 @@ export default function AnimeDetails({
       await onListChanged?.();
       notifyListChange(
         "List updated",
-        `${title || "This anime"} was added to your list as Planned.`
+        `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was added to your list as ${mediaType === "MANGA" ? "Plan to Read" : "Planned"}.`
       );
     } catch (err) {
       console.error(err);
-      setListMessage("Failed to add anime to your list.");
+      setListMessage(`Failed to add ${mediaType === "MANGA" ? "manga" : "anime"} to your list.`);
     } finally {
       setListBusy(false);
     }
@@ -229,8 +246,9 @@ export default function AnimeDetails({
       setListMessage(null);
 
       const totalEpisodes =
-        typeof anime?.episodes === "number" && anime.episodes > 0
-          ? anime.episodes
+        typeof (mediaType === "MANGA" ? anime?.chapters : anime?.episodes) === "number" &&
+        Number(mediaType === "MANGA" ? anime?.chapters : anime?.episodes) > 0
+          ? Number(mediaType === "MANGA" ? anime?.chapters : anime?.episodes)
           : null;
 
       const currentProgress = Number(listEntry?.progress ?? 0);
@@ -255,13 +273,18 @@ export default function AnimeDetails({
         nextProgress = totalEpisodes;
       }
 
-      const result = await window.api.saveMyListEntry(animeId, {
+      const payload = {
         status: nextStatus,
         isFavorite: Boolean(listEntry?.is_favorite),
         progress: nextProgress,
         score: listEntry?.score ?? null,
         notes: listEntry?.notes ?? null,
-      });
+        volumeProgress: listEntry?.volume_progress ?? 0,
+      };
+      const result =
+        mediaType === "MANGA"
+          ? await window.api.saveMyMangaListEntry(mediaId, payload)
+          : await window.api.saveMyListEntry(mediaId, payload);
 
       if (!result.ok) {
         setListMessage(result.message);
@@ -274,19 +297,19 @@ export default function AnimeDetails({
       if (!listEntry) {
         notifyListChange(
           "Progress updated",
-          `${title || "This anime"} was added to your list with ${nextProgress} episode watched.`
+          `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was added to your list with ${nextProgress} ${mediaType === "MANGA" ? "chapter read" : "episode watched"}.`
         );
       } else if (nextStatus === "completed") {
         notifyListChange(
           "Progress updated",
-          `${title || "This anime"} was marked completed at ${nextProgress} episode${
+          `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was marked completed at ${nextProgress} ${mediaType === "MANGA" ? "chapter" : "episode"}${
             nextProgress === 1 ? "" : "s"
           } watched.`
         );
       } else {
         notifyListChange(
           "Progress updated",
-          `${title || "This anime"} is now at ${nextProgress} episode${
+          `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} is now at ${nextProgress} ${mediaType === "MANGA" ? "chapter" : "episode"}${
             nextProgress === 1 ? "" : "s"
           } watched.`
         );
@@ -310,13 +333,18 @@ export default function AnimeDetails({
       const fallbackStatus = listEntry?.status ?? "planned";
       const fallbackProgress = Number(listEntry?.progress ?? 0);
 
-      const result = await window.api.saveMyListEntry(animeId, {
+      const payload = {
         status: fallbackStatus,
         isFavorite: nextFavorite,
         progress: fallbackProgress,
         score: listEntry?.score ?? null,
         notes: listEntry?.notes ?? null,
-      });
+        volumeProgress: listEntry?.volume_progress ?? 0,
+      };
+      const result =
+        mediaType === "MANGA"
+          ? await window.api.saveMyMangaListEntry(mediaId, payload)
+          : await window.api.saveMyListEntry(mediaId, payload);
 
       if (!result.ok) {
         setListMessage(result.message);
@@ -328,10 +356,10 @@ export default function AnimeDetails({
       notifyListChange(
         nextFavorite ? "Favorite added" : "Favorite removed",
         nextFavorite
-          ? `${title || "This anime"} was ${
+          ? `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was ${
               listEntry ? "added to favorites" : "added to your list and marked as favorite"
             }.`
-          : `${title || "This anime"} was removed from favorites.`
+          : `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was removed from favorites.`
       );
     } catch (err) {
       console.error(err);
@@ -393,7 +421,7 @@ export default function AnimeDetails({
         >
           Back
         </button>
-        <p>No anime found.</p>
+        <p>No {mediaType === "MANGA" ? "manga" : "anime"} found.</p>
       </div>
     );
   }
@@ -407,7 +435,7 @@ export default function AnimeDetails({
           </div>
           <h2 className="mt-5 text-xl font-semibold">Hidden by 18+ filter</h2>
           <p className="mt-2 text-sm leading-6 text-white/50">
-            This anime is hidden while adult content filtering is enabled. You can change this
+            This {mediaType === "MANGA" ? "manga" : "anime"} is hidden while adult content filtering is enabled. You can change this
             preference in Settings.
           </p>
           <button
@@ -424,6 +452,7 @@ export default function AnimeDetails({
   }
 
   const title = getPreferredTitle(anime.title, titleLanguage);
+  const isManga = mediaType === "MANGA";
 
   const studios =
     anime.studios?.nodes?.map((studio) => studio.name).join(", ") || null;
@@ -444,7 +473,7 @@ export default function AnimeDetails({
   const sourceLabel = typeof anime.source === "string" ? anime.source : null;
   const primaryLinks = [
     anime.siteUrl ? { label: "AniList", url: anime.siteUrl, accent: "bg-sky-400/15 text-sky-100" } : null,
-    trailerUrl ? { label: "Trailer", url: trailerUrl, accent: "bg-red-400/15 text-red-100" } : null,
+    !isManga && trailerUrl ? { label: "Trailer", url: trailerUrl, accent: "bg-red-400/15 text-red-100" } : null,
   ].filter(Boolean) as Array<{ label: string; url: string; accent: string }>;
 
   const isFavorite = Boolean(listEntry?.is_favorite);
@@ -524,21 +553,27 @@ export default function AnimeDetails({
                   <div className="flex flex-wrap items-center gap-2 text-xs font-medium text-white/55">
                     {anime.status && (
                       <HeroBadge
-                        value={getAiringStatusLabel(anime.status)}
+                        value={getMediaStatusLabel(anime.status, mediaType)}
                         tone={getAiringBadgeTone(anime.status)}
                       />
                     )}
                     {anime.format && (
                       <HeroBadge value={formatMediaFormat(anime.format)} tone="format" />
                     )}
-                    {anime.season && anime.seasonYear && (
+                    {!isManga && anime.season && anime.seasonYear && (
                       <HeroBadge
                         value={`${formatEnum(anime.season)} ${anime.seasonYear}`}
                         tone="season"
                       />
                     )}
-                    {anime.episodes && (
+                    {!isManga && anime.episodes && (
                       <HeroBadge value={`${anime.episodes} episodes`} tone="episodes" />
+                    )}
+                    {isManga && anime.chapters && (
+                      <HeroBadge value={`${anime.chapters} chapters`} tone="episodes" />
+                    )}
+                    {isManga && anime.volumes && (
+                      <HeroBadge value={`${anime.volumes} volumes`} tone="season" />
                     )}
                   </div>
 
@@ -552,19 +587,33 @@ export default function AnimeDetails({
                     synonyms={anime.synonyms ?? []}
                   />
 
-                  <WatchOverview
-                    episodes={anime.episodes ?? null}
-                    duration={anime.duration ?? null}
-                    animeStatus={anime.status ?? null}
-                    franchiseStartDate={anime.franchiseStartDate ?? anime.startDate ?? null}
-                    nextAiringEpisode={anime.nextAiringEpisode ?? null}
-                    entry={listEntry}
-                    relations={relationEdges}
-                  />
+                  {isManga ? (
+                    <MangaOverview
+                      chapters={anime.chapters ?? null}
+                      volumes={anime.volumes ?? null}
+                      mangaStatus={anime.status ?? null}
+                      startDate={anime.startDate ?? null}
+                      relations={relationEdges}
+                      entry={listEntry}
+                    />
+                  ) : (
+                    <WatchOverview
+                      episodes={anime.episodes ?? null}
+                      duration={anime.duration ?? null}
+                      animeStatus={anime.status ?? null}
+                      franchiseStartDate={anime.franchiseStartDate ?? anime.startDate ?? null}
+                      nextAiringEpisode={anime.nextAiringEpisode ?? null}
+                      entry={listEntry}
+                      relations={relationEdges}
+                    />
+                  )}
 
                   <div className="mt-5 grid grid-cols-1 gap-3 border-t border-white/8 pt-5 sm:grid-cols-2 xl:grid-cols-4">
                     {sourceLabel && (
-                      <HeroDetail label="Based on" value={formatEnum(sourceLabel)} />
+                      <HeroDetail
+                        label={isManga ? "Source" : "Based on"}
+                        value={formatEnum(sourceLabel)}
+                      />
                     )}
                     {anime.countryOfOrigin && (
                       <HeroDetail label="Origin" value={anime.countryOfOrigin} />
@@ -573,10 +622,10 @@ export default function AnimeDetails({
                       <HeroDetail
                         label={
                           isUpcoming
-                            ? "Premiere date"
+                            ? isManga ? "Publication date" : "Premiere date"
                             : anime.status === "RELEASING"
-                              ? "Began airing"
-                              : "First aired"
+                              ? isManga ? "Began publishing" : "Began airing"
+                              : isManga ? "First published" : "First aired"
                         }
                         value={formatFuzzyDate(anime.startDate)}
                       />
@@ -585,11 +634,11 @@ export default function AnimeDetails({
                       anime.status !== "RELEASING" &&
                       (!isUpcoming || hasDistinctEndDate) && (
                       <HeroDetail
-                        label={isUpcoming ? "Expected end" : "Finished airing"}
+                        label={isUpcoming ? "Expected end" : isManga ? "Finished publishing" : "Finished airing"}
                         value={formatFuzzyDate(anime.endDate)}
                       />
                     )}
-                    {studios && <HeroDetail label="Made by" value={studios} wide />}
+                    {!isManga && studios && <HeroDetail label="Made by" value={studios} wide />}
                   </div>
 
                   {primaryLinks.length > 0 && (
@@ -622,7 +671,9 @@ export default function AnimeDetails({
               <div className="min-w-0 space-y-8">
                 <PersonalListPanel
                   entry={listEntry}
-                  totalEpisodes={anime.episodes ?? null}
+                  totalEpisodes={isManga ? anime.chapters ?? null : anime.episodes ?? null}
+                  totalVolumes={isManga ? anime.volumes ?? null : null}
+                  mediaType={mediaType}
                   onAdd={handleAddToList}
                   onEdit={handleOpenEditor}
                   busy={listBusy}
@@ -648,7 +699,7 @@ export default function AnimeDetails({
 
                 {staffEdges.length > 0 && (
                   <PeopleShelf
-                    title="Staff"
+                    title={isManga ? "Creators & staff" : "Staff"}
                     icon={UserGroupIcon}
                     kind="staff"
                     edges={staffEdges}
@@ -659,7 +710,7 @@ export default function AnimeDetails({
                 {relationEdges.length > 0 && (
                   <RelatedAnimeShelf
                     edges={relationEdges}
-                    onSelectAnime={onSelectAnime}
+                    onSelectMedia={onSelectMedia}
                   />
                 )}
 
@@ -667,7 +718,7 @@ export default function AnimeDetails({
                   <MediaShelf
                     title="Recommendations"
                     icon={StarIcon}
-                    onSelectAnime={onSelectAnime}
+                    onSelectMedia={onSelectMedia}
                     items={recommendations
                       .filter(
                         (item): item is typeof item & { mediaRecommendation: RecommendationMedia } =>
@@ -684,13 +735,14 @@ export default function AnimeDetails({
                   <LinksSection
                     streamingEpisodes={streamingEpisodes}
                     externalLinks={externalLinks}
+                    mediaType={mediaType}
                   />
                 )}
 
               </div>
 
               <div className="space-y-5">
-                <TrailerPanel trailer={anime.trailer} trailerUrl={trailerUrl} />
+                {!isManga && <TrailerPanel trailer={anime.trailer} trailerUrl={trailerUrl} />}
 
                 <SideFacts
                   score={anime.averageScore ?? null}
@@ -706,6 +758,9 @@ export default function AnimeDetails({
                   seasonYear={anime.seasonYear}
                   format={anime.format}
                   animeStatus={anime.status}
+                  mediaType={mediaType}
+                  chapters={anime.chapters ?? null}
+                  volumes={anime.volumes ?? null}
                 />
               </div>
             </section>
@@ -735,7 +790,15 @@ export default function AnimeDetails({
             <ActionDivider />
 
             <ActionButton
-              label={listEntry ? "Add 1 episode watched" : "Start watching (+1)"}
+              label={
+                isManga
+                  ? listEntry
+                    ? "Add 1 chapter read"
+                    : "Start reading (+1)"
+                  : listEntry
+                    ? "Add 1 episode watched"
+                    : "Start watching (+1)"
+              }
               onClick={handleQuickProgress}
               disabled={listBusy}
             >
@@ -761,23 +824,31 @@ export default function AnimeDetails({
       </div>
 
       <ListEntryModal
-        animeId={animeId}
+        animeId={mediaId}
+        mediaType={mediaType}
         isOpen={isEditorOpen}
         entry={listEntry}
         title={title}
-        totalEpisodes={anime?.episodes ?? null}
+        totalEpisodes={isManga ? anime?.chapters ?? null : anime?.episodes ?? null}
+        totalVolumes={anime?.volumes ?? null}
         onClose={() => setIsEditorOpen(false)}
         onSaved={(updatedEntry) => {
           setListEntry(updatedEntry);
           onListChanged?.();
           setListMessage(null);
-          notifyListChange("List entry updated", `${title || "This anime"} was updated.`);
+          notifyListChange(
+            "List entry updated",
+            `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was updated.`
+          );
         }}
         onRemoved={() => {
           setListEntry(null);
           onListChanged?.();
           setListMessage(null);
-          notifyListChange("Removed from list", `${title || "This anime"} was removed from your list.`);
+          notifyListChange(
+            "Removed from list",
+            `${title || `This ${mediaType === "MANGA" ? "manga" : "anime"}`} was removed from your list.`
+          );
         }}
       />
 
@@ -1097,6 +1168,120 @@ function WatchOverview({
   );
 }
 
+function MangaOverview({
+  chapters,
+  volumes,
+  mangaStatus,
+  startDate,
+  relations,
+  entry,
+}: {
+  chapters: number | null;
+  volumes: number | null;
+  mangaStatus: string | null;
+  startDate: {
+    year?: number | null;
+    month?: number | null;
+    day?: number | null;
+  } | null;
+  relations: RelatedAnimeEdge[];
+  entry: ListEntry | null;
+}) {
+  const [now] = useState(() => Date.now());
+  const chapterCount = positiveNumberOrNull(chapters);
+  const volumeCount = positiveNumberOrNull(volumes);
+  const chapterTotal = getPublicationTotalPresentation(
+    chapterCount,
+    mangaStatus,
+    "chapter"
+  );
+  const volumeTotal = getPublicationTotalPresentation(volumeCount, mangaStatus, "volume");
+  const publicationTiming = getPublicationTiming(startDate, now);
+  const linkedTitles = relations.filter((edge) => Boolean(getRelatedMediaType(edge.node))).length;
+  const insights: WatchInsight[] = [
+    entry
+      ? {
+          label: "Chapters read",
+          value: chapterCount ? `${entry.progress} of ${chapterCount}` : formatNumber(entry.progress),
+          context: chapterCount
+            ? `${Math.min(100, Math.round((entry.progress / chapterCount) * 100))}% complete`
+            : "Total chapter count is unknown",
+          icon: CheckCircleIcon,
+          accent: Boolean(chapterCount && entry.progress >= chapterCount),
+        }
+      : null,
+    entry
+      ? {
+          label: "Volumes read",
+          value: volumeCount
+            ? `${entry.volume_progress ?? 0} of ${volumeCount}`
+            : formatNumber(entry.volume_progress ?? 0),
+          context: volumeCount ? "Tracked volume progress" : "Total volume count is unknown",
+          icon: BookmarkIcon,
+        }
+      : null,
+    {
+      label: "Chapters",
+      value: chapterTotal.value,
+      context: chapterTotal.context,
+      icon: DocumentTextIcon,
+      accent: true,
+    },
+    {
+      label: "Volumes",
+      value: volumeTotal.value,
+      context: volumeTotal.context,
+      icon: BookmarkIcon,
+    },
+    mangaStatus
+      ? {
+          label: "Publishing status",
+          value: getMediaStatusLabel(mangaStatus, "MANGA"),
+          context:
+            mangaStatus === "RELEASING"
+              ? "New chapters may still be released"
+              : "Current AniList publication state",
+          icon: CheckCircleIcon,
+          accent: mangaStatus === "RELEASING",
+        }
+      : null,
+    publicationTiming
+      ? {
+          label: publicationTiming.label,
+          value: publicationTiming.value,
+          context: publicationTiming.context,
+          icon: CalendarDaysIcon,
+        }
+      : null,
+    linkedTitles
+      ? {
+          label: "Direct connections",
+          value: `${linkedTitles} linked ${linkedTitles === 1 ? "title" : "titles"}`,
+          context: "Anime adaptations and related publications",
+          icon: LinkIcon,
+        }
+      : null,
+  ].filter(Boolean) as WatchInsight[];
+
+  return (
+    <section className="mt-6" aria-label="Publication at a glance">
+      <div className="mb-3">
+        <p className="text-[10px] font-semibold uppercase tracking-[0.22em] text-white/30">
+          Publication at a glance
+        </p>
+        <p className="mt-1 text-xs text-white/40">
+          Known publication totals and current release state.
+        </p>
+      </div>
+      <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2 xl:grid-cols-3">
+        {insights.map((insight) => (
+          <WatchInsightCard key={insight.label} insight={insight} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 function WatchInsightCard({ insight }: { insight: WatchInsight }) {
   const Icon = insight.icon;
 
@@ -1165,10 +1350,37 @@ function ArtworkLightbox({
     };
   }
 
-  function changeZoom(amount: number) {
+  function changeZoom(
+    amount: number,
+    anchor?: { clientX: number; clientY: number }
+  ) {
     const nextZoom = Math.max(1, Math.min(4, Number((zoom + amount).toFixed(2))));
+    const image = imageRef.current;
+
+    if (nextZoom === zoom) return;
+
+    setPosition((current) => {
+      if (!anchor || !image) {
+        return clampPosition(current, nextZoom);
+      }
+
+      const rect = image.getBoundingClientRect();
+      const zoomRatio = nextZoom / zoom;
+      const cursorFromImageCenter = {
+        x: anchor.clientX - (rect.left + rect.width / 2),
+        y: anchor.clientY - (rect.top + rect.height / 2),
+      };
+      const anchoredPosition = {
+        x: current.x + (1 - zoomRatio) * cursorFromImageCenter.x,
+        y: current.y + (1 - zoomRatio) * cursorFromImageCenter.y,
+      };
+
+      // The ordinary pan clamp contracts as zoom decreases, pulling the
+      // artwork toward center and breaking the cursor anchor. Wheel events
+      // originate over the image, so the anchored point remains reachable.
+      return nextZoom <= 1 ? { x: 0, y: 0 } : anchoredPosition;
+    });
     setZoom(nextZoom);
-    setPosition((current) => clampPosition(current, nextZoom));
   }
 
   function resetView() {
@@ -1243,7 +1455,10 @@ function ArtworkLightbox({
           onPointerCancel={finishDragging}
           onWheel={(event) => {
             event.preventDefault();
-            changeZoom(event.deltaY < 0 ? 0.25 : -0.25);
+            changeZoom(event.deltaY < 0 ? 0.25 : -0.25, {
+              clientX: event.clientX,
+              clientY: event.clientY,
+            });
           }}
           className={`h-auto max-h-[70vh] w-auto max-w-[90vw] select-none rounded-2xl object-contain shadow-2xl ${
             zoom > 1 ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-zoom-in"
@@ -1251,9 +1466,14 @@ function ArtworkLightbox({
           style={{
             transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${zoom})`,
           }}
-          onDoubleClick={() => (zoom > 1 ? resetView() : changeZoom(1))}
+          onDoubleClick={(event) =>
+            zoom > 1
+              ? resetView()
+              : changeZoom(1, { clientX: event.clientX, clientY: event.clientY })
+          }
         />
-        <div className="relative z-10 mt-4 flex flex-wrap items-center justify-center gap-3 rounded-full border border-white/10 bg-[#171717]/95 px-3 py-2 text-xs text-white/55 shadow-xl">
+      </div>
+        <div className="absolute bottom-4 left-1/2 z-20 flex max-w-[calc(100vw-2rem)] -translate-x-1/2 flex-wrap items-center justify-center gap-3 rounded-full border border-white/10 bg-[#171717]/95 px-3 py-2 text-xs text-white/55 shadow-xl backdrop-blur-md">
           <span className="px-1">{artwork.label}</span>
           <span className="h-1 w-1 rounded-full bg-white/25" />
           <div className="flex items-center gap-1">
@@ -1290,7 +1510,6 @@ function ArtworkLightbox({
           <span className="h-1 w-1 rounded-full bg-white/25" />
           <span className="px-1">Scroll to zoom · Drag to pan · Double-click to reset</span>
         </div>
-      </div>
     </div>
   );
 }
@@ -1298,12 +1517,16 @@ function ArtworkLightbox({
 function PersonalListPanel({
   entry,
   totalEpisodes,
+  totalVolumes,
+  mediaType,
   onAdd,
   onEdit,
   busy,
 }: {
   entry: ListEntry | null;
   totalEpisodes: number | null;
+  totalVolumes: number | null;
+  mediaType: MediaType;
   onAdd: () => void;
   onEdit: () => void;
   busy: boolean;
@@ -1353,10 +1576,16 @@ function PersonalListPanel({
           </p>
           <div className="mt-2 flex flex-wrap items-center gap-2">
             <span className="rounded-full border border-white/10 bg-white/10 px-3 py-1.5 text-sm font-semibold text-white">
-              {STATUS_LABELS[entry.status]}
+              {getPersonalStatusLabel(entry.status, mediaType)}
             </span>
+            {mediaType === "MANGA" && (
+              <span className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-sm text-white/70">
+                {entry.volume_progress ?? 0}
+                {totalVolumes ? ` / ${totalVolumes}` : ""} vols
+              </span>
+            )}
             <span className="rounded-full border border-white/10 bg-black/25 px-3 py-1.5 text-sm text-white/70">
-              {formatProgress(entry.progress, totalEpisodes)}
+              {formatProgress(entry.progress, totalEpisodes, mediaType)}
             </span>
           </div>
         </div>
@@ -1379,7 +1608,9 @@ function PersonalListPanel({
               style={{ width: `${progressPercent}%` }}
             />
           </div>
-          <p className="mt-2 text-xs text-white/40">{progressPercent}% watched</p>
+          <p className="mt-2 text-xs text-white/40">
+            {progressPercent}% {mediaType === "MANGA" ? "read" : "watched"}
+          </p>
         </div>
       )}
 
@@ -1991,10 +2222,10 @@ function InfoPanel({ label, value }: { label: string; value: string }) {
 
 function RelatedAnimeShelf({
   edges,
-  onSelectAnime,
+  onSelectMedia,
 }: {
   edges: RelatedAnimeEdge[];
-  onSelectAnime?: (animeId: number) => void;
+  onSelectMedia?: (mediaId: number, mediaType: MediaType) => void;
 }) {
   const items = [...edges]
     .sort((a, b) => getRelationPriority(a?.relationType) - getRelationPriority(b?.relationType))
@@ -2008,18 +2239,23 @@ function RelatedAnimeShelf({
           const relation = getRelationDetails(edge.relationType);
           const titleText = getMediaTitle(media);
           const mediaId = Number(media?.id);
-          const isAnime = isAnimeRelatedMedia(media);
-          const canOpen = isAnime && Number.isInteger(mediaId) && mediaId > 0 && Boolean(onSelectAnime);
-          const unavailableTitle = `${titleText} is not an anime title and cannot be opened in Seenary.`;
+          const relatedMediaType = getRelatedMediaType(media);
+          const canOpen =
+            Boolean(relatedMediaType) &&
+            Number.isInteger(mediaId) &&
+            mediaId > 0 &&
+            Boolean(onSelectMedia);
 
           return (
             <button
               type="button"
               key={`${media?.id ?? index}-${edge.relationType ?? "related"}`}
-              onClick={() => canOpen && onSelectAnime?.(mediaId)}
+              onClick={() =>
+                canOpen && relatedMediaType && onSelectMedia?.(mediaId, relatedMediaType)
+              }
               disabled={!canOpen}
               className="group grid min-w-0 grid-cols-[3.5rem_1fr] gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
-              title={canOpen ? `Open ${titleText}` : unavailableTitle}
+              title={canOpen ? `Open ${titleText}` : titleText}
             >
               <div className="h-20 w-14 overflow-hidden rounded-xl bg-white/5">
                 {media?.coverImage?.large ? (
@@ -2042,7 +2278,7 @@ function RelatedAnimeShelf({
                     {relation.label}
                   </span>
                   <span className="text-xs font-medium text-white/45">
-                    {isAnime ? relation.cue : "Shown for context"}
+                    {relation.cue}
                   </span>
                 </div>
 
@@ -2056,14 +2292,24 @@ function RelatedAnimeShelf({
                       {media.format}
                     </span>
                   )}
-                  {!isAnime && (
+                  {relatedMediaType && (
                     <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/40">
-                      Not available in Seenary
+                      {relatedMediaType === "MANGA" ? "Manga" : "Anime"}
                     </span>
                   )}
                   {media?.episodes && (
                     <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
                       {media.episodes} eps
+                    </span>
+                  )}
+                  {media?.chapters && (
+                    <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
+                      {media.chapters} ch
+                    </span>
+                  )}
+                  {media?.volumes && (
+                    <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
+                      {media.volumes} vols
                     </span>
                   )}
                   {media?.averageScore && (
@@ -2085,12 +2331,12 @@ function MediaShelf({
   title,
   icon: Icon,
   items,
-  onSelectAnime,
+  onSelectMedia,
 }: {
   title: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   items: Array<{ label: string; media: RecommendationMedia }>;
-  onSelectAnime?: (animeId: number) => void;
+  onSelectMedia?: (mediaId: number, mediaType: MediaType) => void;
 }) {
   return (
     <ContentSection title={title} icon={Icon}>
@@ -2098,13 +2344,20 @@ function MediaShelf({
         {items.slice(0, 10).map(({ label, media }, index) => {
           const titleText = getMediaTitle(media);
           const mediaId = Number(media?.id);
-          const canOpen = Number.isInteger(mediaId) && mediaId > 0 && Boolean(onSelectAnime);
+          const recommendationType = getRelatedMediaType(media);
+          const canOpen =
+            Boolean(recommendationType) &&
+            Number.isInteger(mediaId) &&
+            mediaId > 0 &&
+            Boolean(onSelectMedia);
 
           return (
             <button
               type="button"
               key={`${media?.id ?? index}-${label}`}
-              onClick={() => canOpen && onSelectAnime?.(mediaId)}
+              onClick={() =>
+                canOpen && recommendationType && onSelectMedia?.(mediaId, recommendationType)
+              }
               disabled={!canOpen}
               className="group flex min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
               title={canOpen ? `Open ${titleText}` : titleText}
@@ -2133,6 +2386,11 @@ function MediaShelf({
                       {media.format}
                     </span>
                   )}
+                  {recommendationType && (
+                    <span className="rounded-full border border-white/10 bg-white/5 px-2 py-1 text-[11px] text-white/40">
+                      {recommendationType === "MANGA" ? "Manga" : "Anime"}
+                    </span>
+                  )}
                   {media?.averageScore && (
                     <span className="rounded-full bg-white/8 px-2 py-1 text-[11px] text-white/45">
                       {media.averageScore}%
@@ -2151,12 +2409,14 @@ function MediaShelf({
 function LinksSection({
   streamingEpisodes,
   externalLinks,
+  mediaType,
 }: {
   streamingEpisodes: StreamingEpisode[];
   externalLinks: ExternalLink[];
+  mediaType: MediaType;
 }) {
   return (
-    <ContentSection title="Watch & Links" icon={LinkIcon}>
+    <ContentSection title={mediaType === "MANGA" ? "Official links" : "Watch & Links"} icon={LinkIcon}>
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         {streamingEpisodes.slice(0, 6).map((episode, index) => (
           <a
@@ -2439,6 +2699,9 @@ function SideFacts({
   seasonYear,
   format,
   animeStatus,
+  mediaType,
+  chapters,
+  volumes,
 }: {
   score: number | null;
   meanScore: number | null;
@@ -2453,7 +2716,11 @@ function SideFacts({
   seasonYear?: number | null;
   format?: string | null;
   animeStatus?: string | null;
+  mediaType: MediaType;
+  chapters: number | null;
+  volumes: number | null;
 }) {
+  const isManga = mediaType === "MANGA";
   const isUpcoming = animeStatus === "NOT_YET_RELEASED";
   const hasDistinctEndDate = Boolean(endDate && !areMediaDatesEqual(startDate, endDate));
   const facts = [
@@ -2465,35 +2732,51 @@ function SideFacts({
     favourites
       ? { label: "Favourites", value: formatNumber(favourites), icon: HeartIcon }
       : null,
-    duration ? { label: "Duration", value: `${duration} min`, icon: ClockIcon } : null,
+    !isManga && duration ? { label: "Duration", value: `${duration} min`, icon: ClockIcon } : null,
+    isManga && chapters
+      ? { label: "Chapters", value: formatNumber(chapters), icon: DocumentTextIcon }
+      : null,
+    isManga && volumes
+      ? { label: "Volumes", value: formatNumber(volumes), icon: BookmarkIcon }
+      : null,
     source ? { label: "Source", value: formatEnum(source), icon: BookmarkIcon } : null,
     countryOfOrigin
       ? { label: "Country", value: countryOfOrigin, icon: TagIcon }
       : null,
     startDate
       ? {
-          label: isUpcoming ? "Premiere" : "Start",
+          label: isUpcoming
+            ? isManga
+              ? "Publication"
+              : "Premiere"
+            : isManga
+              ? "Published"
+              : "Start",
           value: formatFuzzyDate(startDate),
           icon: CalendarDaysIcon,
         }
       : null,
     endDate && (!isUpcoming || hasDistinctEndDate)
       ? {
-          label: isUpcoming ? "Expected end" : "End",
+          label: isUpcoming ? "Expected end" : isManga ? "Last published" : "End",
           value: formatFuzzyDate(endDate),
           icon: CalendarDaysIcon,
         }
       : null,
-    season && seasonYear
+    !isManga && season && seasonYear
       ? {
           label: "Season",
           value: `${formatEnum(season)} ${seasonYear}`,
           icon: CalendarDaysIcon,
         }
       : null,
-    format ? { label: "Format", value: format, icon: TvIcon } : null,
+    format ? { label: "Format", value: formatMediaFormat(format), icon: isManga ? BookmarkIcon : TvIcon } : null,
     animeStatus
-      ? { label: "Airing", value: formatEnum(animeStatus), icon: CheckCircleIcon }
+      ? {
+          label: isManga ? "Publishing" : "Airing",
+          value: getMediaStatusLabel(animeStatus, mediaType),
+          icon: CheckCircleIcon,
+        }
       : null,
   ].filter(Boolean) as MetaItem[];
 
@@ -2560,12 +2843,25 @@ function ActionDivider() {
   return <div className="h-6 w-px bg-white/10" />;
 }
 
-function formatProgress(progress: number, totalEpisodes: number | null) {
+function formatProgress(
+  progress: number,
+  totalEpisodes: number | null,
+  mediaType: MediaType = "ANIME"
+) {
+  const unit = mediaType === "MANGA" ? "ch" : "eps";
   if (totalEpisodes && totalEpisodes > 0) {
-    return `${progress} / ${totalEpisodes} eps`;
+    return `${progress} / ${totalEpisodes} ${unit}`;
   }
 
-  return `${progress} eps`;
+  return `${progress} ${unit}`;
+}
+
+function getPersonalStatusLabel(status: ListEntry["status"], mediaType: MediaType) {
+  if (mediaType === "MANGA") {
+    if (status === "watching") return "Reading";
+    if (status === "planned") return "Plan to Read";
+  }
+  return STATUS_LABELS[status];
 }
 
 function formatEnum(value: string) {
@@ -2831,14 +3127,22 @@ function getRelationPriority(relationType?: string | null) {
   return priorities[relationType ?? ""] ?? 100;
 }
 
-function isAnimeRelatedMedia(media: RelatedMedia | null | undefined) {
-  if (media?.type) {
-    return media.type === "ANIME";
+function getRelatedMediaType(
+  media: RelatedMedia | RecommendationMedia | null | undefined
+): MediaType | null {
+  if (media?.type === "ANIME" || media?.type === "MANGA") {
+    return media.type;
   }
 
-  return new Set(["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL", "MUSIC"]).has(
-    String(media?.format ?? "").toUpperCase()
-  );
+  const format = String(media?.format ?? "").toUpperCase();
+  if (new Set(["TV", "TV_SHORT", "MOVIE", "OVA", "ONA", "SPECIAL", "MUSIC"]).has(format)) {
+    return "ANIME";
+  }
+  if (new Set(["MANGA", "NOVEL", "ONE_SHOT"]).has(format)) {
+    return "MANGA";
+  }
+
+  return null;
 }
 
 function getRelationDetails(relationType?: string | null): {
@@ -2991,6 +3295,74 @@ function getSeriesTiming(
       };
 }
 
+function getPublicationTiming(
+  date: { year?: number | null; month?: number | null; day?: number | null } | null,
+  now: number
+) {
+  const timing = getSeriesTiming(date, now);
+  if (!timing) return null;
+
+  if (timing.label === "Premiere") {
+    return {
+      label: "Publication",
+      value: timing.value.replace("Starts", "Publishes"),
+      context: timing.context,
+    };
+  }
+
+  return {
+    label: "Publication age",
+    value: timing.value.replace("First aired", "First published"),
+    context: timing.context,
+  };
+}
+
+function getPublicationTotalPresentation(
+  total: number | null,
+  status: string | null,
+  unit: "chapter" | "volume"
+) {
+  if (total) {
+    return {
+      value: formatNumber(total),
+      context: `${total} ${total === 1 ? unit : `${unit}s`} published`,
+    };
+  }
+
+  switch (status) {
+    case "RELEASING":
+      return {
+        value: "Ongoing",
+        context: `Final ${unit} total not announced`,
+      };
+    case "NOT_YET_RELEASED":
+      return {
+        value: "TBA",
+        context: `${unit === "chapter" ? "Chapter" : "Volume"} total will be confirmed later`,
+      };
+    case "FINISHED":
+      return {
+        value: "Not listed",
+        context: `AniList has no confirmed ${unit} total`,
+      };
+    case "HIATUS":
+      return {
+        value: "Unconfirmed",
+        context: `No final ${unit} total while publication is on hiatus`,
+      };
+    case "CANCELLED":
+      return {
+        value: "Not listed",
+        context: `No confirmed final ${unit} total`,
+      };
+    default:
+      return {
+        value: "Not listed",
+        context: `AniList has no confirmed ${unit} total`,
+      };
+  }
+}
+
 function formatCalendarSpan(days: number) {
   if (days < 1) return "today";
   if (days < 14) return `${days} ${days === 1 ? "day" : "days"}`;
@@ -3092,14 +3464,16 @@ function formatCount(count: number, singular: string, plural = `${singular}s`) {
   return `${count} ${count === 1 ? singular : plural}`;
 }
 
-function getAiringStatusLabel(status: string) {
+function getMediaStatusLabel(status: string, mediaType: MediaType) {
+  const isManga = mediaType === "MANGA";
+
   switch (status) {
     case "RELEASING":
-      return "Still airing";
+      return isManga ? "Publishing" : "Still airing";
     case "FINISHED":
-      return "Finished airing";
+      return isManga ? "Finished publishing" : "Finished airing";
     case "NOT_YET_RELEASED":
-      return "Upcoming";
+      return isManga ? "Not yet published" : "Upcoming";
     case "CANCELLED":
       return "Cancelled";
     case "HIATUS":

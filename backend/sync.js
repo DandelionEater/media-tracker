@@ -13,17 +13,22 @@ const {
   getAniListAccountByUserId,
   getMalAccountByUserId,
   getAnimeExternalIdByAnimeId,
+  getUserMangaList,
+  enqueueSyncJob,
+  getSyncQueueJob,
   upsertAnimeExternalId,
   getDueSyncQueueJobs,
   getSyncQueueItems,
   getSyncQueueCount,
   getSyncHistoryItems,
+  hasCompletedSyncHistory,
   markSyncQueueJobFailed,
   deleteSyncQueueJob,
   insertSyncHistory,
 } = require('./db');
 
 const AUTO_SYNC_KEY_PREFIX = 'sync.autoEnabled.user.';
+const MAL_MANGA_CLEAR_FIELDS_FIX_KEY_PREFIX = 'sync.malMangaClearFieldsFix.user.';
 const AUTO_SYNC_DELAY_MS = 15 * 1000;
 
 let autoSyncTimer = null;
@@ -74,6 +79,20 @@ function buildAniListPayload(entry) {
   };
 }
 
+function buildAniListMangaPayload(entry) {
+  return {
+    mediaId: entry.manga_id,
+    status: mapStatus(entry.status),
+    progress: entry.progress ?? 0,
+    progressVolumes: entry.volume_progress ?? entry.volumeProgress ?? 0,
+    score: entry.score ?? null,
+    notes: entry.notes ?? null,
+    startedAt: entry.started_at ?? null,
+    completedAt: entry.completed_at ?? null,
+    repeat: entry.repeat_count ?? 0,
+  };
+}
+
 function buildMalPayload(entry, malAnimeId) {
   return {
     malAnimeId: malAnimeId === null || malAnimeId === undefined ? null : Number(malAnimeId),
@@ -86,13 +105,28 @@ function buildMalPayload(entry, malAnimeId) {
   };
 }
 
+function buildMalMangaPayload(entry, malMangaId) {
+  return {
+    malMangaId: malMangaId === null || malMangaId === undefined ? null : Number(malMangaId),
+    status: entry.status,
+    progress: entry.progress ?? 0,
+    volume_progress: entry.volume_progress ?? entry.volumeProgress ?? 0,
+    score: entry.score ?? null,
+    notes: entry.notes ?? null,
+    started_at: entry.started_at ?? null,
+    completed_at: entry.completed_at ?? null,
+    repeat_count: entry.repeat_count ?? 0,
+    is_rereading: Boolean(entry.is_rereading ?? entry.isRereading),
+  };
+}
+
 function getEntryTitle(entry) {
   return (
     entry?.title_preferred ||
     entry?.title_english ||
     entry?.title_romaji ||
     entry?.title_native ||
-    `Anime #${entry?.anime_id}`
+    `${entry?.media_type === 'MANGA' || entry?.manga_id ? 'Manga' : 'Anime'} #${entry?.manga_id ?? entry?.anime_id}`
   );
 }
 
@@ -301,6 +335,33 @@ async function resolveMalAnimeIdForLocalEntry(entry, accessToken) {
   return String(best.candidate.id);
 }
 
+async function resolveMalMangaIdForLocalEntry(entry, accessToken) {
+  const directId = entry?.external_ids?.mal || entry?.details?.idMal;
+  if (directId) return String(directId);
+
+  let best = null;
+  const seen = new Set();
+
+  for (const title of getLocalEntryTitles(entry).flatMap(getMalSearchTitleVariants)) {
+    let candidates = [];
+    try {
+      candidates = await mal.searchManga(title, { accessToken, limit: 25 });
+    } catch (error) {
+      if (!isInvalidMalQueryError(error)) throw error;
+      continue;
+    }
+
+    for (const candidate of candidates) {
+      if (!candidate?.id || seen.has(String(candidate.id))) continue;
+      seen.add(String(candidate.id));
+      const score = scoreMalCandidateForEntry(entry, candidate);
+      if (!best || score > best.score) best = { candidate, score };
+    }
+  }
+
+  return canUseMalCandidateForEntry(entry, best) ? String(best.candidate.id) : null;
+}
+
 function buildAniListDeletePayload(entry, anilistUserId) {
   return {
     mediaId: entry.anime_id,
@@ -311,6 +372,16 @@ function buildAniListDeletePayload(entry, anilistUserId) {
 function buildMalDeletePayload(entry, malAnimeId) {
   return {
     malAnimeId: malAnimeId === null || malAnimeId === undefined ? null : Number(malAnimeId),
+  };
+}
+
+function buildAniListMangaDeletePayload(entry, anilistUserId) {
+  return { mediaId: entry.manga_id, mediaType: 'MANGA', userId: anilistUserId };
+}
+
+function buildMalMangaDeletePayload(entry, malMangaId) {
+  return {
+    malMangaId: malMangaId === null || malMangaId === undefined ? null : Number(malMangaId),
   };
 }
 
@@ -383,6 +454,83 @@ function scheduleAutoSync(userId) {
   }, AUTO_SYNC_DELAY_MS);
 }
 
+function buildInitialChangedFields(entry) {
+  return [
+    { field: 'status', from: null, to: entry.status ?? 'planned' },
+    { field: 'progress', from: null, to: entry.progress ?? 0 },
+    { field: 'volumeProgress', from: null, to: entry.volume_progress ?? 0 },
+    { field: 'score', from: null, to: entry.score ?? null },
+  ].filter((change) => change.from !== change.to);
+}
+
+function ensureExistingMangaSyncJobs(userId) {
+  const linkedAniListAccount = getAniListAccountByUserId(userId);
+  const linkedMalAccount = getMalAccountByUserId(userId);
+  const repairKey = `${MAL_MANGA_CLEAR_FIELDS_FIX_KEY_PREFIX}${userId}`;
+  const needsMalClearFieldsRepair = Boolean(
+    linkedMalAccount?.access_token && getAppSetting(repairKey) !== '2'
+  );
+  const malRepairMediaIds = new Set();
+
+  if (needsMalClearFieldsRepair) {
+    for (const item of getSyncHistoryItems(userId, 'completed', 5000)) {
+      if (item.operation !== 'upsert_mal_manga_entry') continue;
+      const clearedScoreOrNotes = item.changedFields?.some(
+        (change) =>
+          ['score', 'notes'].includes(change?.field) &&
+          (change?.to === null || change?.to === '')
+      );
+      if (clearedScoreOrNotes && item.manga_id) {
+        malRepairMediaIds.add(Number(item.manga_id));
+      }
+    }
+  }
+
+  for (const entry of getUserMangaList(userId)) {
+    const changedFields = buildInitialChangedFields(entry);
+
+    if (
+      linkedAniListAccount?.access_token &&
+      !getSyncQueueJob(userId, entry.manga_id, 'upsert_anilist_manga_entry', 'MANGA') &&
+      !hasCompletedSyncHistory(
+        userId,
+        'MANGA',
+        entry.manga_id,
+        'upsert_anilist_manga_entry'
+      )
+    ) {
+      enqueueSyncJob({
+        userId,
+        mangaId: entry.manga_id,
+        mediaType: 'MANGA',
+        operation: 'upsert_anilist_manga_entry',
+        payload: buildAniListMangaPayload(entry),
+        changedFields,
+      });
+    }
+
+    if (
+      linkedMalAccount?.access_token &&
+      !getSyncQueueJob(userId, entry.manga_id, 'upsert_mal_manga_entry', 'MANGA') &&
+      (malRepairMediaIds.has(entry.manga_id) ||
+        !hasCompletedSyncHistory(userId, 'MANGA', entry.manga_id, 'upsert_mal_manga_entry'))
+    ) {
+      enqueueSyncJob({
+        userId,
+        mangaId: entry.manga_id,
+        mediaType: 'MANGA',
+        operation: 'upsert_mal_manga_entry',
+        payload: buildMalMangaPayload(entry, entry.details?.idMal ?? null),
+        changedFields,
+      });
+    }
+  }
+
+  if (needsMalClearFieldsRepair) {
+    setAppSetting(repairKey, '2');
+  }
+}
+
 async function runSyncForUser(userId, options = {}) {
   if (runningUsers.has(userId)) {
     return {
@@ -397,7 +545,9 @@ async function runSyncForUser(userId, options = {}) {
   runningUsers.add(userId);
 
   try {
-    const jobs = getDueSyncQueueJobs(userId, options.limit ?? 50, {
+    ensureExistingMangaSyncJobs(userId);
+    const jobLimit = options.limit ?? 50;
+    const jobs = getDueSyncQueueJobs(userId, jobLimit, {
       includeFutureRetries: Boolean(options.forceRetry),
     });
     const linkedAniListAccount = getAniListAccountByUserId(userId);
@@ -452,6 +602,24 @@ async function runSyncForUser(userId, options = {}) {
 
       malMappingCache.set(job.anime_id, malAnimeId);
       return malAnimeId;
+    }
+
+    async function resolveMalMangaIdForJob(job) {
+      const cached = malMappingCache.get(`MANGA:${job.manga_id}`);
+      if (cached) return cached;
+
+      let malMangaId = job.payload.malMangaId;
+      if (!malMangaId && runMalOperation) {
+        malMangaId = await runMalOperation(async (account) => {
+          if (!account?.access_token) {
+            throw new Error('Link a MyAnimeList account before syncing this Manga.');
+          }
+          return await resolveMalMangaIdForLocalEntry(job, account.access_token);
+        });
+      }
+
+      malMappingCache.set(`MANGA:${job.manga_id}`, malMangaId);
+      return malMangaId;
     }
 
     emitProgress({
@@ -589,6 +757,126 @@ async function runSyncForUser(userId, options = {}) {
           continue;
         }
 
+        if (job.operation === 'upsert_anilist_manga_entry') {
+          if (!linkedAniListAccount?.access_token) {
+            throw new Error('Link an AniList account before syncing this Manga.');
+          }
+          await anilist.saveMediaListEntry(
+            linkedAniListAccount.access_token,
+            cleanPayload(job.payload)
+          );
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            mangaId: job.manga_id,
+            mediaType: 'MANGA',
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Synced Manga to AniList.',
+          });
+          synced += 1;
+          syncedItems.push({
+            animeTitle: job.animeTitle,
+            mediaType: 'MANGA',
+            provider: 'AniList',
+          });
+          continue;
+        }
+
+        if (job.operation === 'delete_anilist_manga_entry') {
+          if (!linkedAniListAccount?.access_token || !linkedAniListAccount?.anilist_user_id) {
+            throw new Error('Link an AniList account before syncing this Manga deletion.');
+          }
+          await anilist.deleteMediaListEntry(linkedAniListAccount.access_token, {
+            ...job.payload,
+            mediaId: job.manga_id,
+            mediaType: 'MANGA',
+            userId: linkedAniListAccount.anilist_user_id,
+          });
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            mangaId: job.manga_id,
+            mediaType: 'MANGA',
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Deleted Manga from AniList.',
+          });
+          synced += 1;
+          syncedItems.push({
+            animeTitle: job.animeTitle,
+            mediaType: 'MANGA',
+            provider: 'AniList',
+          });
+          continue;
+        }
+
+        if (job.operation === 'upsert_mal_manga_entry') {
+          if (!runMalOperation) {
+            throw new Error('Link a MyAnimeList account before syncing this Manga.');
+          }
+          const malMangaId = await resolveMalMangaIdForJob(job);
+          if (!malMangaId) {
+            throw new Error('No MyAnimeList ID mapping exists for this Manga.');
+          }
+          await runMalOperation(async (account) =>
+            await mal.saveMangaListStatus(account.access_token, malMangaId, job.payload)
+          );
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            mangaId: job.manga_id,
+            mediaType: 'MANGA',
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Synced Manga to MyAnimeList.',
+          });
+          synced += 1;
+          syncedItems.push({
+            animeTitle: job.animeTitle,
+            mediaType: 'MANGA',
+            provider: 'MyAnimeList',
+          });
+          continue;
+        }
+
+        if (job.operation === 'delete_mal_manga_entry') {
+          if (!runMalOperation) {
+            throw new Error('Link a MyAnimeList account before syncing this Manga deletion.');
+          }
+          const malMangaId = await resolveMalMangaIdForJob(job);
+          if (!malMangaId) {
+            throw new Error('No MyAnimeList ID mapping exists for this Manga.');
+          }
+          await runMalOperation(async (account) =>
+            await mal.deleteMangaListStatus(account.access_token, malMangaId)
+          );
+          deleteSyncQueueJob(job.id);
+          insertSyncHistory({
+            userId,
+            mangaId: job.manga_id,
+            mediaType: 'MANGA',
+            animeTitle: job.animeTitle,
+            operation: job.operation,
+            changedFields: job.changedFields,
+            status: 'completed',
+            message: 'Deleted Manga from MyAnimeList.',
+          });
+          synced += 1;
+          syncedItems.push({
+            animeTitle: job.animeTitle,
+            mediaType: 'MANGA',
+            provider: 'MyAnimeList',
+          });
+          continue;
+        }
+
         throw new Error(`Unsupported sync operation: ${job.operation}`);
       } catch (error) {
         const message = error.message || 'Failed to sync entry.';
@@ -596,6 +884,8 @@ async function runSyncForUser(userId, options = {}) {
         insertSyncHistory({
           userId,
           animeId: job.anime_id,
+          mangaId: job.manga_id,
+          mediaType: job.media_type,
           animeTitle: job.animeTitle,
           operation: job.operation,
           changedFields: job.changedFields,
@@ -651,6 +941,10 @@ async function runSyncForUser(userId, options = {}) {
 function getSyncStatus(userId) {
   const linkedAniListAccount = getAniListAccountByUserId(userId);
   const linkedMalAccount = getMalAccountByUserId(userId);
+  const linkedProviders = [
+    ...(linkedAniListAccount ? ['AniList'] : []),
+    ...(linkedMalAccount ? ['MyAnimeList'] : []),
+  ];
   const provider = linkedAniListAccount ? 'anilist' : linkedMalAccount ? 'mal' : null;
   const providerLabel =
     provider === 'anilist' ? 'AniList' : provider === 'mal' ? 'MyAnimeList' : null;
@@ -660,17 +954,31 @@ function getSyncStatus(userId) {
     linked: Boolean(provider),
     provider,
     providerLabel,
+    syncTargetsLabel: linkedProviders.join(' and ') || null,
     autoSyncEnabled: getAutoSyncEnabled(userId),
     pendingCount: getSyncQueueCount(userId),
   };
 }
 
 function getSyncActivity(userId) {
+  const completedHistory = getSyncHistoryItems(userId, 'completed', 100);
+  const failedHistory = getSyncHistoryItems(userId, 'failed', 100);
+  const partialHistory = getSyncHistoryItems(userId, 'partial', 100);
+  const isPullActivity = (item) => String(item?.operation || '').startsWith('pull_');
+  const pulled = [...completedHistory, ...failedHistory, ...partialHistory]
+    .filter(isPullActivity)
+    .sort((left, right) => {
+      const dateOrder = String(right.created_at || '').localeCompare(String(left.created_at || ''));
+      return dateOrder || Number(right.id || 0) - Number(left.id || 0);
+    })
+    .slice(0, 100);
+
   return {
     ok: true,
     pending: getSyncQueueItems(userId, 50),
-    completed: getSyncHistoryItems(userId, 'completed', 50),
-    failed: getSyncHistoryItems(userId, 'failed', 50),
+    completed: completedHistory.filter((item) => !isPullActivity(item)).slice(0, 50),
+    failed: failedHistory.filter((item) => !isPullActivity(item)).slice(0, 50),
+    pulled,
   };
 }
 
@@ -680,12 +988,17 @@ function getStatelessSyncStatus(userId, localPendingCount = 0, autoSyncEnabled =
   const provider = linkedAniListAccount ? 'anilist' : linkedMalAccount ? 'mal' : null;
   const providerLabel =
     provider === 'anilist' ? 'AniList' : provider === 'mal' ? 'MyAnimeList' : null;
+  const linkedProviders = [
+    ...(linkedAniListAccount ? ['AniList'] : []),
+    ...(linkedMalAccount ? ['MyAnimeList'] : []),
+  ];
 
   return {
     ok: true,
     linked: Boolean(provider),
     provider,
     providerLabel,
+    syncTargetsLabel: linkedProviders.join(' and ') || null,
     autoSyncEnabled: Boolean(autoSyncEnabled),
     pendingCount: Number(localPendingCount) || 0,
   };
@@ -705,11 +1018,15 @@ async function runStatelessSyncForUser(userId, payload = {}) {
 
   const entries = Array.isArray(payload.entries) ? payload.entries : [];
   const deletedEntries = Array.isArray(payload.deletedEntries) ? payload.deletedEntries : [];
+  const mangaEntries = Array.isArray(payload.mangaEntries) ? payload.mangaEntries : [];
+  const deletedMangaEntries = Array.isArray(payload.deletedMangaEntries)
+    ? payload.deletedMangaEntries
+    : [];
   const linkedAniListAccount = getAniListAccountByUserId(userId);
-  const linkedMalAccount = linkedAniListAccount?.access_token
-    ? null
-    : await getFreshMalAccountByUserId(userId);
+  const linkedMalAccount = await getFreshMalAccountByUserId(userId);
   const activity = [];
+  const localChangeCount =
+    entries.length + deletedEntries.length + mangaEntries.length + deletedMangaEntries.length;
 
   if (!linkedAniListAccount?.access_token && !linkedMalAccount?.access_token) {
     return {
@@ -717,7 +1034,7 @@ async function runStatelessSyncForUser(userId, payload = {}) {
       message: 'Link an AniList or MyAnimeList account before syncing.',
       synced: 0,
       failed: 0,
-      pending: entries.length + deletedEntries.length,
+      pending: localChangeCount,
       activity,
     };
   }
@@ -759,6 +1076,7 @@ async function runStatelessSyncForUser(userId, payload = {}) {
         try {
           await anilist.deleteMediaListEntry(linkedAniListAccount.access_token, {
             mediaId: entry.anime_id,
+            mediaType: 'ANIME',
             userId: linkedAniListAccount.anilist_user_id,
           });
           synced += 1;
@@ -780,9 +1098,69 @@ async function runStatelessSyncForUser(userId, payload = {}) {
           });
         }
       }
-    } else if (linkedMalAccount?.access_token) {
+
+      for (const entry of mangaEntries) {
+        try {
+          await anilist.saveMediaListEntry(
+            linkedAniListAccount.access_token,
+            cleanPayload(buildAniListMangaPayload(entry))
+          );
+          synced += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: getEntryTitle(entry),
+            operation: 'upsert_anilist_manga_entry',
+            status: 'completed',
+            message: 'Synced Manga to AniList.',
+          });
+        } catch (error) {
+          failed += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: getEntryTitle(entry),
+            operation: 'upsert_anilist_manga_entry',
+            status: 'failed',
+            message: error.message || 'Failed to sync Manga to AniList.',
+          });
+        }
+      }
+
+      for (const entry of deletedMangaEntries) {
+        try {
+          await anilist.deleteMediaListEntry(linkedAniListAccount.access_token, {
+            mediaId: entry.manga_id,
+            mediaType: 'MANGA',
+            userId: linkedAniListAccount.anilist_user_id,
+          });
+          synced += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: entry.title || `Manga #${entry.manga_id}`,
+            operation: 'delete_anilist_manga_entry',
+            status: 'completed',
+            message: 'Deleted Manga from AniList.',
+          });
+        } catch (error) {
+          failed += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: entry.title || `Manga #${entry.manga_id}`,
+            operation: 'delete_anilist_manga_entry',
+            status: 'failed',
+            message: error.message || 'Failed to delete Manga from AniList.',
+          });
+        }
+      }
+    }
+
+    if (linkedMalAccount?.access_token) {
       const runMalOperation = createMalOperationRunner(userId, linkedMalAccount);
       const malMappingCache = createMalMappingCache();
+      const malMangaMappingCache = createMalMappingCache();
 
       async function resolveMalAnimeIdForStatelessEntry(entry) {
         const cached = malMappingCache.get(entry.anime_id);
@@ -808,6 +1186,21 @@ async function runStatelessSyncForUser(userId, payload = {}) {
 
         malMappingCache.set(entry.anime_id, malAnimeId);
         return malAnimeId;
+      }
+
+      async function resolveMalMangaIdForStatelessEntry(entry) {
+        const mediaId = entry.manga_id;
+        const cached = malMangaMappingCache.get(mediaId);
+        if (cached) return cached;
+
+        let malMangaId = entry?.external_ids?.mal || entry?.details?.idMal;
+        if (!malMangaId) {
+          malMangaId = await runMalOperation(async (account) =>
+            await resolveMalMangaIdForLocalEntry(entry, account.access_token)
+          );
+        }
+        malMangaMappingCache.set(mediaId, malMangaId);
+        return malMangaId;
       }
 
       for (const entry of entries) {
@@ -875,6 +1268,71 @@ async function runStatelessSyncForUser(userId, payload = {}) {
           });
         }
       }
+
+
+      for (const entry of mangaEntries) {
+        try {
+          const malMangaId = await resolveMalMangaIdForStatelessEntry(entry);
+          if (!malMangaId) throw new Error('No MyAnimeList ID mapping exists for this Manga.');
+
+          await runMalOperation(async (account) =>
+            await mal.saveMangaListStatus(
+              account.access_token,
+              malMangaId,
+              buildMalMangaPayload(entry, malMangaId)
+            )
+          );
+          synced += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: getEntryTitle(entry),
+            operation: 'upsert_mal_manga_entry',
+            status: 'completed',
+            message: 'Synced Manga to MyAnimeList.',
+          });
+        } catch (error) {
+          failed += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: getEntryTitle(entry),
+            operation: 'upsert_mal_manga_entry',
+            status: 'failed',
+            message: error.message || 'Failed to sync Manga to MyAnimeList.',
+          });
+        }
+      }
+
+      for (const entry of deletedMangaEntries) {
+        try {
+          const malMangaId = await resolveMalMangaIdForStatelessEntry(entry);
+          if (!malMangaId) throw new Error('No MyAnimeList ID mapping exists for this Manga.');
+
+          await runMalOperation(async (account) =>
+            await mal.deleteMangaListStatus(account.access_token, malMangaId)
+          );
+          synced += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: entry.title || `Manga #${entry.manga_id}`,
+            operation: 'delete_mal_manga_entry',
+            status: 'completed',
+            message: 'Deleted Manga from MyAnimeList.',
+          });
+        } catch (error) {
+          failed += 1;
+          activity.push({
+            manga_id: entry.manga_id,
+            media_type: 'MANGA',
+            animeTitle: entry.title || `Manga #${entry.manga_id}`,
+            operation: 'delete_mal_manga_entry',
+            status: 'failed',
+            message: error.message || 'Failed to delete Manga from MyAnimeList.',
+          });
+        }
+      }
     }
 
     const pending = failed;
@@ -900,8 +1358,12 @@ async function runStatelessSyncForUser(userId, payload = {}) {
 module.exports = {
   buildAniListPayload,
   buildAniListDeletePayload,
+  buildAniListMangaPayload,
+  buildAniListMangaDeletePayload,
   buildMalPayload,
   buildMalDeletePayload,
+  buildMalMangaPayload,
+  buildMalMangaDeletePayload,
   scheduleAutoSync,
   runSyncForUser,
   getSyncStatus,

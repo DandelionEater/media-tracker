@@ -9,6 +9,7 @@ const LAYOUT_KEYS = new Set([
   'personalLayoutOrder',
   'discoverLayoutOrder',
   'myListSectionOrder',
+  'mangaMyListSectionOrder',
 ]);
 
 function getConfigPath() {

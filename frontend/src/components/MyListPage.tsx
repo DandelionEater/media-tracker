@@ -21,6 +21,7 @@ import { ListEntryModal } from "./ListEntryModal";
 import { MyListCard } from "./MyListCard";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
+import type { MediaType, TrackedMangaEntry } from "../types/domain";
 
 type MyListEntry = {
   anime_id: number;
@@ -44,12 +45,19 @@ type MyListEntry = {
   average_score?: number | null;
   season?: string | null;
   season_year?: number | null;
+  media_type?: MediaType;
+  manga_id?: number;
+  chapters?: number | null;
+  volumes?: number | null;
+  volume_progress?: number;
+  is_rereading?: number | boolean;
 };
 
 type MyListPageProps = {
   userId: number;
   entries: MyListEntry[];
-  onSelectAnime: (id: number) => void;
+  mangaEntries: TrackedMangaEntry[];
+  onSelectMedia: (id: number, mediaType: MediaType) => void;
   onRefreshList: () => void | Promise<void>;
   onListChanged?: () => void | Promise<void>;
   onNotify?: (
@@ -111,6 +119,27 @@ const STATUS_META: Record<
   },
 };
 
+function getStatusMeta(status: ListStatus, mediaType: MediaType) {
+  const meta = STATUS_META[status];
+  if (mediaType !== "MANGA") return meta;
+
+  if (status === "watching") {
+    return {
+      ...meta,
+      label: "Reading",
+      description: "Manga you are actively reading right now.",
+    };
+  }
+  if (status === "planned") {
+    return {
+      ...meta,
+      label: "Plan to Read",
+      description: "Manga waiting on your reading list.",
+    };
+  }
+  return meta;
+}
+
 const DEFAULT_OPEN_SECTIONS: Record<MyListEntry["status"], boolean> = {
   watching: true,
   planned: true,
@@ -126,22 +155,32 @@ const MY_LIST_SORT_MODE_LEGACY_KEY = "media-tracker.my-list.sort-mode";
 const MY_LIST_SECTION_ORDER_KEY = "seenary.my-list.section-order";
 const MY_LIST_SECTION_ORDER_LEGACY_KEY = "media-tracker.my-list.section-order";
 const MY_LIST_VIEW_KEY = "seenary.my-list.view";
+const MY_LIST_MEDIA_TYPE_KEY = "seenary.my-list.media-type";
 
-function readStoredView(): MyListView {
+function readStoredMediaType(): MediaType {
+  if (typeof window === "undefined") return "ANIME";
+  return window.localStorage.getItem(MY_LIST_MEDIA_TYPE_KEY) === "MANGA" ? "MANGA" : "ANIME";
+}
+
+function getMediaPreferenceKey(key: string, mediaType: MediaType) {
+  return mediaType === "MANGA" ? `${key}.manga` : key;
+}
+
+function readStoredView(mediaType: MediaType = "ANIME"): MyListView {
   if (typeof window === "undefined") return "list";
-  const value = window.localStorage.getItem(MY_LIST_VIEW_KEY);
+  const value = window.localStorage.getItem(getMediaPreferenceKey(MY_LIST_VIEW_KEY, mediaType));
   return value === "grid" || value === "board" || value === "list" ? value : "list";
 }
 
-function readStoredOpenSections() {
+function readStoredOpenSections(mediaType: MediaType = "ANIME") {
   if (typeof window === "undefined") {
     return DEFAULT_OPEN_SECTIONS;
   }
 
   try {
     const rawValue = getMigratedLocalStorageItem(
-      MY_LIST_OPEN_SECTIONS_KEY,
-      MY_LIST_OPEN_SECTIONS_LEGACY_KEY
+      getMediaPreferenceKey(MY_LIST_OPEN_SECTIONS_KEY, mediaType),
+      getMediaPreferenceKey(MY_LIST_OPEN_SECTIONS_LEGACY_KEY, mediaType)
     );
 
     if (!rawValue) {
@@ -177,15 +216,15 @@ function readStoredOpenSections() {
   }
 }
 
-function readStoredSortMode(): SortMode {
+function readStoredSortMode(mediaType: MediaType = "ANIME"): SortMode {
   if (typeof window === "undefined") {
     return "alphabetical";
   }
 
   try {
     const storedSortMode = getMigratedLocalStorageItem(
-      MY_LIST_SORT_MODE_KEY,
-      MY_LIST_SORT_MODE_LEGACY_KEY
+      getMediaPreferenceKey(MY_LIST_SORT_MODE_KEY, mediaType),
+      getMediaPreferenceKey(MY_LIST_SORT_MODE_LEGACY_KEY, mediaType)
     );
 
     return storedSortMode === "personalScore" || storedSortMode === "alphabetical"
@@ -196,15 +235,15 @@ function readStoredSortMode(): SortMode {
   }
 }
 
-function readStoredSectionOrder() {
+function readStoredSectionOrder(mediaType: MediaType = "ANIME") {
   if (typeof window === "undefined") {
     return [...DEFAULT_STATUS_ORDER];
   }
 
   try {
     const rawValue = getMigratedLocalStorageItem(
-      MY_LIST_SECTION_ORDER_KEY,
-      MY_LIST_SECTION_ORDER_LEGACY_KEY
+      getMediaPreferenceKey(MY_LIST_SECTION_ORDER_KEY, mediaType),
+      getMediaPreferenceKey(MY_LIST_SECTION_ORDER_LEGACY_KEY, mediaType)
     );
 
     if (!rawValue) {
@@ -217,10 +256,15 @@ function readStoredSectionOrder() {
   }
 }
 
-function persistSectionOrder(order: ListStatus[]) {
+function persistSectionOrder(order: ListStatus[], mediaType: MediaType = "ANIME") {
   try {
-    window.localStorage.setItem(MY_LIST_SECTION_ORDER_KEY, JSON.stringify(order));
-    window.localStorage.removeItem(MY_LIST_SECTION_ORDER_LEGACY_KEY);
+    window.localStorage.setItem(
+      getMediaPreferenceKey(MY_LIST_SECTION_ORDER_KEY, mediaType),
+      JSON.stringify(order)
+    );
+    window.localStorage.removeItem(
+      getMediaPreferenceKey(MY_LIST_SECTION_ORDER_LEGACY_KEY, mediaType)
+    );
   } catch {
     // Ignore local persistence failures and keep the UI usable.
   }
@@ -276,23 +320,33 @@ function getCollapsedSections(): Record<ListStatus, boolean> {
 
 export function MyListPage({
   userId,
-  entries,
-  onSelectAnime,
+  entries: animeEntries,
+  mangaEntries,
+  onSelectMedia,
   onRefreshList,
   onListChanged,
   onNotify,
   titleLanguage,
   density,
 }: MyListPageProps) {
+  const [activeMediaType, setActiveMediaType] = useState<MediaType>(readStoredMediaType);
+  const entries: MyListEntry[] =
+    activeMediaType === "MANGA" ? mangaEntries : animeEntries;
   const [editingEntry, setEditingEntry] = useState<MyListEntry | null>(null);
   const [listSearch, setListSearch] = useState("");
-  const [openSections, setOpenSections] = useState(readStoredOpenSections);
-  const [sortMode, setSortMode] = useState<SortMode>(readStoredSortMode);
-  const [sectionOrder, setSectionOrder] = useState<ListStatus[]>(readStoredSectionOrder);
+  const [openSections, setOpenSections] = useState(() =>
+    readStoredOpenSections(activeMediaType)
+  );
+  const [sortMode, setSortMode] = useState<SortMode>(() =>
+    readStoredSortMode(activeMediaType)
+  );
+  const [sectionOrder, setSectionOrder] = useState<ListStatus[]>(() =>
+    readStoredSectionOrder(activeMediaType)
+  );
   const sectionOrderRef = useRef(sectionOrder);
   const [isEditingSectionOrder, setIsEditingSectionOrder] = useState(false);
   const [draggedSectionStatus, setDraggedSectionStatus] = useState<ListStatus | null>(null);
-  const [view, setView] = useState<MyListView>(readStoredView);
+  const [view, setView] = useState<MyListView>(() => readStoredView(activeMediaType));
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [progressFilter, setProgressFilter] = useState<ProgressFilter>("all");
   const [ratingFilter, setRatingFilter] = useState<RatingFilter>("all");
@@ -300,6 +354,26 @@ export function MyListPage({
   const [statusFilter, setStatusFilter] = useState<"all" | ListStatus>("all");
   const [nowMs, setNowMs] = useState(() => Date.now());
   const openSectionsBeforeEdit = useRef<Record<ListStatus, boolean> | null>(null);
+
+  function handleMediaTypeChange(mediaType: MediaType) {
+    if (mediaType === activeMediaType) return;
+
+    window.localStorage.setItem(MY_LIST_MEDIA_TYPE_KEY, mediaType);
+    const nextOrder = readStoredSectionOrder(mediaType);
+    sectionOrderRef.current = nextOrder;
+    setSectionOrder(nextOrder);
+    setOpenSections(readStoredOpenSections(mediaType));
+    setSortMode(readStoredSortMode(mediaType));
+    setView(readStoredView(mediaType));
+    setIsEditingSectionOrder(false);
+    setEditingEntry(null);
+    setActiveMediaType(mediaType);
+    setListSearch("");
+    setStatusFilter("all");
+    setProgressFilter("all");
+    setRatingFilter("all");
+    setFormatFilter("all");
+  }
 
   useEffect(() => {
     onRefreshList();
@@ -316,15 +390,23 @@ export function MyListPage({
         const result = await desktopConfig.getLayoutOrders(userId);
         if (cancelled || !result.ok) return;
 
-        if (result.myListSectionOrder) {
-          const order = normalizeSectionOrder(result.myListSectionOrder);
+        const savedOrder =
+          activeMediaType === "MANGA"
+            ? result.mangaMyListSectionOrder
+            : result.myListSectionOrder;
+
+        if (savedOrder) {
+          const order = normalizeSectionOrder(savedOrder);
           sectionOrderRef.current = order;
-          persistSectionOrder(order);
+          persistSectionOrder(order, activeMediaType);
           setSectionOrder(order);
         } else {
-          desktopConfig.setLayoutOrders(userId, {
-            myListSectionOrder: sectionOrderRef.current,
-          });
+          desktopConfig.setLayoutOrders(
+            userId,
+            activeMediaType === "MANGA"
+              ? { mangaMyListSectionOrder: sectionOrderRef.current }
+              : { myListSectionOrder: sectionOrderRef.current }
+          );
         }
       } catch (error) {
         console.warn("Failed to load desktop My List configuration:", error);
@@ -335,7 +417,7 @@ export function MyListPage({
     return () => {
       cancelled = true;
     };
-  }, [userId]);
+  }, [activeMediaType, userId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setNowMs(Date.now()), 30_000);
@@ -349,37 +431,43 @@ export function MyListPage({
 
     try {
       window.localStorage.setItem(
-        MY_LIST_OPEN_SECTIONS_KEY,
+        getMediaPreferenceKey(MY_LIST_OPEN_SECTIONS_KEY, activeMediaType),
         JSON.stringify(openSections)
       );
     } catch {
       // Ignore local persistence failures and keep the UI usable.
     }
-  }, [isEditingSectionOrder, openSections]);
+  }, [activeMediaType, isEditingSectionOrder, openSections]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(MY_LIST_SORT_MODE_KEY, sortMode);
+      window.localStorage.setItem(
+        getMediaPreferenceKey(MY_LIST_SORT_MODE_KEY, activeMediaType),
+        sortMode
+      );
     } catch {
       // Ignore local persistence failures and keep the UI usable.
     }
-  }, [sortMode]);
+  }, [activeMediaType, sortMode]);
 
   useEffect(() => {
     try {
-      window.localStorage.setItem(MY_LIST_VIEW_KEY, view);
+      window.localStorage.setItem(getMediaPreferenceKey(MY_LIST_VIEW_KEY, activeMediaType), view);
     } catch {
       // Ignore local persistence failures and keep the UI usable.
     }
-  }, [view]);
+  }, [activeMediaType, view]);
 
   function saveSectionOrder(order: ListStatus[]) {
     sectionOrderRef.current = order;
-    persistSectionOrder(order);
+    persistSectionOrder(order, activeMediaType);
     setSectionOrder(order);
-    const result = window.desktopConfig?.setLayoutOrders(userId, {
-      myListSectionOrder: order,
-    });
+    const result = window.desktopConfig?.setLayoutOrders(
+      userId,
+      activeMediaType === "MANGA"
+        ? { mangaMyListSectionOrder: order }
+        : { myListSectionOrder: order }
+    );
     if (result && !result.ok) {
       console.warn(result.message || "Failed to save My List layout.");
     }
@@ -387,7 +475,7 @@ export function MyListPage({
 
   function handleToggleSectionOrderEdit() {
     if (isEditingSectionOrder) {
-      persistSectionOrder(sectionOrderRef.current);
+      persistSectionOrder(sectionOrderRef.current, activeMediaType);
       setIsEditingSectionOrder(false);
 
       if (openSectionsBeforeEdit.current) {
@@ -494,38 +582,18 @@ export function MyListPage({
 
       return {
         status,
-        label: STATUS_META[status].label,
-        icon: STATUS_META[status].icon,
-        description: STATUS_META[status].description,
+        label: getStatusMeta(status, activeMediaType).label,
+        icon: getStatusMeta(status, activeMediaType).icon,
+        description: getStatusMeta(status, activeMediaType).description,
         items,
       };
     });
-  }, [filteredEntries, sectionOrder, sortMode, titleLanguage]);
+  }, [activeMediaType, filteredEntries, sectionOrder, sortMode, titleLanguage]);
 
   const visibleSections = groupedEntries.filter(({ items }) => items.length > 0);
   const displayedSections = view === "board" && !isEditingSectionOrder
     ? visibleSections.filter(({ status }) => openSections[status])
     : visibleSections;
-
-  if (!entries.length) {
-    return (
-      <div className="flex h-full items-center justify-center px-8 text-center">
-        <div className="max-w-xl">
-          <p className="mb-3 text-sm uppercase tracking-[0.3em] text-white/35">
-            My List
-          </p>
-
-          <h1 className="text-3xl font-bold tracking-tight text-white">
-            Your list is still empty.
-          </h1>
-
-          <p className="mt-4 text-base leading-7 text-white/60">
-            Open an anime page, add it to your list, and it will show up here.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <>
@@ -542,7 +610,7 @@ export function MyListPage({
                   My List
                 </h1>
                 <p className="mt-2 text-white/55">
-                  Your saved anime, grouped by where they currently stand.
+                  Your saved {activeMediaType === "MANGA" ? "manga" : "anime"}, grouped by where they currently stand.
                 </p>
               </div>
 
@@ -554,6 +622,23 @@ export function MyListPage({
                   {entries.length}
                 </p>
               </div>
+            </div>
+
+            <div className="mt-5 inline-flex items-center rounded-2xl border border-white/10 bg-black/20 p-1 shadow-lg">
+              {(["ANIME", "MANGA"] as MediaType[]).map((mediaType) => (
+                <button
+                  key={mediaType}
+                  type="button"
+                  onClick={() => handleMediaTypeChange(mediaType)}
+                  className={`rounded-xl px-5 py-2 text-sm font-semibold transition ${
+                    activeMediaType === mediaType
+                      ? "bg-[var(--app-accent)] text-black shadow-lg shadow-[var(--app-accent)]/15"
+                      : "text-white/50 hover:bg-white/7 hover:text-white"
+                  }`}
+                >
+                  {mediaType === "MANGA" ? "Manga" : "Anime"}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -647,7 +732,7 @@ export function MyListPage({
               <div className="order-1 flex flex-wrap gap-2">
                 {sectionOrder.map((status) => {
                   const count = groupedEntries.find((group) => group.status === status)?.items.length ?? 0;
-                  const meta = STATUS_META[status];
+                  const meta = getStatusMeta(status, activeMediaType);
                   const PillIcon = meta.icon;
                   const selected = view === "board"
                     ? openSections[status]
@@ -693,10 +778,10 @@ export function MyListPage({
                     label="List status"
                     value={statusFilter}
                     onChange={(value) => setStatusFilter(value as "all" | ListStatus)}
-                    options={[["all", "Every status"], ...sectionOrder.map((status) => [status, STATUS_META[status].label] as [string, string])]}
+                    options={[["all", "Every status"], ...sectionOrder.map((status) => [status, getStatusMeta(status, activeMediaType).label] as [string, string])]}
                   />
                   <FilterSelect
-                    label="Watch progress"
+                    label={activeMediaType === "MANGA" ? "Reading progress" : "Watch progress"}
                     value={progressFilter}
                     onChange={(value) => setProgressFilter(value as ProgressFilter)}
                     options={[
@@ -846,7 +931,7 @@ export function MyListPage({
                                   key={`${entry.anime_id}-${entry.status}`}
                                   entry={entry}
                                   statusLabel={label}
-                                  onOpen={onSelectAnime}
+                                  onOpen={(id) => onSelectMedia(id, activeMediaType)}
                                   onEdit={setEditingEntry}
                                   titleLanguage={titleLanguage}
                                   searchQuery={listSearch}
@@ -865,7 +950,9 @@ export function MyListPage({
               })
             ) : (
               <div className="rounded-3xl border border-dashed border-white/10 bg-white/[0.03] px-5 py-8 text-sm text-white/45">
-                {view === "board" && visibleSections.length
+                {!entries.length
+                  ? `Your ${activeMediaType === "MANGA" ? "Manga" : "Anime"} list is still empty. Open ${activeMediaType === "MANGA" ? "a manga" : "an anime"} page and add it when you are ready.`
+                  : view === "board" && visibleSections.length
                   ? "Choose one or more statuses above to add them to the board."
                   : "No entries matched your search and filters."}
               </div>
@@ -877,6 +964,7 @@ export function MyListPage({
       {editingEntry && (
         <ListEntryModal
           animeId={editingEntry.anime_id}
+          mediaType={activeMediaType}
           isOpen={true}
           entry={editingEntry}
           title={getPreferredTitle(
@@ -889,6 +977,7 @@ export function MyListPage({
             titleLanguage
           )}
           totalEpisodes={editingEntry.episodes ?? null}
+          totalVolumes={editingEntry.volumes ?? null}
           onClose={() => setEditingEntry(null)}
           onSaved={async () => {
             setEditingEntry(null);

@@ -10,16 +10,24 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
-import type { EditableListEntry } from "../types/domain";
+import type { EditableListEntry, MediaType } from "../types/domain";
+
+type EditableMediaListEntry = EditableListEntry & {
+  manga_id?: number;
+  volume_progress?: number;
+  is_rereading?: number | boolean;
+};
 
 type ListEntryModalProps = {
   animeId: number;
+  mediaType?: MediaType;
   isOpen: boolean;
-  entry: EditableListEntry | null;
+  entry: EditableMediaListEntry | null;
   title?: string;
   totalEpisodes?: number | null;
+  totalVolumes?: number | null;
   onClose: () => void;
-  onSaved: (entry: EditableListEntry, message?: string) => void;
+  onSaved: (entry: EditableMediaListEntry, message?: string) => void;
   onRemoved: (message?: string) => void;
 };
 
@@ -32,6 +40,15 @@ const STATUS_LABELS: Record<string, string> = {
   paused: "Paused",
   dropped: "Dropped",
 };
+
+function getStatusLabel(status: string, mediaType: MediaType) {
+  if (mediaType === "MANGA") {
+    if (status === "watching") return "Reading";
+    if (status === "planned") return "Plan to Read";
+  }
+
+  return STATUS_LABELS[status];
+}
 
 let openListEntryModalCount = 0;
 
@@ -86,10 +103,12 @@ function normalizeScoreInput(value: string) {
 
 export function ListEntryModal({
   animeId,
+  mediaType = "ANIME",
   isOpen,
   entry,
   title,
   totalEpisodes,
+  totalVolumes,
   onClose,
   onSaved,
   onRemoved,
@@ -97,6 +116,7 @@ export function ListEntryModal({
   const [status, setStatus] = useState("planned");
   const [isFavorite, setIsFavorite] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [volumeProgress, setVolumeProgress] = useState(0);
   const [score, setScore] = useState("");
   const [notes, setNotes] = useState("");
   const [startedAt, setStartedAt] = useState("");
@@ -123,11 +143,12 @@ export function ListEntryModal({
     setStatus(entry?.status ?? "planned");
     setIsFavorite(Boolean(entry?.is_favorite));
     setProgress(entry?.progress ?? 0);
+    setVolumeProgress(entry?.volume_progress ?? 0);
     setScore(entry?.score != null ? String(entry.score) : "");
     setNotes(entry?.notes ?? "");
     setStartedAt(toDateInputValue(entry?.started_at));
     setCompletedAt(toDateInputValue(entry?.completed_at));
-    setIsRewatching(Boolean(entry?.is_rewatching));
+    setIsRewatching(Boolean(entry?.is_rereading ?? entry?.is_rewatching));
     setRepeatCount(Math.max(0, Number(entry?.repeat_count ?? 0)));
     setMessage(null);
   }, [isOpen, entry]);
@@ -138,6 +159,11 @@ export function ListEntryModal({
     totalEpisodes && totalEpisodes > 0
       ? Math.max(0, Math.min(progress, totalEpisodes))
       : Math.max(0, progress);
+  const clampedVolumeProgress =
+    totalVolumes && totalVolumes > 0
+      ? Math.max(0, Math.min(volumeProgress, totalVolumes))
+      : Math.max(0, volumeProgress);
+  const isManga = mediaType === "MANGA";
 
   const progressPercent =
     totalEpisodes && totalEpisodes > 0
@@ -153,6 +179,9 @@ export function ListEntryModal({
     if (totalEpisodes && totalEpisodes > 0) {
       setProgress(totalEpisodes);
     }
+    if (isManga && totalVolumes && totalVolumes > 0) {
+      setVolumeProgress(totalVolumes);
+    }
 
     setStartedAt((current) => current || todayDate());
     setCompletedAt((current) => current || todayDate());
@@ -167,6 +196,7 @@ export function ListEntryModal({
     setIsRewatching(true);
     setStatus("watching");
     setProgress(0);
+    if (isManga) setVolumeProgress(0);
     setStartedAt(todayDate());
     setCompletedAt("");
   };
@@ -189,18 +219,22 @@ export function ListEntryModal({
 
       const finishingActiveRewatch = isRewatching && status === "completed";
       const finalRepeatCount = repeatCount + (finishingActiveRewatch ? 1 : 0);
-
-      const result = await window.api.saveMyListEntry(animeId, {
+      const data = {
         status,
         isFavorite,
         progress: finalProgress,
+        volumeProgress: clampedVolumeProgress,
         score: normalizedScore === "" ? null : Number(normalizedScore),
         notes: notes.trim() || null,
         startedAt: startedAt || null,
         completedAt: completedAt || null,
         isRewatching: finishingActiveRewatch ? false : isRewatching,
+        isRereading: finishingActiveRewatch ? false : isRewatching,
         repeatCount: finalRepeatCount,
-      });
+      };
+      const result = isManga
+        ? await window.api.saveMyMangaListEntry(animeId, data)
+        : await window.api.saveMyListEntry(animeId, data);
 
       if (!result.ok || !result.entry) {
         setMessage(result.message);
@@ -225,7 +259,9 @@ export function ListEntryModal({
       setBusy(true);
       setMessage(null);
 
-      const result = await window.api.removeMyListEntry(animeId);
+      const result = isManga
+        ? await window.api.removeMyMangaListEntry(animeId)
+        : await window.api.removeMyListEntry(animeId);
 
       if (!result.ok) {
         setMessage(result.message);
@@ -325,7 +361,7 @@ export function ListEntryModal({
           </button>
         </div>
 
-        <div className="scroll-container flex min-h-0 flex-1 flex-col space-y-4 overflow-y-auto">
+        <div className="scroll-container -mr-4 flex min-h-0 flex-1 flex-col space-y-4 overflow-y-auto pr-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
               <div className="min-w-0">
@@ -356,9 +392,11 @@ export function ListEntryModal({
             <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
               <div className="flex items-center justify-between gap-4">
                 <div className="min-w-0">
-                  <p className="text-sm font-medium text-white">Rewatching</p>
+                  <p className="text-sm font-medium text-white">
+                    {isManga ? "Rereading" : "Rewatching"}
+                  </p>
                   <p className="mt-1 text-sm text-white/45">
-                    Starts from episode 0 and counts on completion.
+                    Starts from {isManga ? "chapter" : "episode"} 0 and counts on completion.
                   </p>
                 </div>
 
@@ -378,6 +416,7 @@ export function ListEntryModal({
             </div>
           </div>
 
+          <div className="flex flex-col gap-4">
           <div>
             <label className="mb-2 block text-sm text-white/65">Status</label>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
@@ -392,15 +431,17 @@ export function ListEntryModal({
                       : "border-white/10 bg-white/5 text-white/65 hover:bg-white/10 hover:text-white"
                   }`}
                 >
-                  {STATUS_LABELS[option]}
+                  {getStatusLabel(option, mediaType)}
                 </button>
               ))}
             </div>
           </div>
 
-          <div>
+          <div className={isManga ? "order-2" : ""}>
             <div className="mb-2 flex items-center justify-between gap-4">
-              <label className="block text-sm text-white/65">Progress</label>
+              <label className="block text-sm text-white/65">
+                {isManga ? "Chapter progress" : "Progress"}
+              </label>
               <span className="text-sm text-white/35">
                 {clampedProgress}
                 {totalEpisodes ? ` / ${totalEpisodes}` : ""}
@@ -446,6 +487,57 @@ export function ListEntryModal({
             )}
           </div>
 
+          {isManga && (
+            <div className="order-1">
+              <div className="mb-2 flex items-center justify-between gap-4">
+                <label className="block text-sm text-white/65">Volume progress</label>
+                <span className="text-sm text-white/35">
+                  {clampedVolumeProgress}
+                  {totalVolumes ? ` / ${totalVolumes}` : ""}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setVolumeProgress(Math.max(0, clampedVolumeProgress - 1))}
+                  className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
+                  title="Decrease volume progress"
+                >
+                  <MinusIcon className="h-4 w-4" />
+                </button>
+                <input
+                  type="number"
+                  min={0}
+                  max={totalVolumes ?? undefined}
+                  value={volumeProgress}
+                  onChange={(event) =>
+                    setVolumeProgress(
+                      totalVolumes
+                        ? Math.max(0, Math.min(Number(event.target.value), totalVolumes))
+                        : Math.max(0, Number(event.target.value))
+                    )
+                  }
+                  className="h-12 w-full rounded-2xl border border-white/10 bg-black/25 px-4 text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+                />
+                <button
+                  type="button"
+                  onClick={() =>
+                    setVolumeProgress(
+                      totalVolumes
+                        ? Math.min(totalVolumes, clampedVolumeProgress + 1)
+                        : clampedVolumeProgress + 1
+                    )
+                  }
+                  className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
+                  title="Increase volume progress"
+                >
+                  <PlusIcon className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
+          </div>
+
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             <DatePickerField
               id="startedAt"
@@ -466,7 +558,9 @@ export function ListEntryModal({
             />
 
             <label className="block">
-              <span className="mb-2 block text-sm text-white/65">Total rewatches</span>
+              <span className="mb-2 block text-sm text-white/65">
+                Total {isManga ? "rereads" : "rewatches"}
+              </span>
               <input
                 type="number"
                 min={0}

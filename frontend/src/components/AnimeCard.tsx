@@ -3,13 +3,13 @@ import {
   PlusIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
-import type { SearchAnime, TrackedAnimeEntry } from "../types/domain";
+import type { SearchMedia, TrackedAnimeEntry } from "../types/domain";
 
 type AnimeCardProps = {
-  anime: SearchAnime;
-  onSelect: (id: number) => void;
+  anime: SearchMedia;
+  onSelect?: (id: number) => void;
   trackedEntry?: TrackedAnimeEntry;
-  onQuickAdd: (anime: SearchAnime) => void;
+  onQuickAdd?: (anime: SearchMedia) => void;
   onEditEntry: (entry: TrackedAnimeEntry) => void;
   titleLanguage: TitleLanguage;
 };
@@ -34,7 +34,9 @@ export function AnimeCard({
 
   const subtitleParts = [
     anime.format,
-    anime.episodes ? `${anime.episodes} eps` : null,
+    anime.type === "MANGA" && anime.chapters ? `${anime.chapters} ch` : null,
+    anime.type === "MANGA" && anime.volumes ? `${anime.volumes} vols` : null,
+    anime.type === "ANIME" && anime.episodes ? `${anime.episodes} eps` : null,
     anime.averageScore ? `${anime.averageScore}%` : null,
   ].filter(Boolean);
 
@@ -55,12 +57,14 @@ export function AnimeCard({
 
   return (
     <div
-      className="browse-search-card group relative cursor-pointer focus:outline-none focus:ring-2 focus:ring-white/60"
-      role="button"
-      tabIndex={0}
-      onClick={() => onSelect(anime.id)}
+      className={`browse-search-card group relative focus:outline-none focus:ring-2 focus:ring-white/60 ${
+        onSelect ? "cursor-pointer" : "cursor-default"
+      }`}
+      role={onSelect ? "button" : undefined}
+      tabIndex={onSelect ? 0 : undefined}
+      onClick={() => onSelect?.(anime.id)}
       onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
+        if (onSelect && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
           onSelect(anime.id);
         }
@@ -78,7 +82,7 @@ export function AnimeCard({
         "
       />
 
-      <button
+      {onQuickAdd ? <button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
@@ -106,7 +110,11 @@ export function AnimeCard({
         ) : (
           <PlusIcon className="h-4 w-4" />
         )}
-      </button>
+      </button> : (
+        <div className="absolute right-2 top-2 z-20 rounded-xl border border-cyan-300/20 bg-cyan-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-100 backdrop-blur-sm">
+          Manga
+        </div>
+      )}
 
       {anime.isAdult && (
         <div className="absolute left-2 top-2 z-20 rounded-xl border border-rose-300/20 bg-rose-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-100 backdrop-blur-sm">

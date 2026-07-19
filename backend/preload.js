@@ -9,6 +9,8 @@ function getSystemLocaleInfo() {
 }
 
 contextBridge.exposeInMainWorld('api', {
+  searchMedia: (query, hideAdultContent = true) =>
+    ipcRenderer.invoke('anilist:search-media', { query, hideAdultContent }),
   searchAnime: (query, hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:search', { query, hideAdultContent }),
   getTrendingAnime: (hideAdultContent = true) =>
@@ -18,17 +20,18 @@ contextBridge.exposeInMainWorld('api', {
   getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:discover-shelf', { shelfId, page, hideAdultContent }),
   previewAniListImport: (username) => ipcRenderer.invoke('anilist:preview-import', { username }),
-  importAniList: (username, selectedStatuses, selectedAnimeIds) =>
+  importAniList: (username, selectedStatuses, selectedMediaKeys) =>
     ipcRenderer.invoke('anilist:import-list', {
       username,
       selectedStatuses,
-      selectedAnimeIds,
+      selectedMediaKeys,
     }),
-  previewMalImport: () => ipcRenderer.invoke('mal:preview-import'),
-  importMal: (selectedStatuses, selectedAnimeIds) =>
+  previewMalImport: (username) => ipcRenderer.invoke('mal:preview-import', { username }),
+  importMal: (username, selectedStatuses, selectedMediaKeys) =>
     ipcRenderer.invoke('mal:import-list', {
+      username,
       selectedStatuses,
-      selectedAnimeIds,
+      selectedMediaKeys,
     }),
   previewTextImport: (text, hideAdultContent = true) =>
     ipcRenderer.invoke('text-import:preview', { text, hideAdultContent }),
@@ -55,6 +58,8 @@ contextBridge.exposeInMainWorld('api', {
   },
   getSyncActivity: () => ipcRenderer.invoke('sync:get-activity'),
   getAnimeDetails: (id) => ipcRenderer.invoke('anime:get-details', id),
+  getMediaDetails: (mediaType, id) =>
+    ipcRenderer.invoke('media:get-details', { mediaType, id }),
   getCharacterDetails: (id) => ipcRenderer.invoke('anime:get-character-details', id),
   getStaffDetails: (id) => ipcRenderer.invoke('anime:get-staff-details', id),
   cacheMinimalAnime: (media) => ipcRenderer.invoke('anime:cache-minimal', media),
@@ -103,6 +108,11 @@ contextBridge.exposeInMainWorld('api', {
   saveMyListEntry: (animeId, data) => ipcRenderer.invoke('list:save-entry', { animeId, data }),
 
   removeMyListEntry: (animeId) => ipcRenderer.invoke('list:remove-entry', animeId),
+  getMyMangaList: () => ipcRenderer.invoke('manga-list:get'),
+  getMyMangaListEntry: (mangaId) => ipcRenderer.invoke('manga-list:get-entry', mangaId),
+  saveMyMangaListEntry: (mangaId, data) =>
+    ipcRenderer.invoke('manga-list:save-entry', { mangaId, data }),
+  removeMyMangaListEntry: (mangaId) => ipcRenderer.invoke('manga-list:remove-entry', mangaId),
 
   clearMyList: () => ipcRenderer.invoke('list:clear'),
 });

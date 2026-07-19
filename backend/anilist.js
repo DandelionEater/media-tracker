@@ -144,13 +144,14 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function searchAnime(search, options = {}) {
+async function searchMedia(search, options = {}) {
   const hideAdultContent = options.hideAdultContent !== false;
   const query = `
     query ($search: String, $isAdult: Boolean) {
-      Page(perPage: 10) {
-        media(search: $search, type: ANIME, isAdult: $isAdult) {
+      Page(perPage: 20) {
+        media(search: $search, isAdult: $isAdult) {
           id
+          type
           isAdult
           title {
             romaji
@@ -161,7 +162,10 @@ async function searchAnime(search, options = {}) {
             large
           }
           episodes
+          chapters
+          volumes
           format
+          duration
           averageScore
           season
           seasonYear
@@ -174,7 +178,17 @@ async function searchAnime(search, options = {}) {
     search,
     isAdult: hideAdultContent ? false : undefined,
   });
-  return data.data.Page.media;
+  const media = data.data?.Page?.media ?? [];
+
+  return {
+    anime: media.filter((item) => item?.type === 'ANIME'),
+    manga: media.filter((item) => item?.type === 'MANGA'),
+  };
+}
+
+async function searchAnime(search, options = {}) {
+  const results = await searchMedia(search, options);
+  return results.anime;
 }
 
 async function searchAnimeBatch(searches, options = {}) {
@@ -219,6 +233,7 @@ async function searchAnimeBatch(searches, options = {}) {
       }
       episodes
       format
+      duration
       averageScore
       season
       seasonYear
@@ -574,12 +589,12 @@ function formatSeasonLabel(season) {
   return season.charAt(0) + season.slice(1).toLowerCase();
 }
 
-async function getUserAnimeCollection(userName) {
+async function getUserMediaCollection(userName, mediaType) {
   const query = `
-    query ($userName: String) {
+    query ($userName: String, $type: MediaType) {
       MediaListCollection(
         userName: $userName
-        type: ANIME
+        type: $type
         forceSingleCompletedList: true
       ) {
         lists {
@@ -588,6 +603,7 @@ async function getUserAnimeCollection(userName) {
           entries {
             status
             progress
+            progressVolumes
             repeat
             notes
             score(format: POINT_10_DECIMAL)
@@ -603,6 +619,7 @@ async function getUserAnimeCollection(userName) {
             }
             media {
               id
+              idMal
               isAdult
               title {
                 romaji
@@ -611,12 +628,15 @@ async function getUserAnimeCollection(userName) {
                 userPreferred
               }
               coverImage {
+                extraLarge
                 large
               }
               bannerImage
               episodes
+              chapters
+              volumes
               format
-              status
+              status(version: 2)
               season
               seasonYear
               averageScore
@@ -661,13 +681,24 @@ async function getUserAnimeCollection(userName) {
     }
   `;
 
-  const data = await anilistRequestWithRetry(query, { userName });
+  const data = await anilistRequestWithRetry(query, {
+    userName,
+    type: mediaType === 'MANGA' ? 'MANGA' : 'ANIME',
+  });
 
   if (!data?.data?.MediaListCollection) {
     throw new Error(USER_IMPORT_NOT_FOUND_MESSAGE);
   }
 
   return data.data.MediaListCollection;
+}
+
+async function getUserAnimeCollection(userName) {
+  return await getUserMediaCollection(userName, 'ANIME');
+}
+
+async function getUserMangaCollection(userName) {
+  return await getUserMediaCollection(userName, 'MANGA');
 }
 
 async function getViewer(accessToken) {
@@ -684,12 +715,12 @@ async function getViewer(accessToken) {
   return data.data.Viewer;
 }
 
-async function getViewerAnimeCollection(accessToken, userId) {
+async function getViewerMediaCollection(accessToken, userId, mediaType) {
   const query = `
-    query ($userId: Int) {
+    query ($userId: Int, $type: MediaType) {
       MediaListCollection(
         userId: $userId
-        type: ANIME
+        type: $type
         forceSingleCompletedList: true
       ) {
         lists {
@@ -698,6 +729,7 @@ async function getViewerAnimeCollection(accessToken, userId) {
           entries {
             status
             progress
+            progressVolumes
             repeat
             notes
             score(format: POINT_10_DECIMAL)
@@ -713,6 +745,7 @@ async function getViewerAnimeCollection(accessToken, userId) {
             }
             media {
               id
+              idMal
               isAdult
               title {
                 romaji
@@ -721,12 +754,15 @@ async function getViewerAnimeCollection(accessToken, userId) {
                 userPreferred
               }
               coverImage {
+                extraLarge
                 large
               }
               bannerImage
               episodes
+              chapters
+              volumes
               format
-              status
+              status(version: 2)
               season
               seasonYear
               averageScore
@@ -771,13 +807,25 @@ async function getViewerAnimeCollection(accessToken, userId) {
     }
   `;
 
-  const data = await anilistRequestWithRetry(query, { userId }, accessToken);
+  const data = await anilistRequestWithRetry(
+    query,
+    { userId, type: mediaType === 'MANGA' ? 'MANGA' : 'ANIME' },
+    accessToken
+  );
 
   if (!data?.data?.MediaListCollection) {
     throw new Error(USER_IMPORT_NOT_FOUND_MESSAGE);
   }
 
   return data.data.MediaListCollection;
+}
+
+async function getViewerAnimeCollection(accessToken, userId) {
+  return await getViewerMediaCollection(accessToken, userId, 'ANIME');
+}
+
+async function getViewerMangaCollection(accessToken, userId) {
+  return await getViewerMediaCollection(accessToken, userId, 'MANGA');
 }
 
 async function getAnimeDetails(id) {
@@ -889,6 +937,120 @@ async function getAnimeDetails(id) {
   }
 
   return media;
+}
+
+async function fetchMangaDetails({ id = null, idMal = null } = {}) {
+  const useMalId = Number.isInteger(Number(idMal)) && Number(idMal) > 0;
+  const lookupId = useMalId ? Number(idMal) : Number(id);
+  if (!Number.isInteger(lookupId) || lookupId <= 0) {
+    throw new Error('A valid AniList or MyAnimeList Manga ID is required.');
+  }
+  const lookupArgument = useMalId ? 'idMal: $lookupId' : 'id: $lookupId';
+  const query = `
+    query ($lookupId: Int) {
+      Media(${lookupArgument}, type: MANGA) {
+        id
+        idMal
+        type
+        isAdult
+        title { romaji english native userPreferred }
+        coverImage { extraLarge large }
+        bannerImage
+        chapters
+        volumes
+        format
+        status(version: 2)
+        averageScore
+        meanScore
+        popularity
+        favourites
+        source
+        countryOfOrigin
+        startDate { year month day }
+        endDate { year month day }
+        siteUrl
+        description
+        genres
+        synonyms
+        tags { id name description rank isMediaSpoiler isGeneralSpoiler }
+        characters(perPage: 20) {
+          edges {
+            role
+            node { id name { full native userPreferred } image { large } }
+          }
+        }
+        staff(perPage: 20) {
+          edges {
+            role
+            node { id name { full native userPreferred } image { large } }
+          }
+        }
+        relations {
+          edges {
+            relationType
+            node {
+              id
+              type
+              title { romaji english native userPreferred }
+              coverImage { large }
+              episodes
+              chapters
+              volumes
+              format
+              status(version: 2)
+              season
+              seasonYear
+              averageScore
+              startDate { year month day }
+            }
+          }
+        }
+        recommendations(perPage: 10) {
+          nodes {
+            rating
+            mediaRecommendation {
+              id
+              type
+              title { romaji english native userPreferred }
+              coverImage { large }
+              description
+              episodes
+              chapters
+              volumes
+              format
+              status(version: 2)
+              season
+              seasonYear
+              averageScore
+            }
+          }
+        }
+        externalLinks {
+          id
+          url
+          site
+          siteId
+          type
+          language
+          color
+          icon
+          notes
+          isDisabled
+        }
+      }
+    }
+  `;
+
+  const data = await anilistRequestWithRetry(query, { lookupId });
+  return data.data.Media;
+}
+
+async function getMangaDetails(id) {
+  return await fetchMangaDetails({ id });
+}
+
+async function getMangaDetailsByMalId(idMal) {
+  return await fetchMangaDetails({ idMal });
 }
 
 async function getAnimeAdultFlags(animeIds) {
@@ -1073,6 +1235,7 @@ async function saveMediaListEntry(accessToken, payload) {
       $mediaId: Int,
       $status: MediaListStatus,
       $progress: Int,
+      $progressVolumes: Int,
       $score: Float,
       $notes: String,
       $startedAt: FuzzyDateInput,
@@ -1083,6 +1246,7 @@ async function saveMediaListEntry(accessToken, payload) {
         mediaId: $mediaId,
         status: $status,
         progress: $progress,
+        progressVolumes: $progressVolumes,
         score: $score,
         notes: $notes,
         startedAt: $startedAt,
@@ -1101,6 +1265,7 @@ async function saveMediaListEntry(accessToken, payload) {
       mediaId: payload.mediaId,
       status: payload.status,
       progress: payload.progress,
+      progressVolumes: payload.progressVolumes,
       score: payload.score,
       notes: payload.notes,
       startedAt: mapDateInput(payload.startedAt),
@@ -1113,10 +1278,10 @@ async function saveMediaListEntry(accessToken, payload) {
   return data.data.SaveMediaListEntry;
 }
 
-async function getMediaListEntryId(accessToken, userId, mediaId) {
+async function getMediaListEntryId(accessToken, userId, mediaId, mediaType = 'ANIME') {
   const query = `
-    query ($userId: Int, $mediaId: Int) {
-      MediaList(userId: $userId, mediaId: $mediaId, type: ANIME) {
+    query ($userId: Int, $mediaId: Int, $type: MediaType) {
+      MediaList(userId: $userId, mediaId: $mediaId, type: $type) {
         id
       }
     }
@@ -1128,6 +1293,7 @@ async function getMediaListEntryId(accessToken, userId, mediaId) {
       {
         userId,
         mediaId,
+        type: mediaType,
       },
       accessToken
     );
@@ -1150,7 +1316,12 @@ async function deleteMediaListEntry(accessToken, payload) {
     throw new Error('Invalid AniList delete payload.');
   }
 
-  const entryId = await getMediaListEntryId(accessToken, userId, mediaId);
+  const entryId = await getMediaListEntryId(
+    accessToken,
+    userId,
+    mediaId,
+    payload.mediaType === 'MANGA' ? 'MANGA' : 'ANIME'
+  );
 
   if (!entryId) {
     return {
@@ -1172,15 +1343,20 @@ async function deleteMediaListEntry(accessToken, payload) {
 }
 
 module.exports = {
+  searchMedia,
   searchAnime,
   searchAnimeBatch,
   getTrendingAnime,
   getDiscoverAnime,
   getDiscoverShelfAnime,
   getUserAnimeCollection,
+  getUserMangaCollection,
   getViewer,
   getViewerAnimeCollection,
+  getViewerMangaCollection,
   getAnimeDetails,
+  getMangaDetails,
+  getMangaDetailsByMalId,
   getAnimeAdultFlags,
   getCharacterDetails,
   getStaffDetails,
