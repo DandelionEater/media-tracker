@@ -1180,6 +1180,7 @@ async function fetchAnimeDetailsFromAniList(id) {
 
 function hasFreshAnimeDetailsCache(row) {
   if (!row) return false;
+  if (row.is_adult === null || row.is_adult === undefined) return false;
 
   const hasFullDetails =
     Boolean(row.site_url) ||
@@ -1244,8 +1245,9 @@ async function fetchAnimeDetailsFallback(id) {
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
         id
+        isAdult
         title { romaji english native userPreferred }
-        coverImage { large }
+        coverImage { extraLarge large }
         bannerImage
         episodes
         format
@@ -1530,6 +1532,8 @@ async function handleRpc(method, args, req, res) {
       return { ok: true, pending: [], completed: [], failed: [] };
     case 'getAnimeDetails':
       return await getAnimeDetails(args[0]);
+    case 'getAnimeAdultFlags':
+      return await anilist.getAnimeAdultFlags(args[0]);
     case 'getCharacterDetails':
       return await getCharacterDetails(args[0]);
     case 'getStaffDetails':

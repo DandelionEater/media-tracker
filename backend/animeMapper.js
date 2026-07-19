@@ -1,6 +1,7 @@
 function mapAnimeForDb(media) {
   return {
     id: media.id,
+    is_adult: media.isAdult === null || media.isAdult === undefined ? null : media.isAdult ? 1 : 0,
     title_romaji: media.title?.romaji ?? null,
     title_english: media.title?.english ?? null,
     title_native: media.title?.native ?? null,
@@ -56,6 +57,7 @@ function mapDbAnimeForFrontend(row) {
 
   return {
     id: row.id,
+    isAdult: Boolean(row.is_adult),
     title: {
       romaji: row.title_romaji,
       english: row.title_english,
@@ -63,6 +65,7 @@ function mapDbAnimeForFrontend(row) {
       userPreferred: row.title_preferred,
     },
     coverImage: {
+      extraLarge: row.cover_image_large,
       large: row.cover_image_large,
     },
     bannerImage: row.banner_image,

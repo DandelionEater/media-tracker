@@ -48,6 +48,11 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.on('sync:progress', handler);
     return () => ipcRenderer.removeListener('sync:progress', handler);
   },
+  onAutoSyncComplete: (callback) => {
+    const handler = (_event, payload) => callback(payload);
+    ipcRenderer.on('sync:auto-complete', handler);
+    return () => ipcRenderer.removeListener('sync:auto-complete', handler);
+  },
   getSyncActivity: () => ipcRenderer.invoke('sync:get-activity'),
   getAnimeDetails: (id) => ipcRenderer.invoke('anime:get-details', id),
   getCharacterDetails: (id) => ipcRenderer.invoke('anime:get-character-details', id),

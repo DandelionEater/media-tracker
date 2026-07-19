@@ -27,6 +27,8 @@ type TopNavbarProps = {
   query: string;
   onSearch: (query: string) => void;
   onClear: () => void;
+  onDismissSearchResults: () => void;
+  onRestoreSearchResults: () => void;
   username: string;
   notifications: NotificationItem[];
   onReadNotification: (id: number) => void;
@@ -45,6 +47,8 @@ export function TopNavbar({
   query,
   onSearch,
   onClear,
+  onDismissSearchResults,
+  onRestoreSearchResults,
   username,
   notifications,
   onReadNotification,
@@ -64,6 +68,7 @@ export function TopNavbar({
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const notificationsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
+  const selectSearchTextOnFocusRef = useRef(true);
   const accountCloseTimerRef = useRef<number | null>(null);
   const notificationsCloseTimerRef = useRef<number | null>(null);
   const unreadCount = notifications.filter((notification) => !notification.read).length;
@@ -142,7 +147,9 @@ export function TopNavbar({
     const input = searchInputRef.current;
     if (!input) return;
 
+    selectSearchTextOnFocusRef.current = selectExistingText;
     input.focus();
+    selectSearchTextOnFocusRef.current = true;
 
     if (selectExistingText && input.value) {
       window.requestAnimationFrame(() => {
@@ -274,6 +281,17 @@ export function TopNavbar({
 
   return (
     <div
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0) return;
+
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("button")) {
+          // Mouse-activated navbar controls should not retain keyboard focus and
+          // intercept the next global Enter-to-search shortcut. Tab navigation
+          // still focuses the same controls normally.
+          event.preventDefault();
+        }
+      }}
       className={`drag-region absolute z-40 flex items-center justify-center transition-[inset,background-color,border-color,border-radius,box-shadow] duration-300 ${
         isFloating
           ? "inset-x-3 top-3 h-14 rounded-2xl border border-white/10 bg-[#111111]/62 px-3 shadow-[0_18px_50px_rgba(0,0,0,0.32)] backdrop-blur-xl"
@@ -340,13 +358,18 @@ export function TopNavbar({
             onKeyDown={(event) => {
               if (event.key === "Enter") {
                 event.preventDefault();
+                onDismissSearchResults();
                 event.currentTarget.blur();
               }
             }}
             onFocus={(event) => {
+              const shouldSelectExistingText = selectSearchTextOnFocusRef.current;
               setIsSearchFocused(true);
               if (event.currentTarget.value) {
-                event.currentTarget.select();
+                if (shouldSelectExistingText) {
+                  onRestoreSearchResults();
+                  event.currentTarget.select();
+                }
               }
             }}
             onBlur={() => setIsSearchFocused(false)}

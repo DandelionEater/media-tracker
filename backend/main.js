@@ -83,6 +83,7 @@ const {
   getSyncStatus,
   getSyncActivity,
   setAutoSyncEnabled,
+  autoSyncEvents,
 } = require('./sync');
 
 const ANILIST_URL = 'https://graphql.anilist.co';
@@ -137,6 +138,14 @@ function emitSyncProgress(payload) {
     ...payload,
   });
 }
+
+autoSyncEvents.on('complete', (result) => {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    return;
+  }
+
+  mainWindow.webContents.send('sync:auto-complete', result);
+});
 
 function clampPreferenceNumber(value, fallback, min, max) {
   const parsed = Number(value);
@@ -1095,6 +1104,7 @@ async function fetchAnimeDetailsFromAniList(id) {
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
         id
+        isAdult
 
         title {
           romaji
@@ -1104,6 +1114,7 @@ async function fetchAnimeDetailsFromAniList(id) {
         }
 
         coverImage {
+          extraLarge
           large
         }
 
@@ -1310,6 +1321,7 @@ async function fetchAnimeDetailsFromAniList(id) {
 
 function hasFreshAnimeDetailsCache(row) {
   if (!row) return false;
+  if (row.is_adult === null || row.is_adult === undefined) return false;
 
   const hasFullDetails =
     Boolean(row.site_url) ||

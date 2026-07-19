@@ -456,6 +456,41 @@ export function HomePage({
   const [discoverShelfPages, setDiscoverShelfPages] = useState<
     Record<string, DiscoverShelfPageState>
   >(savedDiscoverState?.discoverShelfPages ?? {});
+  const privacySafeTrendingAnime = useMemo(
+    () => (hideAdultContent ? trendingAnime.filter((anime) => !anime.isAdult) : trendingAnime),
+    [hideAdultContent, trendingAnime]
+  );
+  const privacySafeDiscoverShelves = useMemo(
+    () =>
+      hideAdultContent
+        ? discoverShelves
+            .map((shelf) => ({
+              ...shelf,
+              items: shelf.items.filter((anime) => !anime.isAdult),
+            }))
+            .filter((shelf) => shelf.items.length > 0)
+        : discoverShelves,
+    [discoverShelves, hideAdultContent]
+  );
+  const privacySafeDiscoverShelfPages = useMemo(
+    () =>
+      hideAdultContent
+        ? Object.fromEntries(
+            Object.entries(discoverShelfPages).map(([id, state]) => [
+              id,
+              {
+                ...state,
+                items: state.items.filter((anime) => !anime.isAdult),
+                shelf: {
+                  ...state.shelf,
+                  items: state.shelf.items.filter((anime) => !anime.isAdult),
+                },
+              },
+            ])
+          )
+        : discoverShelfPages,
+    [discoverShelfPages, hideAdultContent]
+  );
   const discoverShelfPagesRef = useRef(discoverShelfPages);
   const homeScrollRef = useRef<HTMLDivElement | null>(null);
   const discoverRailRefs = useRef<Record<string, HTMLDivElement | null>>({});
@@ -1087,7 +1122,7 @@ export function HomePage({
   }, [activeHomeTab, discoverRetryKey, hasResults, hideAdultContent, showTutorial]);
 
   useEffect(() => {
-    if (!autoRotateTrending || trendingAnime.length <= 1 || isTrendingPaused) {
+    if (!autoRotateTrending || privacySafeTrendingAnime.length <= 1 || isTrendingPaused) {
       trendingTimerStartedAt.current = null;
       return;
     }
@@ -1097,14 +1132,14 @@ export function HomePage({
     const timer = window.setTimeout(() => {
       trendingRemainingMs.current = TRENDING_CYCLE_MS;
       trendingTimerStartedAt.current = null;
-      setActiveTrendingIndex((current) => (current + 1) % trendingAnime.length);
+      setActiveTrendingIndex((current) => (current + 1) % privacySafeTrendingAnime.length);
       setTrendingCycleKey((current) => current + 1);
     }, trendingRemainingMs.current);
 
     return () => window.clearTimeout(timer);
   }, [
     autoRotateTrending,
-    trendingAnime.length,
+    privacySafeTrendingAnime.length,
     activeTrendingIndex,
     trendingCycleKey,
     isTrendingPaused,
@@ -1421,11 +1456,14 @@ export function HomePage({
       </section>
     ),
   };
-  const discoverShelvesById = new Map(discoverShelves.map((shelf) => [shelf.id, shelf]));
+  const discoverShelvesById = new Map(
+    privacySafeDiscoverShelves.map((shelf) => [shelf.id, shelf])
+  );
   const discoverLayoutSections: Record<string, ReactNode> = {
     [DISCOVER_CAROUSEL_LAYOUT_ID]: showTrendingCarousel ? (
       <TrendingCarousel
-        items={trendingAnime}
+        key={hideAdultContent ? "safe" : "all"}
+        items={privacySafeTrendingAnime}
         activeIndex={activeTrendingIndex}
         onSelectIndex={handleSelectTrendingIndex}
         onSelectAnime={handleSelectAnimeFromHome}
@@ -1440,7 +1478,7 @@ export function HomePage({
       />
     ) : null,
     ...Object.fromEntries(
-      discoverShelves.map((shelf) => [
+      privacySafeDiscoverShelves.map((shelf) => [
         shelf.id,
         <DiscoverAnimeShelf
           key={shelf.id}
@@ -1463,7 +1501,7 @@ export function HomePage({
   };
   const visibleDiscoverLayoutOrder = normalizeDiscoverLayoutOrder(
     discoverLayoutOrder,
-    discoverShelves
+    privacySafeDiscoverShelves
   ).filter((sectionId) => sectionId !== DISCOVER_CAROUSEL_LAYOUT_ID || showTrendingCarousel);
 
   return (
@@ -1530,8 +1568,8 @@ export function HomePage({
           </>
         ) : activeDiscoverShelfId ? (
           <DiscoverShelfListPage
-            state={discoverShelfPages[activeDiscoverShelfId]}
-            fallbackShelf={discoverShelves.find(
+            state={privacySafeDiscoverShelfPages[activeDiscoverShelfId]}
+            fallbackShelf={privacySafeDiscoverShelves.find(
               (shelf) => shelf.id === activeDiscoverShelfId
             )}
             onBack={handleCloseDiscoverShelf}
@@ -1553,9 +1591,9 @@ export function HomePage({
               onReset={handleResetDiscoverLayout}
             />
 
-            {isDiscoverLoading && !discoverShelves.length ? (
+            {isDiscoverLoading && !privacySafeDiscoverShelves.length ? (
               <DiscoverShelvesSkeleton density={discoverDensity} />
-            ) : discoverShelves.length ? (
+            ) : privacySafeDiscoverShelves.length ? (
               <>
                 {discoverError && (
                   <DiscoverLoadError

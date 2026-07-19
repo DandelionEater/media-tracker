@@ -603,6 +603,7 @@ async function getUserAnimeCollection(userName) {
             }
             media {
               id
+              isAdult
               title {
                 romaji
                 english
@@ -712,6 +713,7 @@ async function getViewerAnimeCollection(accessToken, userId) {
             }
             media {
               id
+              isAdult
               title {
                 romaji
                 english
@@ -783,6 +785,7 @@ async function getAnimeDetails(id) {
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
         id
+        isAdult
         title { romaji english native userPreferred }
         coverImage { extraLarge large }
         bannerImage
@@ -886,6 +889,31 @@ async function getAnimeDetails(id) {
   }
 
   return media;
+}
+
+async function getAnimeAdultFlags(animeIds) {
+  const ids = [...new Set((animeIds || []).map(Number))].filter(
+    (id) => Number.isInteger(id) && id > 0
+  );
+  const results = [];
+
+  for (let index = 0; index < ids.length; index += 50) {
+    const batch = ids.slice(index, index + 50);
+    const query = `
+      query ($ids: [Int]) {
+        Page(page: 1, perPage: 50) {
+          media(id_in: $ids, type: ANIME) {
+            id
+            isAdult
+          }
+        }
+      }
+    `;
+    const data = await anilistRequestWithRetry(query, { ids: batch });
+    results.push(...(data?.data?.Page?.media ?? []));
+  }
+
+  return results;
 }
 
 async function findAnimeSeriesStartDate(media) {
@@ -1153,6 +1181,7 @@ module.exports = {
   getViewer,
   getViewerAnimeCollection,
   getAnimeDetails,
+  getAnimeAdultFlags,
   getCharacterDetails,
   getStaffDetails,
   saveMediaListEntry,

@@ -13,6 +13,7 @@ import {
   ClockIcon,
   DocumentTextIcon,
   ExclamationTriangleIcon,
+  EyeSlashIcon,
   HeartIcon,
   LinkIcon,
   MagnifyingGlassMinusIcon,
@@ -49,6 +50,7 @@ type AnimeDetailsProps = {
   onListChanged?: () => void | Promise<void>;
   onNotify?: (kind: "success" | "error" | "warning", title: string, message: string) => void;
   titleLanguage: TitleLanguage;
+  hideAdultContent: boolean;
 };
 
 type ListEntry = EditableListEntry;
@@ -116,6 +118,7 @@ export default function AnimeDetails({
   onListChanged,
   onNotify,
   titleLanguage,
+  hideAdultContent,
 }: AnimeDetailsProps) {
   const [anime, setAnime] = useState<AnimeMedia | null>(null);
   const [loading, setLoading] = useState(true);
@@ -395,6 +398,31 @@ export default function AnimeDetails({
     );
   }
 
+  if (hideAdultContent && anime.isAdult) {
+    return (
+      <div className="flex h-full items-center justify-center p-6 text-white">
+        <section className="w-full max-w-xl rounded-3xl border border-white/10 bg-[#151515] p-7 text-center shadow-2xl">
+          <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55">
+            <EyeSlashIcon className="h-7 w-7" />
+          </div>
+          <h2 className="mt-5 text-xl font-semibold">Hidden by 18+ filter</h2>
+          <p className="mt-2 text-sm leading-6 text-white/50">
+            This anime is hidden while adult content filtering is enabled. You can change this
+            preference in Settings.
+          </p>
+          <button
+            type="button"
+            onClick={onBack}
+            className="mt-6 inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/6 px-4 py-2.5 text-sm font-medium text-white/75 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/55"
+          >
+            <ArrowLeftIcon className="h-4 w-4" />
+            Back
+          </button>
+        </section>
+      </div>
+    );
+  }
+
   const title = getPreferredTitle(anime.title, titleLanguage);
 
   const studios =
@@ -412,6 +440,7 @@ export default function AnimeDetails({
   const externalLinks = (anime.externalLinks ?? []).filter((link) => !link.isDisabled);
   const streamingEpisodes = anime.streamingEpisodes ?? [];
   const trailerUrl = getTrailerUrl(anime.trailer);
+  const coverImageUrl = anime.coverImage?.extraLarge ?? anime.coverImage?.large ?? null;
   const sourceLabel = typeof anime.source === "string" ? anime.source : null;
   const primaryLinks = [
     anime.siteUrl ? { label: "AniList", url: anime.siteUrl, accent: "bg-sky-400/15 text-sky-100" } : null,
@@ -463,12 +492,12 @@ export default function AnimeDetails({
           <div className="relative px-6 pb-28 pl-8">
             <section className="-mt-20 grid grid-cols-1 gap-6 lg:grid-cols-[10rem_1fr]">
               <div>
-                {anime.coverImage?.large && (
+                {coverImageUrl && (
                   <button
                     type="button"
                     onClick={() =>
                       setExpandedArtwork({
-                        src: anime.coverImage.large,
+                        src: coverImageUrl,
                         alt: `${title} cover`,
                         label: "Cover artwork",
                       })
@@ -477,7 +506,7 @@ export default function AnimeDetails({
                     aria-label={`Enlarge ${title} cover`}
                   >
                     <img
-                      src={anime.coverImage.large}
+                      src={coverImageUrl}
                       alt={`${title} cover`}
                       className="h-full w-full object-cover transition duration-500 group-hover:scale-105"
                     />
@@ -496,14 +525,21 @@ export default function AnimeDetails({
                     {anime.status && (
                       <HeroBadge
                         value={getAiringStatusLabel(anime.status)}
-                        emphasized={anime.status === "RELEASING"}
+                        tone={getAiringBadgeTone(anime.status)}
                       />
                     )}
-                    {anime.format && <HeroBadge value={formatEnum(anime.format)} />}
-                    {anime.season && anime.seasonYear && (
-                      <HeroBadge value={`${formatEnum(anime.season)} ${anime.seasonYear}`} />
+                    {anime.format && (
+                      <HeroBadge value={formatMediaFormat(anime.format)} tone="format" />
                     )}
-                    {anime.episodes && <HeroBadge value={`${anime.episodes} episodes`} />}
+                    {anime.season && anime.seasonYear && (
+                      <HeroBadge
+                        value={`${formatEnum(anime.season)} ${anime.seasonYear}`}
+                        tone="season"
+                      />
+                    )}
+                    {anime.episodes && (
+                      <HeroBadge value={`${anime.episodes} episodes`} tone="episodes" />
+                    )}
                   </div>
 
                   <h1 className="mt-4 max-w-4xl text-3xl font-bold leading-tight tracking-tight text-white">
@@ -762,20 +798,54 @@ export default function AnimeDetails({
   );
 }
 
-function HeroBadge({ value, emphasized = false }: { value: string; emphasized?: boolean }) {
+type HeroBadgeTone =
+  | "default"
+  | "upcoming"
+  | "airing"
+  | "finished"
+  | "format"
+  | "season"
+  | "episodes";
+
+const HERO_BADGE_STYLES: Record<HeroBadgeTone, { badge: string; dot: string }> = {
+  default: {
+    badge: "border-white/10 bg-white/[0.05] text-white/60",
+    dot: "bg-white/35",
+  },
+  upcoming: {
+    badge: "border-rose-400/25 bg-rose-500/10 text-rose-200",
+    dot: "bg-rose-400 shadow-[0_0_12px_rgba(251,113,133,0.8)]",
+  },
+  airing: {
+    badge: "border-emerald-400/25 bg-emerald-500/10 text-emerald-200",
+    dot: "bg-emerald-400 shadow-[0_0_12px_rgba(52,211,153,0.8)]",
+  },
+  finished: {
+    badge: "border-blue-400/25 bg-blue-500/10 text-blue-200",
+    dot: "bg-blue-400 shadow-[0_0_12px_rgba(96,165,250,0.8)]",
+  },
+  format: {
+    badge: "border-violet-400/20 bg-violet-500/10 text-violet-200/90",
+    dot: "bg-violet-400/80",
+  },
+  season: {
+    badge: "border-amber-400/20 bg-amber-500/10 text-amber-100/85",
+    dot: "bg-amber-400/80",
+  },
+  episodes: {
+    badge: "border-slate-300/20 bg-slate-300/10 text-slate-100/85",
+    dot: "bg-slate-200/80 shadow-[0_0_10px_rgba(226,232,240,0.35)]",
+  },
+};
+
+function HeroBadge({ value, tone = "default" }: { value: string; tone?: HeroBadgeTone }) {
+  const styles = HERO_BADGE_STYLES[tone];
+
   return (
     <span
-      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 ${
-        emphasized
-          ? "border-(--app-accent)/30 bg-(--app-accent-soft) text-white/85"
-          : "border-white/10 bg-white/[0.05] text-white/55"
-      }`}
+      className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 ${styles.badge}`}
     >
-      <span
-        className={`h-1.5 w-1.5 rounded-full ${
-          emphasized ? "bg-(--app-accent) shadow-[0_0_12px_var(--app-accent)]" : "bg-white/30"
-        }`}
-      />
+      <span className={`h-1.5 w-1.5 rounded-full ${styles.dot}`} />
       {value}
     </span>
   );
@@ -1175,11 +1245,7 @@ function ArtworkLightbox({
             event.preventDefault();
             changeZoom(event.deltaY < 0 ? 0.25 : -0.25);
           }}
-          className={`select-none rounded-2xl object-contain shadow-2xl ${
-            artwork.label === "Banner artwork"
-              ? "h-auto max-h-[70vh] w-[90vw] max-w-6xl"
-              : "h-[70vh] w-auto max-w-[90vw]"
-          } ${
+          className={`h-auto max-h-[70vh] w-auto max-w-[90vw] select-none rounded-2xl object-contain shadow-2xl ${
             zoom > 1 ? (isDragging ? "cursor-grabbing" : "cursor-grab") : "cursor-zoom-in"
           } ${isDragging ? "" : "transition-transform duration-200 ease-out"}`}
           style={{
@@ -2509,6 +2575,10 @@ function formatEnum(value: string) {
     .join(" ");
 }
 
+function formatMediaFormat(value: string) {
+  return value === "TV" || value === "TV_SHORT" ? value.replace("_", " ") : formatEnum(value);
+}
+
 function getPersonFromEdge(edge: PersonEdge, kind: PeopleModalItem["kind"]): Person {
   if (edge?.node) return edge.node;
 
@@ -3037,6 +3107,12 @@ function getAiringStatusLabel(status: string) {
     default:
       return formatEnum(status);
   }
+}
+
+function getAiringBadgeTone(status: string): HeroBadgeTone {
+  if (status === "RELEASING") return "airing";
+  if (status === "FINISHED") return "finished";
+  return "upcoming";
 }
 
 function formatFuzzyDate(date: {

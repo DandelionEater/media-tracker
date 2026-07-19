@@ -1,5 +1,6 @@
 import {
   ClockIcon,
+  EyeSlashIcon,
   HeartIcon,
   MagnifyingGlassIcon,
   PencilSquareIcon,
@@ -20,6 +21,7 @@ type MyListEntry = {
   title_native?: string | null;
   title_preferred?: string | null;
   cover_image_large?: string | null;
+  hidden_by_adult_filter?: boolean;
   episodes?: number | null;
   format?: string | null;
   anime_status?: string | null;
@@ -137,6 +139,7 @@ export function MyListCard({
   ].filter(Boolean);
 
   const normalizedQuery = searchQuery.trim();
+  const isHidden = Boolean(entry.hidden_by_adult_filter);
   const hasSearchMatch = matchesEntry(entry, normalizedQuery, title);
   const isFavorite = Boolean(entry.is_favorite);
   const densityStyles = DENSITY_STYLES[density];
@@ -172,7 +175,11 @@ export function MyListCard({
                 isGrid ? "h-full w-full" : "h-20 w-14 rounded-xl"
               }`}
             >
-              {entry.cover_image_large ? (
+              {isHidden ? (
+                <div className="flex h-full w-full items-center justify-center bg-white/4 text-white/30">
+                  <EyeSlashIcon className="h-7 w-7" />
+                </div>
+              ) : entry.cover_image_large ? (
                 <img
                   src={entry.cover_image_large}
                   alt={title}
@@ -197,7 +204,7 @@ export function MyListCard({
                 {isFavorite && <HeartIcon className="h-4 w-4 shrink-0 text-[var(--app-accent)]" />}
               </div>
               <p className="mt-1 truncate text-xs text-white/48">
-                {subtitleParts.join(" · ") || "Saved anime"}
+                {isHidden ? "Adult title hidden" : subtitleParts.join(" · ") || "Saved anime"}
               </p>
               {!isGrid && (
                 <div className="mt-3 pr-10">
@@ -231,7 +238,7 @@ export function MyListCard({
                   My score: {entry.score ?? "Not rated"}
                 </span>
               </div>
-              {entry.notes?.trim() && (
+              {!isHidden && entry.notes?.trim() && (
                 <p className="line-clamp-2 text-xs leading-5 text-white/42">
                   <HighlightedText text={entry.notes.trim()} query={normalizedQuery} />
                 </p>
@@ -283,7 +290,11 @@ export function MyListCard({
           className="flex min-w-0 flex-1 items-stretch gap-4 text-left"
         >
           <div className={`shrink-0 overflow-hidden bg-white/5 ${densityStyles.posterClass}`}>
-            {entry.cover_image_large ? (
+            {isHidden ? (
+              <div className="flex h-full w-full items-center justify-center bg-white/4 text-white/30">
+                <EyeSlashIcon className="h-6 w-6" />
+              </div>
+            ) : entry.cover_image_large ? (
               <img
                 src={entry.cover_image_large}
                 alt={title}
@@ -305,7 +316,9 @@ export function MyListCard({
                 )}
               </div>
 
-              {subtitleParts.length > 0 && (
+              {isHidden ? (
+                <p className={densityStyles.subtitleClass}>Adult title hidden</p>
+              ) : subtitleParts.length > 0 && (
                 <p className={densityStyles.subtitleClass}>
                   {subtitleParts.join(" - ")}
                 </p>
@@ -354,7 +367,7 @@ export function MyListCard({
               </span>
             </div>
 
-            {densityStyles.showNotes && entry.notes?.trim() && (
+            {!isHidden && densityStyles.showNotes && entry.notes?.trim() && (
               <p className={densityStyles.noteClass}>
                 <HighlightedText text={entry.notes.trim()} query={normalizedQuery} />
               </p>

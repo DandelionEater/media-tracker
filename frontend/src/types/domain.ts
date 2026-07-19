@@ -32,6 +32,7 @@ export type AnimeTitle = {
 };
 
 export type AnimeImage = {
+  extraLarge?: string | null;
   large?: string | null;
   medium?: string | null;
 };
@@ -102,7 +103,7 @@ export type AnimeMedia = {
   type?: "ANIME" | "MANGA" | string | null;
   isAdult?: boolean;
   title: AnimeTitle;
-  coverImage: { large: string; medium?: string | null };
+  coverImage: { extraLarge?: string | null; large: string; medium?: string | null };
   bannerImage?: string | null;
   episodes?: number | null;
   format?: string | null;
@@ -136,7 +137,7 @@ export type AnimeMedia = {
 };
 
 export type SearchAnime = AnimeMedia & {
-  coverImage: { large: string };
+  coverImage: { extraLarge?: string | null; large: string };
 };
 
 export type DiscoverShelfResult = {
@@ -217,6 +218,8 @@ export type EditableListEntry = Omit<LocalListEntry, "anime_id"> & {
 };
 
 export type TrackedAnimeEntry = LocalListEntry & {
+  is_adult?: number | boolean | null;
+  hidden_by_adult_filter?: boolean;
   title_romaji?: string | null;
   title_english?: string | null;
   title_native?: string | null;
@@ -237,6 +240,7 @@ export type TrackedAnimeEntry = LocalListEntry & {
   next_airing_at?: number | null;
   genres?: string[];
   recommendations?: RecommendationNode[];
+  details?: AnimeMedia | null;
 };
 
 export type StoredAnime = Omit<

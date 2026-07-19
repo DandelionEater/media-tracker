@@ -41,6 +41,7 @@
       "desktop-main.js",
       "desktop-preload.js",
       "layoutConfig.js",
+      "windowState.js",
       "systemLocale.js",
       "updater.js",
       "startup.js",

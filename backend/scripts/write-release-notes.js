@@ -105,10 +105,10 @@ if (path.basename(updateMetadataPath) !== 'latest.yml') {
 
 function findUpdateMetadataFile() {
   const candidates = [
-    'latest.yml',
     'beta.yml',
     'alpha.yml',
     'dev.yml',
+    'latest.yml',
   ];
 
   for (const candidate of candidates) {

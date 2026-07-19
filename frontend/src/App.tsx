@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
+  MagnifyingGlassIcon,
 } from "@heroicons/react/24/outline";
 import { ResultsGrid } from "./components/ResultsGrid";
 import { searchAnime } from "./services/anilist";
@@ -121,9 +122,77 @@ const SESSION_WARNING_THRESHOLDS = [
 
 const SESSION_WARNING_POLL_MS = 15 * 60 * 1000;
 
+function joinLabels(labels: string[]) {
+  if (labels.length <= 1) return labels[0] ?? "";
+  if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+}
+
+function formatAutoSyncMessage(result: AutoSyncCompleteEvent) {
+  const completedActivity = (result.activity ?? []).filter((item) => item.status === "completed");
+  const items = result.syncedItems?.length
+    ? result.syncedItems
+    : completedActivity.map((item) => ({
+        animeTitle: item.animeTitle ?? item.anime_title,
+        provider: item.operation?.includes("_mal_")
+          ? "MyAnimeList"
+          : item.operation?.includes("_anilist_")
+            ? "AniList"
+            : null,
+      }));
+  const titles = [...new Set(items.map((item) => item.animeTitle?.trim()).filter(Boolean))] as string[];
+  const providers = [...new Set(items.map((item) => item.provider?.trim()).filter(Boolean))] as string[];
+  const syncedCount = result.synced ?? items.length;
+
+  const subject =
+    titles.length === 1
+      ? titles[0]
+      : titles.length === 2
+        ? joinLabels(titles)
+        : `${titles.length || syncedCount} changes`;
+  const destination = providers.length
+    ? joinLabels(providers)
+    : "your linked third-party app";
+  const verb = titles.length === 1 ? "was" : "were";
+
+  return `${subject} ${verb} automatically synced to ${destination}.`;
+}
+
+function isAdultListEntry(entry: TrackedAnimeEntry) {
+  if (entry.is_adult !== null && entry.is_adult !== undefined) {
+    return Boolean(entry.is_adult);
+  }
+
+  if (entry.details?.isAdult !== null && entry.details?.isAdult !== undefined) {
+    return Boolean(entry.details.isAdult);
+  }
+
+  // When the privacy filter is active, unclassified legacy cache entries fail closed
+  // until their adult-content flag has been refreshed.
+  return true;
+}
+
+function redactAdultListEntry(entry: TrackedAnimeEntry): TrackedAnimeEntry {
+  return {
+    ...entry,
+    hidden_by_adult_filter: true,
+    title_romaji: "Hidden by 18+ filter",
+    title_english: "Hidden by 18+ filter",
+    title_native: null,
+    title_preferred: "Hidden by 18+ filter",
+    cover_image_large: null,
+    banner_image: null,
+    format: null,
+    genres: [],
+    recommendations: [],
+    details: null,
+  };
+}
+
 function App() {
   const [results, setResults] = useState<SearchAnime[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
+  const [searchResultsVisible, setSearchResultsVisible] = useState(false);
   const [selectedAnimeId, setSelectedAnimeId] = useState<number | null>(null);
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
@@ -152,6 +221,20 @@ function App() {
   const homeScrollElementRef = useRef<HTMLDivElement | null>(null);
   const searchRequestIdRef = useRef(0);
 
+  const privacySafeTrackedEntries = useMemo(
+    () =>
+      settings.hideAdultContent
+        ? trackedEntries.map((entry) =>
+            isAdultListEntry(entry) ? redactAdultListEntry(entry) : entry
+          )
+        : trackedEntries,
+    [settings.hideAdultContent, trackedEntries]
+  );
+  const privacySafeResults = useMemo(
+    () => (settings.hideAdultContent ? results.filter((anime) => !anime.isAdult) : results),
+    [results, settings.hideAdultContent]
+  );
+
   const showSyncToast = useCallback((
     kind: "success" | "error" | "warning",
     title: string,
@@ -174,6 +257,31 @@ function App() {
       setSyncToast((current) => (current?.id === id ? null : current));
     }, 4200);
   }, []);
+
+  useEffect(() => {
+    if (!window.api.onAutoSyncComplete) {
+      return;
+    }
+
+    return window.api.onAutoSyncComplete((result) => {
+      if (result.ok) {
+        showSyncToast("success", "Auto-sync completed", formatAutoSyncMessage(result));
+        return;
+      }
+
+      if ((result.synced ?? 0) > 0) {
+        const failedCount = result.failed ?? 0;
+        showSyncToast(
+          "warning",
+          "Auto-sync partially completed",
+          `${formatAutoSyncMessage(result)} ${failedCount} change${failedCount === 1 ? "" : "s"} will retry later.`
+        );
+        return;
+      }
+
+      showSyncToast("error", "Auto-sync failed", result.message);
+    });
+  }, [showSyncToast]);
 
   const handleHomeScrollPositionChange = useCallback((scrollTop: number) => {
     homeScrollTopRef.current = scrollTop;
@@ -709,6 +817,7 @@ function App() {
     setSearchQuery(query);
 
     if (!query.trim()) {
+      setSearchResultsVisible(false);
       setSearchError(null);
       setIsSearching(false);
       setResults([]);
@@ -718,6 +827,7 @@ function App() {
       return;
     }
 
+    setSearchResultsVisible(true);
     setIsSearching(true);
     setSearchError(null);
 
@@ -755,6 +865,18 @@ function App() {
 
   const handleRetrySearch = () => {
     if (!searchQuery.trim()) return;
+    void handleSearch(searchQuery);
+  };
+
+  const handleDismissSearchResults = () => {
+    setSearchResultsVisible(false);
+  };
+
+  const handleRestoreSearchResults = () => {
+    if (!searchQuery.trim()) return;
+
+    setSelectedAnimeId(null);
+    setCurrentView("home");
     void handleSearch(searchQuery);
   };
 
@@ -980,10 +1102,13 @@ function App() {
                   setResults([]);
                   setSearchError(null);
                   setIsSearching(false);
+                  setSearchResultsVisible(false);
                   if (currentView === "home") {
                     setSelectedAnimeId(null);
                   }
                 }}
+                onDismissSearchResults={handleDismissSearchResults}
+                onRestoreSearchResults={handleRestoreSearchResults}
                 username={authUser.username}
                 notifications={notifications}
                 onReadNotification={handleReadNotification}
@@ -1009,11 +1134,12 @@ function App() {
                     onListChanged={loadTrackedEntries}
                     onNotify={showSyncToast}
                     titleLanguage={settings.titleLanguage}
+                    hideAdultContent={settings.hideAdultContent}
                   />
                 ) : currentView === "list" ? (
                   <MyListPage
                     userId={authUser.id}
-                    entries={trackedEntries}
+                    entries={privacySafeTrackedEntries}
                     onSelectAnime={handleOpenAnimeDetails}
                     onRefreshList={loadTrackedEntries}
                     onListChanged={loadTrackedEntries}
@@ -1044,13 +1170,12 @@ function App() {
                   <HomePage
                     userId={authUser.id}
                     hasResults={
-                      results.length > 0 ||
-                      Boolean(searchError) ||
-                      (isSearching && Boolean(searchQuery.trim()))
+                      searchResultsVisible &&
+                      (Boolean(searchQuery.trim()) || Boolean(searchError) || isSearching)
                     }
                     showTutorial={showTutorial}
                     onDismissTutorial={handleDismissTutorial}
-                    trackedEntries={trackedEntries}
+                    trackedEntries={privacySafeTrackedEntries}
                     onSelectAnime={handleOpenAnimeDetails}
                     onQuickAddAnime={handleQuickAddToList}
                     onEditEntry={setEditingListEntry}
@@ -1066,25 +1191,32 @@ function App() {
                     onScrollContainerChange={handleHomeScrollContainerChange}
                     onScrollPositionChange={handleHomeScrollPositionChange}
                   >
-                    <div className="scroll-container h-full overflow-y-auto px-6 py-6">
+                    <div className="scroll-container h-full overflow-y-auto px-6 pb-6 pt-20">
                       {searchError ? (
                         <SearchErrorPanel
                           message={searchError}
                           isRetrying={isSearching}
                           onRetry={handleRetrySearch}
                         />
-                      ) : isSearching && !results.length ? (
+                      ) : isSearching && !privacySafeResults.length ? (
                         <div className="flex min-h-72 items-center justify-center text-white/55">
                           <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-4">
                             <ArrowPathIcon className="h-5 w-5 animate-spin" />
                             <span className="text-sm">Searching AniList...</span>
                           </div>
                         </div>
+                      ) : searchQuery.trim() && !privacySafeResults.length ? (
+                        <SearchEmptyPanel
+                          query={searchQuery.trim()}
+                          filteredByAdultContent={
+                            settings.hideAdultContent && results.some((anime) => anime.isAdult)
+                          }
+                        />
                       ) : (
                         <ResultsGrid
-                          results={results}
+                          results={privacySafeResults}
                           onSelectAnime={handleOpenAnimeDetails}
-                          trackedEntries={trackedEntries}
+                          trackedEntries={privacySafeTrackedEntries}
                           onQuickAdd={handleQuickAddToList}
                           onEditEntry={setEditingListEntry}
                           titleLanguage={settings.titleLanguage}
@@ -1188,6 +1320,37 @@ function SearchErrorPanel({
           <ArrowPathIcon className={`h-4 w-4 ${isRetrying ? "animate-spin" : ""}`} />
           {isRetrying ? "Retrying..." : "Retry"}
         </button>
+      </section>
+    </div>
+  );
+}
+
+function SearchEmptyPanel({
+  query,
+  filteredByAdultContent,
+}: {
+  query: string;
+  filteredByAdultContent: boolean;
+}) {
+  return (
+    <div className="flex min-h-72 items-center justify-center px-4 text-white">
+      <section className="w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.04] p-7 text-center shadow-xl">
+        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/55">
+          <MagnifyingGlassIcon className="h-7 w-7" />
+        </div>
+        <h2 className="mt-5 text-lg font-semibold">
+          {filteredByAdultContent ? "Results hidden by the 18+ filter" : "No anime found"}
+        </h2>
+        <p className="mt-2 text-sm leading-6 text-white/55">
+          {filteredByAdultContent
+            ? `Matches for “${query}” were found, but they are hidden by your adult-content preference.`
+            : `We couldn't find anything matching “${query}”. Check the spelling or try a shorter title.`}
+        </p>
+        <p className="mt-4 text-xs text-white/35">
+          {filteredByAdultContent
+            ? "You can change the 18+ filter in Settings."
+            : "Try an English, Romaji, or alternate title."}
+        </p>
       </section>
     </div>
   );

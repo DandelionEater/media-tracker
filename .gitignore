@@ -17,6 +17,10 @@ release-notes-archive/
 
 # Local release checklist
 update-instructions.md
+/planned-updates.md
+
+# Hostinger web configuration uploaded manually
+/.htaccess
 
 # Local app data
 *.db

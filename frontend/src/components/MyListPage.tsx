@@ -35,6 +35,7 @@ type MyListEntry = {
   title_native?: string | null;
   title_preferred?: string | null;
   cover_image_large?: string | null;
+  hidden_by_adult_filter?: boolean;
   episodes?: number | null;
   format?: string | null;
   anime_status?: string | null;
@@ -457,6 +458,10 @@ export function MyListPage({
       if (progressFilter === "inProgress" && (entry.progress === 0 || isFinished)) return false;
       if (progressFilter === "finished" && !isFinished) return false;
       if (!normalizedSearch) return true;
+
+      if (entry.hidden_by_adult_filter) {
+        return "hidden by 18+ filter".includes(normalizedSearch);
+      }
 
       const preferredTitle = getPreferredTitle(
         {

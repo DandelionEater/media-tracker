@@ -39,6 +39,7 @@ db.prepare(
 
     cover_image_large TEXT,
     banner_image TEXT,
+    is_adult INTEGER,
 
     episodes INTEGER,
     format TEXT,
@@ -91,6 +92,7 @@ function addColumnIfMissing(tableName, columnName, definition) {
 }
 
 const animeColumnMigrations = [
+  ['is_adult', 'INTEGER'],
   ['mean_score', 'INTEGER'],
   ['popularity', 'INTEGER'],
   ['favourites', 'INTEGER'],
@@ -361,6 +363,7 @@ const upsertAnimeStmt = db.prepare(`
     title_preferred,
     cover_image_large,
     banner_image,
+    is_adult,
     episodes,
     format,
     status,
@@ -400,6 +403,7 @@ const upsertAnimeStmt = db.prepare(`
     @title_preferred,
     @cover_image_large,
     @banner_image,
+    @is_adult,
     @episodes,
     @format,
     @status,
@@ -439,6 +443,7 @@ const upsertAnimeStmt = db.prepare(`
     title_preferred = excluded.title_preferred,
     cover_image_large = excluded.cover_image_large,
     banner_image = excluded.banner_image,
+    is_adult = excluded.is_adult,
     episodes = excluded.episodes,
     format = excluded.format,
     status = excluded.status,
@@ -481,6 +486,7 @@ const upsertAnimeSummaryStmt = db.prepare(`
     title_preferred,
     cover_image_large,
     banner_image,
+    is_adult,
     episodes,
     format,
     status,
@@ -519,6 +525,7 @@ const upsertAnimeSummaryStmt = db.prepare(`
     @title_preferred,
     @cover_image_large,
     @banner_image,
+    @is_adult,
     @episodes,
     @format,
     @status,
@@ -557,6 +564,7 @@ const upsertAnimeSummaryStmt = db.prepare(`
     title_preferred = COALESCE(excluded.title_preferred, anime.title_preferred),
     cover_image_large = COALESCE(excluded.cover_image_large, anime.cover_image_large),
     banner_image = COALESCE(excluded.banner_image, anime.banner_image),
+    is_adult = COALESCE(excluded.is_adult, anime.is_adult),
     episodes = COALESCE(excluded.episodes, anime.episodes),
     format = COALESCE(excluded.format, anime.format),
     status = COALESCE(excluded.status, anime.status),
@@ -591,6 +599,12 @@ const upsertAnimeSummaryStmt = db.prepare(`
 
 const getAnimeByIdStmt = db.prepare(`
   SELECT * FROM anime
+  WHERE id = ?
+`);
+
+const updateAnimeAdultFlagStmt = db.prepare(`
+  UPDATE anime
+  SET is_adult = ?, updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
 
@@ -969,6 +983,7 @@ const getUserAnimeListStmt = db.prepare(`
     a.title_preferred,
     a.cover_image_large,
     a.banner_image,
+    a.is_adult,
     a.episodes,
     a.format,
     a.status AS anime_status,
@@ -1245,6 +1260,10 @@ function saveAnime(anime) {
 
 function saveAnimeSummary(anime) {
   upsertAnimeSummaryStmt.run(anime);
+}
+
+function updateAnimeAdultFlag(animeId, isAdult) {
+  updateAnimeAdultFlagStmt.run(isAdult ? 1 : 0, animeId);
 }
 
 function getAnimeById(id) {
@@ -1714,6 +1733,7 @@ module.exports = {
   dbPath,
   saveAnime,
   saveAnimeSummary,
+  updateAnimeAdultFlag,
   getAnimeById,
   getPersonDetails,
   savePersonDetails,

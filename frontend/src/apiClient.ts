@@ -17,6 +17,7 @@ let pendingAniListLoginFlowId: string | null = null;
 let pendingMalLoginFlowId: string | null = null;
 let activeUserId: number | null = null;
 let localAutoSyncTimer: number | null = null;
+const localAutoSyncListeners = new Set<(result: AutoSyncCompleteEvent) => void>();
 const LOCAL_AUTO_SYNC_DELAY_MS = 15_000;
 
 async function rpc(method: string, args: unknown[] = [], options: { signal?: AbortSignal } = {}) {
@@ -74,6 +75,10 @@ async function runLocalAutoSync(userId: number) {
 
   const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId)]);
   await localStore.markSynced(userId, result);
+
+  if ((result.synced ?? 0) > 0 || (result.failed ?? 0) > 0 || (!result.ok && result.pending > 0)) {
+    localAutoSyncListeners.forEach((listener) => listener(result));
+  }
 }
 
 function scheduleLocalAutoSync(userId: number) {
@@ -579,6 +584,22 @@ export function installApiClient() {
         }
       }
 
+      const missingAdultFlags = entries
+        .filter(
+          (entry) =>
+            (entry.is_adult === null || entry.is_adult === undefined) &&
+            (entry.details?.isAdult === null || entry.details?.isAdult === undefined)
+        )
+        .map((entry) => entry.anime_id);
+
+      if (missingAdultFlags.length) {
+        const flags = await rpc("getAnimeAdultFlags", [missingAdultFlags]).catch(() => []);
+        if (Array.isArray(flags) && flags.length) {
+          await localStore.cacheAnimeAdultFlags(userId, flags);
+          entries = await localStore.getList(userId);
+        }
+      }
+
       return { ok: true, entries };
     },
     getMyListEntry: async (animeId) => {
@@ -628,6 +649,10 @@ export function installApiClient() {
     },
     onFocusSearch: () => undefined,
     onSyncProgress: () => () => undefined,
+    onAutoSyncComplete: (callback) => {
+      localAutoSyncListeners.add(callback);
+      return () => localAutoSyncListeners.delete(callback);
+    },
   };
 
   window.api = api as typeof window.api;

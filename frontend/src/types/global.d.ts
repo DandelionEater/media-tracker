@@ -97,6 +97,23 @@ type SyncProgressEvent = {
   updatedAt?: string;
 };
 
+declare global {
+  type AutoSyncCompleteEvent = {
+    ok: boolean;
+    message: string;
+    synced?: number;
+    failed?: number;
+    pending?: number;
+    syncedItems?: Array<{ animeTitle?: string | null; provider?: string | null }>;
+    activity?: Array<{
+      animeTitle?: string | null;
+      anime_title?: string | null;
+      operation?: string;
+      status?: string;
+    }>;
+  };
+}
+
 type DesktopUpdateInfo = {
   version: string;
   releaseName?: string;
@@ -375,6 +392,7 @@ declare global {
         };
       }>;
       onSyncProgress: (callback: (progress: SyncProgressEvent) => void) => () => void;
+      onAutoSyncComplete: (callback: (result: AutoSyncCompleteEvent) => void) => () => void;
       getSyncActivity: () => Promise<{
         ok: boolean;
         message?: string;

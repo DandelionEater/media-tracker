@@ -325,11 +325,13 @@ function normalizeAnime(media: AnimeMedia): StoredAnime | null {
 
   return {
     anime_id: Number(media.id),
+    is_adult:
+      media.isAdult === null || media.isAdult === undefined ? null : media.isAdult ? 1 : 0,
     title_romaji: media.title?.romaji ?? null,
     title_english: media.title?.english ?? null,
     title_native: media.title?.native ?? null,
     title_preferred: media.title?.userPreferred ?? null,
-    cover_image_large: media.coverImage?.large ?? null,
+    cover_image_large: media.coverImage?.extraLarge ?? media.coverImage?.large ?? null,
     banner_image: media.bannerImage ?? null,
     episodes: media.episodes ?? null,
     format: media.format ?? null,
@@ -365,11 +367,17 @@ function normalizePreviewAnime(item: ImportPreviewItem): StoredAnime | null {
 
   return {
     anime_id: Number(item.animeId),
+    is_adult:
+      item.media?.isAdult === null || item.media?.isAdult === undefined
+        ? null
+        : item.media.isAdult
+          ? 1
+          : 0,
     title_romaji: item.title?.romaji ?? null,
     title_english: item.title?.english ?? null,
     title_native: item.title?.native ?? null,
     title_preferred: item.title?.userPreferred ?? null,
-    cover_image_large: item.coverImage?.large ?? null,
+    cover_image_large: item.coverImage?.extraLarge ?? item.coverImage?.large ?? null,
     episodes: item.episodes ?? null,
     format: item.format ?? null,
     season: item.season ?? null,
@@ -516,6 +524,26 @@ export const localStore = {
     };
     await writeState(userId, state);
     return { ok: true };
+  },
+
+  async cacheAnimeAdultFlags(
+    userId: number,
+    flags: Array<{ id?: number | null; isAdult?: boolean | null }>
+  ) {
+    const state = await readState(userId);
+
+    for (const flag of flags) {
+      const key = String(Number(flag.id));
+      const anime = state.anime[key];
+      if (!anime || flag.isAdult === null || flag.isAdult === undefined) continue;
+
+      anime.is_adult = flag.isAdult ? 1 : 0;
+      if (anime.details) {
+        anime.details = { ...anime.details, isAdult: flag.isAdult };
+      }
+    }
+
+    await writeState(userId, state);
   },
 
   async cachePreviewAnime(userId: number, item: ImportPreviewItem) {

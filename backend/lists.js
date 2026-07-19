@@ -8,6 +8,7 @@ const {
   removeUserAnimeEntry,
   clearUserAnimeList,
   saveAnimeSummary,
+  updateAnimeAdultFlag,
   getAniListAccountByUserId,
   getMalAccountByUserId,
   getAnimeExternalIdByAnimeId,
@@ -16,6 +17,7 @@ const {
   deleteSyncQueueJobByEntry,
 } = require('./db');
 const { mapAnimeForDb } = require('./animeMapper');
+const anilist = require('./anilist');
 const {
   buildAniListPayload,
   buildAniListDeletePayload,
@@ -151,13 +153,32 @@ function requireAuthenticatedUser(currentSession) {
   return { ok: true, user };
 }
 
-function getMyAnimeList(currentSession) {
+async function getMyAnimeList(currentSession) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) {
     return { ok: false, message: auth.message, entries: [] };
   }
 
-  const entries = getUserAnimeList(auth.user.id).map((entry) => ({
+  let storedEntries = getUserAnimeList(auth.user.id);
+  const missingAdultFlags = storedEntries
+    .filter((entry) => entry.is_adult === null || entry.is_adult === undefined)
+    .map((entry) => entry.anime_id);
+
+  if (missingAdultFlags.length) {
+    try {
+      const flags = await anilist.getAnimeAdultFlags(missingAdultFlags);
+      for (const media of flags) {
+        if (typeof media.isAdult === 'boolean') {
+          updateAnimeAdultFlag(media.id, media.isAdult);
+        }
+      }
+      storedEntries = getUserAnimeList(auth.user.id);
+    } catch (error) {
+      console.warn('Failed to refresh adult-content flags for My List:', error);
+    }
+  }
+
+  const entries = storedEntries.map((entry) => ({
     ...entry,
     genres: parseJsonArray(entry.genres),
     recommendations: parseJsonArray(entry.recommendations),

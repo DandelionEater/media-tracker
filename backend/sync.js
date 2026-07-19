@@ -1,5 +1,6 @@
 const anilist = require('./anilist');
 const mal = require('./mal');
+const { EventEmitter } = require('events');
 const { resolveMalAnimeIdForAnime } = require('./malMapping');
 const {
   getFreshMalAccountByUserId,
@@ -28,6 +29,7 @@ const AUTO_SYNC_DELAY_MS = 15 * 1000;
 let autoSyncTimer = null;
 const runningUsers = new Set();
 const statelessRunningUsers = new Set();
+const autoSyncEvents = new EventEmitter();
 
 function getAutoSyncKey(userId) {
   return `${AUTO_SYNC_KEY_PREFIX}${userId}`;
@@ -369,10 +371,15 @@ function scheduleAutoSync(userId) {
     clearTimeout(autoSyncTimer);
   }
 
-  autoSyncTimer = setTimeout(() => {
-    runSyncForUser(userId, { limit: 10 }).catch((error) => {
+  autoSyncTimer = setTimeout(async () => {
+    try {
+      const result = await runSyncForUser(userId, { limit: 10 });
+      if ((result.synced ?? 0) > 0 || (result.failed ?? 0) > 0 || (!result.ok && result.pending > 0)) {
+        autoSyncEvents.emit('complete', result);
+      }
+    } catch (error) {
       console.error('Auto sync error:', error);
-    });
+    }
   }, AUTO_SYNC_DELAY_MS);
 }
 
@@ -413,6 +420,7 @@ async function runSyncForUser(userId, options = {}) {
 
     let synced = 0;
     let failed = 0;
+    const syncedItems = [];
     const emitProgress =
       typeof options.onProgress === 'function' ? options.onProgress : () => {};
     const runMalOperation = linkedMalAccount?.access_token
@@ -486,6 +494,7 @@ async function runSyncForUser(userId, options = {}) {
             message: 'Synced to AniList.',
           });
           synced += 1;
+          syncedItems.push({ animeTitle: job.animeTitle, provider: 'AniList' });
           continue;
         }
 
@@ -510,6 +519,7 @@ async function runSyncForUser(userId, options = {}) {
             message: 'Deleted from AniList.',
           });
           synced += 1;
+          syncedItems.push({ animeTitle: job.animeTitle, provider: 'AniList' });
           continue;
         }
 
@@ -542,6 +552,7 @@ async function runSyncForUser(userId, options = {}) {
             message: 'Synced to MyAnimeList.',
           });
           synced += 1;
+          syncedItems.push({ animeTitle: job.animeTitle, provider: 'MyAnimeList' });
           continue;
         }
 
@@ -574,6 +585,7 @@ async function runSyncForUser(userId, options = {}) {
             message: 'Deleted from MyAnimeList.',
           });
           synced += 1;
+          syncedItems.push({ animeTitle: job.animeTitle, provider: 'MyAnimeList' });
           continue;
         }
 
@@ -611,6 +623,7 @@ async function runSyncForUser(userId, options = {}) {
       synced,
       failed,
       pending,
+      syncedItems,
       message:
         noDueJobs && pending > 0
           ? `${pending} queued sync change${pending === 1 ? '' : 's'} waiting for retry.`
@@ -893,6 +906,7 @@ module.exports = {
   runSyncForUser,
   getSyncStatus,
   getSyncActivity,
+  autoSyncEvents,
   getAutoSyncEnabled,
   setAutoSyncEnabled,
   getStatelessSyncStatus,
