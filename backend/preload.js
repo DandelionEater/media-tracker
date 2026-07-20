@@ -15,10 +15,12 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('anilist:search', { query, hideAdultContent }),
   getTrendingAnime: (hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:trending', { hideAdultContent }),
+  getDiscoverMedia: (hideAdultContent = true) =>
+    ipcRenderer.invoke('anilist:discover-media', { hideAdultContent }),
   getDiscoverAnime: (hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:discover', { hideAdultContent }),
-  getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true) =>
-    ipcRenderer.invoke('anilist:discover-shelf', { shelfId, page, hideAdultContent }),
+  getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = 'ANIME') =>
+    ipcRenderer.invoke('anilist:discover-shelf', { shelfId, page, hideAdultContent, mediaType }),
   previewAniListImport: (username) => ipcRenderer.invoke('anilist:preview-import', { username }),
   importAniList: (username, selectedStatuses, selectedMediaKeys) =>
     ipcRenderer.invoke('anilist:import-list', {
@@ -33,12 +35,12 @@ contextBridge.exposeInMainWorld('api', {
       selectedStatuses,
       selectedMediaKeys,
     }),
-  previewTextImport: (text, hideAdultContent = true) =>
-    ipcRenderer.invoke('text-import:preview', { text, hideAdultContent }),
-  previewPdfImport: (pdfBase64, hideAdultContent = true) =>
-    ipcRenderer.invoke('pdf-import:preview', { pdfBase64, hideAdultContent }),
-  importTextList: (entries, selectedAnimeIds) =>
-    ipcRenderer.invoke('text-import:import', { entries, selectedAnimeIds }),
+  previewTextImport: (text, hideAdultContent = true, mediaType = 'ANIME') =>
+    ipcRenderer.invoke('text-import:preview', { text, hideAdultContent, mediaType }),
+  previewPdfImport: (pdfBase64, hideAdultContent = true, mediaType = 'ANIME') =>
+    ipcRenderer.invoke('pdf-import:preview', { pdfBase64, hideAdultContent, mediaType }),
+  importTextList: (entries, selectedMediaKeys) =>
+    ipcRenderer.invoke('text-import:import', { entries, selectedMediaKeys }),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
   getSyncStatus: () => ipcRenderer.invoke('sync:get-status'),
@@ -92,6 +94,8 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('auth:mal-resolve-link-conflict', { action }),
 
   logout: () => ipcRenderer.invoke('auth:logout'),
+  deleteAccount: (usernameConfirmation) =>
+    ipcRenderer.invoke('auth:delete-account', usernameConfirmation),
 
   getSession: () => ipcRenderer.invoke('auth:get-session'),
 
@@ -115,6 +119,10 @@ contextBridge.exposeInMainWorld('api', {
   removeMyMangaListEntry: (mangaId) => ipcRenderer.invoke('manga-list:remove-entry', mangaId),
 
   clearMyList: () => ipcRenderer.invoke('list:clear'),
+  clearMyMangaList: () => ipcRenderer.invoke('manga-list:clear'),
+  clearAllMediaLists: () => ipcRenderer.invoke('media-list:clear-all'),
+  exportLocalBackup: () => ipcRenderer.invoke('backup:export'),
+  importLocalBackup: (backup) => ipcRenderer.invoke('backup:import', backup),
 });
 
 contextBridge.exposeInMainWorld('desktopShortcuts', {
@@ -144,6 +152,7 @@ contextBridge.exposeInMainWorld('desktopConfig', {
   getLayoutOrders: (userId) => ipcRenderer.invoke('layout-config:get', userId),
   setLayoutOrders: (userId, layouts) =>
     ipcRenderer.sendSync('layout-config:set', userId, layouts),
+  deleteLayoutOrders: (userId) => ipcRenderer.invoke('layout-config:delete', userId),
 });
 
 contextBridge.exposeInMainWorld('systemLocale', getSystemLocaleInfo());

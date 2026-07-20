@@ -886,6 +886,32 @@ const deleteUserAnimeListByUserIdStmt = db.prepare(`
   WHERE user_id = ?
 `);
 
+const deleteUserMangaListByUserIdStmt = db.prepare(`
+  DELETE FROM user_manga_lists
+  WHERE user_id = ?
+`);
+
+const deleteUserSyncQueueByUserIdStmt = db.prepare(`
+  DELETE FROM sync_queue
+  WHERE user_id = ?
+`);
+
+const deleteUserSyncHistoryByUserIdStmt = db.prepare(`
+  DELETE FROM sync_history
+  WHERE user_id = ?
+`);
+
+const deleteUserWebSessionsByUserIdStmt = db.prepare(`
+  DELETE FROM web_sessions
+  WHERE user_id = ?
+`);
+
+const clearExternalIdSubmitterByUserIdStmt = db.prepare(`
+  UPDATE anime_external_ids
+  SET first_submitted_by_user_id = NULL
+  WHERE first_submitted_by_user_id = ?
+`);
+
 const deleteUserStmt = db.prepare(`
   DELETE FROM users
   WHERE id = ?
@@ -928,6 +954,27 @@ const mergeMissingUserAnimeEntriesStmt = db.prepare(`
       FROM user_anime_lists target
       WHERE target.user_id = ?
         AND target.anime_id = source.anime_id
+    )
+`);
+
+const mergeMissingUserMangaEntriesStmt = db.prepare(`
+  INSERT INTO user_manga_lists (
+    user_id, manga_id, status, is_favorite, repeat_count, is_rereading,
+    progress, volume_progress, score, notes, started_at, completed_at,
+    created_at, updated_at
+  )
+  SELECT
+    ?, source.manga_id, source.status, source.is_favorite, source.repeat_count,
+    source.is_rereading, source.progress, source.volume_progress, source.score,
+    source.notes, source.started_at, source.completed_at, source.created_at,
+    CURRENT_TIMESTAMP
+  FROM user_manga_lists source
+  WHERE source.user_id = ?
+    AND NOT EXISTS (
+      SELECT 1
+      FROM user_manga_lists target
+      WHERE target.user_id = ?
+        AND target.manga_id = source.manga_id
     )
 `);
 
@@ -1326,6 +1373,9 @@ const updateUserMangaEntryStmt = db.prepare(`
 `);
 const removeUserMangaEntryStmt = db.prepare(`
   DELETE FROM user_manga_lists WHERE user_id = ? AND manga_id = ?
+`);
+const clearUserMangaListStmt = db.prepare(`
+  DELETE FROM user_manga_lists WHERE user_id = ?
 `);
 
 const deleteAnimeTagsStmt = db.prepare(`
@@ -1737,6 +1787,10 @@ function removeUserMangaEntry(userId, mangaId) {
   return removeUserMangaEntryStmt.run(userId, mangaId).changes;
 }
 
+function clearUserMangaList(userId) {
+  return clearUserMangaListStmt.run(userId).changes;
+}
+
 function getUserAnimeEntry(userId, animeId) {
   return getUserAnimeEntryStmt.get(userId, animeId);
 }
@@ -1910,19 +1964,40 @@ function deleteMalAccountByUserId(userId) {
 }
 
 function deleteUser(userId) {
-  deleteAniListAccountByUserIdStmt.run(userId);
-  deleteMalAccountByUserIdStmt.run(userId);
-  deleteUserAnimeListByUserIdStmt.run(userId);
-  deleteUserStmt.run(userId);
+  const remove = db.transaction(() => {
+    deleteUserWebSessionsByUserIdStmt.run(userId);
+    deleteUserSyncQueueByUserIdStmt.run(userId);
+    deleteUserSyncHistoryByUserIdStmt.run(userId);
+    deleteAniListAccountByUserIdStmt.run(userId);
+    deleteMalAccountByUserIdStmt.run(userId);
+    clearExternalIdSubmitterByUserIdStmt.run(userId);
+    deleteUserAnimeListByUserIdStmt.run(userId);
+    deleteUserMangaListByUserIdStmt.run(userId);
+    deleteAppSettingStmt.run(`sync.auto.${userId}`);
+    return deleteUserStmt.run(userId).changes;
+  });
+
+  return remove();
 }
 
 function mergeUserIntoUser(sourceUserId, targetUserId) {
   const merge = db.transaction(() => {
-    const result = mergeMissingUserAnimeEntriesStmt.run(targetUserId, sourceUserId, targetUserId);
+    const animeResult = mergeMissingUserAnimeEntriesStmt.run(
+      targetUserId,
+      sourceUserId,
+      targetUserId
+    );
+    const mangaResult = mergeMissingUserMangaEntriesStmt.run(
+      targetUserId,
+      sourceUserId,
+      targetUserId
+    );
     deleteUser(sourceUserId);
 
     return {
-      movedEntries: result.changes,
+      movedEntries: animeResult.changes + mangaResult.changes,
+      movedAnimeEntries: animeResult.changes,
+      movedMangaEntries: mangaResult.changes,
     };
   });
 
@@ -2143,6 +2218,7 @@ module.exports = {
   addUserMangaEntry,
   updateUserMangaEntry,
   removeUserMangaEntry,
+  clearUserMangaList,
   updateTutorialDismissed,
   getAppSetting,
   setAppSetting,

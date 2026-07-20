@@ -191,7 +191,7 @@ async function searchAnime(search, options = {}) {
   return results.anime;
 }
 
-async function searchAnimeBatch(searches, options = {}) {
+async function searchMediaBatch(searches, options = {}) {
   const normalizedSearches = Array.isArray(searches)
     ? searches.map((search) => String(search || '').trim()).filter(Boolean)
     : [];
@@ -201,6 +201,7 @@ async function searchAnimeBatch(searches, options = {}) {
   }
 
   const hideAdultContent = options.hideAdultContent !== false;
+  const mediaType = options.mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
   const variableDefinitions = normalizedSearches
     .map((_, index) => `$search${index}: String`)
     .join(', ');
@@ -208,7 +209,7 @@ async function searchAnimeBatch(searches, options = {}) {
     .map(
       (_, index) => `
         q${index}: Page(perPage: 10) {
-          media(search: $search${index}, type: ANIME, isAdult: $isAdult) {
+          media(search: $search${index}, type: ${mediaType}, isAdult: $isAdult) {
             ...AnimeSearchResult
           }
         }
@@ -232,6 +233,8 @@ async function searchAnimeBatch(searches, options = {}) {
         large
       }
       episodes
+      chapters
+      volumes
       format
       duration
       averageScore
@@ -251,6 +254,14 @@ async function searchAnimeBatch(searches, options = {}) {
   const data = await anilistRequestWithRetry(query, variables);
 
   return normalizedSearches.map((_, index) => data.data?.[`q${index}`]?.media ?? []);
+}
+
+async function searchAnimeBatch(searches, options = {}) {
+  return searchMediaBatch(searches, { ...options, mediaType: 'ANIME' });
+}
+
+async function searchMangaBatch(searches, options = {}) {
+  return searchMediaBatch(searches, { ...options, mediaType: 'MANGA' });
 }
 
 async function getTrendingAnime(options = {}) {
@@ -295,7 +306,7 @@ async function getTrendingAnime(options = {}) {
   return data.data.Page.media;
 }
 
-async function getDiscoverAnime(options = {}) {
+async function getDiscoverMedia(options = {}) {
   const hideAdultContent = options.hideAdultContent !== false;
   const { currentSeason, currentYear, nextSeason, nextYear } = getSeasonWindows();
   const query = `
@@ -306,6 +317,11 @@ async function getDiscoverAnime(options = {}) {
       $nextSeason: MediaSeason,
       $nextYear: Int
     ) {
+      trendingAnime: Page(page: 1, perPage: 8) {
+        media(type: ANIME, status: RELEASING, sort: TRENDING_DESC, isAdult: $isAdult) {
+          ...DiscoverMedia
+        }
+      }
       seasonal: Page(page: 1, perPage: 10) {
         media(
           type: ANIME,
@@ -338,6 +354,31 @@ async function getDiscoverAnime(options = {}) {
           ...DiscoverMedia
         }
       }
+      trendingManga: Page(page: 1, perPage: 8) {
+        media(type: MANGA, status: RELEASING, sort: TRENDING_DESC, isAdult: $isAdult) {
+          ...DiscoverMedia
+        }
+      }
+      publishingManga: Page(page: 1, perPage: 10) {
+        media(type: MANGA, status: RELEASING, sort: TRENDING_DESC, isAdult: $isAdult) {
+          ...DiscoverMedia
+        }
+      }
+      newManga: Page(page: 1, perPage: 10) {
+        media(type: MANGA, sort: START_DATE_DESC, isAdult: $isAdult) {
+          ...DiscoverMedia
+        }
+      }
+      popularManga: Page(page: 1, perPage: 10) {
+        media(type: MANGA, sort: POPULARITY_DESC, isAdult: $isAdult) {
+          ...DiscoverMedia
+        }
+      }
+      highlyRatedManga: Page(page: 1, perPage: 10) {
+        media(type: MANGA, sort: SCORE_DESC, isAdult: $isAdult) {
+          ...DiscoverMedia
+        }
+      }
     }
 
     fragment DiscoverMedia on Media {
@@ -354,6 +395,8 @@ async function getDiscoverAnime(options = {}) {
       }
       bannerImage
       episodes
+      chapters
+      volumes
       format
       status
       season
@@ -377,41 +420,85 @@ async function getDiscoverAnime(options = {}) {
     nextYear,
   });
 
-  return [
-    {
-      id: 'seasonal',
-      title: 'Seasonal Picks',
-      description: `Popular anime airing in ${formatSeasonLabel(currentSeason)} ${currentYear}.`,
-      pills: [formatSeasonLabel(currentSeason), String(currentYear), 'Seasonal'],
-      items: data.data.seasonal.media,
+  return {
+    anime: {
+      trending: data.data.trendingAnime.media,
+      shelves: [
+        {
+          id: 'seasonal',
+          title: 'Seasonal Picks',
+          description: `Popular anime airing in ${formatSeasonLabel(currentSeason)} ${currentYear}.`,
+          pills: [formatSeasonLabel(currentSeason), String(currentYear), 'Seasonal'],
+          items: data.data.seasonal.media,
+        },
+        {
+          id: 'upcoming',
+          title: 'Next Season',
+          description: `Anime gathering attention for ${formatSeasonLabel(nextSeason)} ${nextYear}.`,
+          pills: [formatSeasonLabel(nextSeason), String(nextYear), 'Upcoming'],
+          items: data.data.upcoming.media,
+        },
+        {
+          id: 'popular',
+          title: 'Popular',
+          description: 'The most-watched anime across AniList.',
+          pills: ['Popularity', 'All time'],
+          items: data.data.popular.media,
+        },
+        {
+          id: 'rated',
+          title: 'Highly Rated',
+          description: 'Anime ranked by community score.',
+          pills: ['Score', 'Community'],
+          items: data.data.highlyRated.media,
+        },
+      ],
     },
-    {
-      id: 'upcoming',
-      title: 'Next Season',
-      description: `Anime gathering attention for ${formatSeasonLabel(nextSeason)} ${nextYear}.`,
-      pills: [formatSeasonLabel(nextSeason), String(nextYear), 'Upcoming'],
-      items: data.data.upcoming.media,
+    manga: {
+      trending: data.data.trendingManga.media,
+      shelves: [
+        {
+          id: 'seasonal',
+          title: 'Publishing Now',
+          description: 'Manga currently drawing attention while publishing.',
+          pills: ['Publishing', 'Trending'],
+          items: data.data.publishingManga.media,
+        },
+        {
+          id: 'upcoming',
+          title: 'New & Noteworthy',
+          description: 'Recently listed Manga and upcoming publications.',
+          pills: ['New releases', 'Upcoming'],
+          items: data.data.newManga.media,
+        },
+        {
+          id: 'popular',
+          title: 'Popular',
+          description: 'The most-read Manga across AniList.',
+          pills: ['Popularity', 'All time'],
+          items: data.data.popularManga.media,
+        },
+        {
+          id: 'rated',
+          title: 'Highly Rated',
+          description: 'Manga ranked by community score.',
+          pills: ['Score', 'Community'],
+          items: data.data.highlyRatedManga.media,
+        },
+      ],
     },
-    {
-      id: 'popular',
-      title: 'Popular',
-      description: 'The most-watched anime across AniList.',
-      pills: ['Popularity', 'All time'],
-      items: data.data.popular.media,
-    },
-    {
-      id: 'rated',
-      title: 'Highly Rated',
-      description: 'Anime ranked by community score.',
-      pills: ['Score', 'Community'],
-      items: data.data.highlyRated.media,
-    },
-  ];
+  };
+}
+
+async function getDiscoverAnime(options = {}) {
+  const discovery = await getDiscoverMedia(options);
+  return discovery.anime.shelves;
 }
 
 async function getDiscoverShelfAnime(options = {}) {
   const hideAdultContent = options.hideAdultContent !== false;
-  const definition = getDiscoverShelfDefinition(options.shelfId);
+  const mediaType = options.mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+  const definition = getDiscoverShelfDefinition(options.shelfId, mediaType);
   const page = clampInteger(options.page, 1, 500, 1);
   const perPage = clampInteger(options.perPage, 1, 20, 20);
   const maxItems = definition.expandedLimit ?? Number.POSITIVE_INFINITY;
@@ -421,6 +508,7 @@ async function getDiscoverShelfAnime(options = {}) {
     page: safePage,
     perPage,
     hideAdultContent,
+    mediaType,
   });
   const pageInfo = data.data.Page.pageInfo;
   const isCapped = Number.isFinite(maxItems);
@@ -456,7 +544,7 @@ async function getDiscoverShelfAnime(options = {}) {
   };
 }
 
-async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultContent }) {
+async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultContent, mediaType }) {
   const query = `
     query (
       $page: Int,
@@ -464,7 +552,9 @@ async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultCont
       $isAdult: Boolean,
       $season: MediaSeason,
       $seasonYear: Int,
-      $sort: [MediaSort]
+      $sort: [MediaSort],
+      $mediaType: MediaType,
+      $status: MediaStatus
     ) {
       Page(page: $page, perPage: $perPage) {
         pageInfo {
@@ -475,7 +565,8 @@ async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultCont
           perPage
         }
         media(
-          type: ANIME,
+          type: $mediaType,
+          status: $status,
           season: $season,
           seasonYear: $seasonYear,
           sort: $sort,
@@ -493,6 +584,8 @@ async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultCont
             large
           }
           episodes
+          chapters
+          volumes
           format
           season
           seasonYear
@@ -511,11 +604,51 @@ async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultCont
     season: definition.season,
     seasonYear: definition.seasonYear,
     sort: definition.sort,
+    mediaType,
+    status: definition.status,
   });
 }
 
-function getDiscoverShelfDefinition(shelfId) {
+function getDiscoverShelfDefinition(shelfId, mediaType = 'ANIME') {
   const { currentSeason, currentYear, nextSeason, nextYear } = getSeasonWindows();
+  if (mediaType === 'MANGA') {
+    const mangaDefinitions = {
+      seasonal: {
+        id: 'seasonal',
+        title: 'Publishing Now',
+        description: 'Manga currently drawing attention while publishing.',
+        pills: ['Publishing', 'Trending'],
+        status: 'RELEASING',
+        sort: ['TRENDING_DESC'],
+      },
+      upcoming: {
+        id: 'upcoming',
+        title: 'New & Noteworthy',
+        description: 'Recently listed Manga and upcoming publications.',
+        pills: ['New releases', 'Upcoming'],
+        sort: ['START_DATE_DESC'],
+      },
+      popular: {
+        id: 'popular',
+        title: 'Popular',
+        description: 'The most-read Manga across AniList.',
+        pills: ['Popularity', 'All time'],
+        sort: ['POPULARITY_DESC'],
+        expandedLimit: 100,
+      },
+      rated: {
+        id: 'rated',
+        title: 'Highly Rated',
+        description: 'Manga ranked by community score.',
+        pills: ['Score', 'Community'],
+        sort: ['SCORE_DESC'],
+        expandedLimit: 100,
+      },
+    };
+
+    return mangaDefinitions[shelfId] || mangaDefinitions.seasonal;
+  }
+
   const definitions = {
     seasonal: {
       id: 'seasonal',
@@ -1346,7 +1479,9 @@ module.exports = {
   searchMedia,
   searchAnime,
   searchAnimeBatch,
+  searchMangaBatch,
   getTrendingAnime,
+  getDiscoverMedia,
   getDiscoverAnime,
   getDiscoverShelfAnime,
   getUserAnimeCollection,

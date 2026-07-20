@@ -36,6 +36,7 @@ const {
   updateWebSessionExpiry,
   deleteWebSession,
   deleteExpiredWebSessions,
+  deleteUser,
 } = require('./db');
 const { mapDbAnimeForFrontend } = require('./animeMapper');
 const {
@@ -1523,11 +1524,14 @@ async function handleRpc(method, args, req, res) {
       return await anilist.getTrendingAnime({ hideAdultContent: args[0] });
     case 'getDiscoverAnime':
       return await anilist.getDiscoverAnime({ hideAdultContent: args[0] });
+    case 'getDiscoverMedia':
+      return await anilist.getDiscoverMedia({ hideAdultContent: args[0] });
     case 'getDiscoverShelfAnime':
       return await anilist.getDiscoverShelfAnime({
         shelfId: args[0],
         page: args[1],
         hideAdultContent: args[2],
+        mediaType: args[3],
       });
     case 'previewAniListImport': {
       const username = String(args[0] || '').trim();
@@ -1655,9 +1659,9 @@ async function handleRpc(method, args, req, res) {
       };
     }
     case 'previewTextImport':
-      return await previewTextImport(args[0], { hideAdultContent: args[1] });
+      return await previewTextImport(args[0], { hideAdultContent: args[1], mediaType: args[2] });
     case 'previewPdfImport':
-      return await previewPdfImport(args[0], { hideAdultContent: args[1] });
+      return await previewPdfImport(args[0], { hideAdultContent: args[1], mediaType: args[2] });
     case 'importTextList':
       return buildLocalImportResult(
         {
@@ -1835,6 +1839,29 @@ async function handleRpc(method, args, req, res) {
       clearWebSession(req, res);
       logoutUser();
       return { ok: true, message: 'Logged out successfully.' };
+    case 'deleteAccount': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+      if (String(args[0] || '').trim() !== currentSession.user.username) {
+        return { ok: false, message: 'The username confirmation does not match.' };
+      }
+      const userId = Number(currentSession.user.id);
+      pendingAniListLinkConflictByUserId.delete(userId);
+      pendingMalLinkConflictByUserId.delete(userId);
+      for (const [flowId, flow] of pendingAniListFlows) {
+        if (Number(flow.userId) === userId) pendingAniListFlows.delete(flowId);
+      }
+      for (const [flowId, flow] of pendingMalFlows) {
+        if (Number(flow.userId) === userId) pendingMalFlows.delete(flowId);
+      }
+      clearWebSession(req, res);
+      const deleted = deleteUser(userId);
+      logoutUser();
+      return deleted
+        ? { ok: true, message: 'Your Seenary account and its stored data were deleted.' }
+        : { ok: false, message: 'The account could not be deleted.' };
+    }
     case 'getSession':
       return currentSession;
     case 'setTutorialDismissed':

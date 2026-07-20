@@ -41,6 +41,7 @@ type TopNavbarProps = {
   onOpenSettings: () => void;
   focusSearchOnMount?: boolean;
   navbarStyle: NavbarStyle;
+  hideMyListShortcut?: boolean;
 };
 
 export function TopNavbar({
@@ -61,6 +62,7 @@ export function TopNavbar({
   onOpenSettings,
   focusSearchOnMount = false,
   navbarStyle,
+  hideMyListShortcut = false,
 }: TopNavbarProps) {
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
@@ -304,9 +306,13 @@ export function TopNavbar({
 
       <div className="relative flex w-full items-center justify-center">
         <div
-          className={`absolute left-0 flex items-center gap-2 transition ${
+          className={`absolute left-0 flex items-center transition-all duration-200 ${
+            hideMyListShortcut ? "gap-0" : "gap-2"
+          } ${
             isMinimal
-              ? "rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
+              ? hideMyListShortcut
+                ? "rounded-xl bg-[#111111]/82 shadow-xl backdrop-blur-xl"
+                : "h-12 rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
               : ""
           }`}
         >
@@ -324,8 +330,14 @@ export function TopNavbar({
 
           <button
             onClick={onOpenMyList}
-            className={`no-drag flex items-center gap-2 rounded-xl border px-3 py-2 text-sm transition-all duration-200 ease-out active:scale-95 ${
-              currentView === "list"
+            aria-hidden={hideMyListShortcut}
+            tabIndex={hideMyListShortcut ? -1 : 0}
+            className={`no-drag flex items-center gap-2 overflow-hidden rounded-xl border py-2 text-sm whitespace-nowrap transition-all duration-200 ease-out active:scale-95 ${
+              hideMyListShortcut
+                ? "pointer-events-none max-w-0 border-transparent px-0 opacity-0"
+                : "max-w-32 px-3 opacity-100"
+            } ${
+              !hideMyListShortcut && currentView === "list"
                 ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                 : "border-transparent bg-transparent text-white/65 hover:bg-white/10 hover:text-white"
             }`}
@@ -339,7 +351,7 @@ export function TopNavbar({
         <div
           className={`no-drag mx-auto flex w-full items-center gap-2 rounded-2xl border px-3 py-2 shadow-lg transition-[max-width,border-color,background-color,box-shadow] duration-300 ${
             isFloating ? "max-w-lg" : "max-w-xl"
-          } ${
+          } ${isMinimal ? "h-12" : ""} ${
             isSearchFocused
               ? "border-white/20 bg-white/9 shadow-[0_10px_35px_rgba(0,0,0,0.32)]"
               : isMinimal
@@ -408,7 +420,7 @@ export function TopNavbar({
         <div
           className={`no-drag absolute right-0 top-0 flex items-start gap-2 transition ${
             isMinimal
-              ? "rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
+              ? "h-12 rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
               : ""
           }`}
         >

@@ -485,7 +485,7 @@ export default function MediaDetails({
   return (
     <>
       <div className="relative h-full overflow-hidden rounded-3xl bg-[#0f0f0f] text-white">
-        <div className="scroll-container h-full overflow-y-auto">
+        <div data-global-scroll-root className="scroll-container h-full overflow-y-auto">
           <div className="relative h-56 w-full overflow-hidden rounded-t-3xl">
             {anime.bannerImage ? (
               <button

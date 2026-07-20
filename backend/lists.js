@@ -13,6 +13,7 @@ const {
   addUserMangaEntry,
   updateUserMangaEntry,
   removeUserMangaEntry,
+  clearUserMangaList,
   saveManga,
   saveAnimeSummary,
   updateAnimeAdultFlag,
@@ -674,9 +675,52 @@ function clearMyAnimeList(currentSession) {
     ok: true,
     message:
       removedCount > 0
-        ? `Cleared ${removedCount} entr${removedCount === 1 ? 'y' : 'ies'} from your list.`
-        : 'Your list was already empty.',
+        ? `Cleared ${removedCount} Anime entr${removedCount === 1 ? 'y' : 'ies'} from your list.`
+        : 'Your Anime list was already empty.',
     removedCount,
+    animeRemovedCount: removedCount,
+    mangaRemovedCount: 0,
+  };
+}
+
+function clearMyMangaList(currentSession) {
+  const auth = requireAuthenticatedUser(currentSession);
+  if (!auth.ok) return { ok: false, message: auth.message };
+
+  const existingEntries = getUserMangaList(auth.user.id);
+  for (const entry of existingEntries) queueMangaDeleteSyncIfNeeded(auth.user.id, entry);
+
+  const removedCount = clearUserMangaList(auth.user.id);
+  return {
+    ok: true,
+    message:
+      removedCount > 0
+        ? `Cleared ${removedCount} Manga entr${removedCount === 1 ? 'y' : 'ies'} from your list.`
+        : 'Your Manga list was already empty.',
+    removedCount,
+    animeRemovedCount: 0,
+    mangaRemovedCount: removedCount,
+  };
+}
+
+function clearAllMediaLists(currentSession) {
+  const animeResult = clearMyAnimeList(currentSession);
+  if (!animeResult.ok) return animeResult;
+  const mangaResult = clearMyMangaList(currentSession);
+  if (!mangaResult.ok) return mangaResult;
+
+  const animeRemovedCount = Number(animeResult.removedCount ?? 0);
+  const mangaRemovedCount = Number(mangaResult.removedCount ?? 0);
+  const removedCount = animeRemovedCount + mangaRemovedCount;
+  return {
+    ok: true,
+    message:
+      removedCount > 0
+        ? `Cleared ${animeRemovedCount} Anime and ${mangaRemovedCount} Manga entries.`
+        : 'Both of your media lists were already empty.',
+    removedCount,
+    animeRemovedCount,
+    mangaRemovedCount,
   };
 }
 
@@ -1137,6 +1181,8 @@ module.exports = {
   saveMyMangaEntry,
   removeMyMangaEntry,
   clearMyAnimeList,
+  clearMyMangaList,
+  clearAllMediaLists,
   importAniListEntries,
   importAniListMangaEntries,
 };

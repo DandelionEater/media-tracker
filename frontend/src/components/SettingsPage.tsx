@@ -73,6 +73,7 @@ type ImportPreviewResponse = {
 };
 
 type ImportProvider = "anilist" | "mal" | "txt" | "pdf";
+type FileImportMediaType = "ANIME" | "MANGA";
 type ImportFeedback = {
   provider: ImportProvider;
   kind: "success" | "error" | "warning";
@@ -181,7 +182,7 @@ type SettingsPageProps = {
   }>;
   onImportTextList: (
     entries: ImportPreviewItem[],
-    selectedAnimeIds: number[],
+    selectedMediaKeys: string[],
     options?: { signal?: AbortSignal }
   ) => Promise<{
     ok: boolean;
@@ -198,10 +199,14 @@ type SettingsPageProps = {
       skipped: number;
     };
   }>;
-  onClearMyList: () => Promise<{
+  onClearLists: (target: "anime" | "manga" | "all") => Promise<{
     ok: boolean;
     message: string;
     removedCount?: number;
+  }>;
+  onDeleteAccount: (usernameConfirmation: string) => Promise<{
+    ok: boolean;
+    message: string;
   }>;
   onExportLocalBackup: () => Promise<void>;
   onImportLocalBackup: (backup: unknown) => Promise<{
@@ -612,7 +617,8 @@ export function SettingsPage({
   onImportAniList,
   onImportMal,
   onImportTextList,
-  onClearMyList,
+  onClearLists,
+  onDeleteAccount,
   onExportLocalBackup,
   onImportLocalBackup,
   onLinkAniListAccount,
@@ -641,6 +647,8 @@ export function SettingsPage({
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [importPreview, setImportPreview] = useState<ImportPreviewResponse["preview"] | null>(null);
   const [textImportFileName, setTextImportFileName] = useState("");
+  const [textImportMediaType, setTextImportMediaType] = useState<FileImportMediaType>("ANIME");
+  const [pdfImportMediaType, setPdfImportMediaType] = useState<FileImportMediaType>("ANIME");
   const [selectedImportKeys, setSelectedImportKeys] = useState<string[]>([]);
   const [openImportGroups, setOpenImportGroups] = useState<Record<string, boolean>>({});
   const [importFeedback, setImportFeedback] = useState<ImportFeedback | null>(null);
@@ -654,8 +662,12 @@ export function SettingsPage({
   } | null>(null);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
-  const [isClearArmed, setIsClearArmed] = useState(false);
+  const [clearTarget, setClearTarget] = useState<"anime" | "manga" | "all" | null>(null);
   const [isClearingList, setIsClearingList] = useState(false);
+  const [isDeleteAccountArmed, setIsDeleteAccountArmed] = useState(false);
+  const [deleteAccountConfirmation, setDeleteAccountConfirmation] = useState("");
+  const [isDeletingAccount, setIsDeletingAccount] = useState(false);
+  const [deleteAccountFeedback, setDeleteAccountFeedback] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState({
     loading: true,
     linked: false,
@@ -1802,6 +1814,7 @@ export function SettingsPage({
       const result = (await window.api.previewTextImport(
         text,
         settings.hideAdultContent,
+        textImportMediaType,
         { signal: controller.signal }
       )) as ImportPreviewResponse;
 
@@ -1871,6 +1884,7 @@ export function SettingsPage({
       const result = (await window.api.previewPdfImport(
         pdfBase64,
         settings.hideAdultContent,
+        pdfImportMediaType,
         { signal: controller.signal }
       )) as ImportPreviewResponse;
 
@@ -1942,6 +1956,7 @@ export function SettingsPage({
 
   return (
     <div
+      data-global-scroll-root
       ref={settingsScrollRef}
       className="scroll-container h-full overflow-y-auto px-6 py-24 text-white"
     >
@@ -3566,20 +3581,22 @@ export function SettingsPage({
                 <SectionHeading
                   icon={DocumentTextIcon}
                   title="Import from text file"
-                  description="ANIME ONLY. Bring in a simple notepad list with one Anime title per line."
+                  description="Bring in a simple notepad list and choose whether its titles are Anime or Manga."
                 />
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                  <FileImportMediaSelector
+                    value={textImportMediaType}
+                    onChange={setTextImportMediaType}
+                    label="Interpret this text file as"
+                  />
                   <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
                     <div>
                       <p className="font-semibold text-white">
                         {textImportFileName || "Choose a .txt file"}
                       </p>
                       <p className="mt-2 text-sm leading-6 text-white/45">
-                        Lines without progress are imported as completed. Lines like 3/12 are imported with that progress.
-                      </p>
-                      <p className="mt-2 text-sm leading-6 text-amber-100/75">
-                        Remove Manga entries before importing. Manga is not supported here and may be incorrectly matched as Anime, corrupting the imported list data.
+                        Lines without progress are imported as completed. Lines like 3/12 use episode progress in Anime mode and chapter progress in Manga mode.
                       </p>
                     </div>
 
@@ -3607,10 +3624,9 @@ export function SettingsPage({
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
+                  <div className="mt-4 rounded-2xl border border-sky-300/15 bg-sky-300/8 px-4 py-3">
                     <p className="text-sm leading-6 text-white/70">
-                      <span className="font-semibold text-amber-100">ANIME-ONLY IMPORTER.</span>{" "}
-                      Text imports use best-effort AniList Anime matching. Review every match before importing.
+                      Seenary will match every line against AniList {textImportMediaType === "MANGA" ? "Manga" : "Anime"} records only. Review every match before importing.
                     </p>
                   </div>
 
@@ -3624,10 +3640,15 @@ export function SettingsPage({
                 <SectionHeading
                   icon={DocumentTextIcon}
                   title="Import from PDF"
-                  description="ANIME ONLY. Extract Anime titles from a text-based PDF, then review every match before importing."
+                  description="Extract Anime or Manga titles from a text-based PDF, then review every match before importing."
                 />
 
                 <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                  <FileImportMediaSelector
+                    value={pdfImportMediaType}
+                    onChange={setPdfImportMediaType}
+                    label="Interpret this PDF as"
+                  />
                   <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
                     <div className="min-w-0 flex-1">
                       <p className="font-semibold text-white">
@@ -3637,7 +3658,7 @@ export function SettingsPage({
                         Best for browser-exported pages and other PDFs with selectable text.
                       </p>
                       <p className="mt-2 text-sm leading-6 text-amber-100/75">
-                        PDF import is experimental. Remove Manga entries first: they may be incorrectly matched as Anime and corrupt the imported list data. Scanned image PDFs may not contain readable titles.
+                        PDF import is experimental. Scanned image PDFs may not contain readable titles.
                       </p>
                     </div>
 
@@ -3665,10 +3686,9 @@ export function SettingsPage({
                     </button>
                   </div>
 
-                  <div className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 px-4 py-3">
+                  <div className="mt-4 rounded-2xl border border-sky-300/15 bg-sky-300/8 px-4 py-3">
                     <p className="text-sm leading-6 text-white/70">
-                      <span className="font-semibold text-amber-100">ANIME-ONLY IMPORTER.</span>{" "}
-                      Seenary extracts readable PDF text and matches likely title lines against AniList Anime records only.
+                      Seenary extracts readable PDF text and matches likely title lines against AniList {pdfImportMediaType === "MANGA" ? "Manga" : "Anime"} records only.
                     </p>
                   </div>
 
@@ -3681,91 +3701,186 @@ export function SettingsPage({
               <div>
                 <SectionHeading
                   icon={TrashIcon}
-                  title="Clear my anime list"
-                  description="Remove every anime from your list without affecting the rest of the app."
+                  title="Danger zone"
+                  description="Permanently clear media lists or delete your Seenary account."
                 />
 
-                <div className="rounded-3xl border border-rose-400/15 bg-rose-400/8 p-5">
-                  <p className="text-sm leading-6 text-white/70">
-                    This only clears <span className="font-semibold text-white">your list</span>.
-                    Your account stays the same, and anime pages and app content will still be available.
-                  </p>
+                <div className="space-y-4 rounded-3xl border border-rose-400/15 bg-rose-400/8 p-5">
+                  <div>
+                    <p className="font-semibold text-white">Clear list data</p>
+                    <p className="mt-2 text-sm leading-6 text-white/70">
+                      Choose exactly which local list to clear. Your Seenary account remains active.
+                      If automatic sync is enabled, these removals may also be sent to linked services.
+                    </p>
+                  </div>
 
-                  <div className="mt-5 flex flex-wrap items-center gap-3">
-                    <button
-                      type="button"
-                      disabled={isClearingList}
-                      onClick={() => {
-                        setClearFeedback(null);
-                        setIsClearArmed(true);
-                      }}
-                      className={`rounded-2xl border px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                        isClearingList
-                          ? "cursor-not-allowed border-white/5 bg-white/[0.03] text-white/35"
-                          : "border-rose-400/20 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20"
-                      }`}
-                    >
-                      Clear my anime list
-                    </button>
+                  <div className="flex flex-wrap items-center gap-3">
+                    {([
+                      ["anime", "Clear Anime list"],
+                      ["manga", "Clear Manga list"],
+                      ["all", "Clear all media"],
+                    ] as const).map(([target, label]) => (
+                      <button
+                        key={target}
+                        type="button"
+                        disabled={isClearingList}
+                        onClick={() => {
+                          setClearFeedback(null);
+                          setClearTarget(target);
+                        }}
+                        className={`rounded-2xl border px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                          isClearingList
+                            ? "cursor-not-allowed border-white/5 bg-white/[0.03] text-white/35"
+                            : target === "all"
+                              ? "border-rose-300/30 bg-rose-500/25 text-rose-50 hover:bg-rose-500/35"
+                              : "border-rose-400/20 bg-rose-500/15 text-rose-100 hover:bg-rose-500/20"
+                        }`}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </div>
 
-                    {isClearArmed && (
-                      <>
+                  {clearTarget && (
+                    <div className="rounded-2xl border border-rose-300/20 bg-black/20 p-4">
+                      <p className="text-sm font-semibold text-rose-50">
+                        Second confirmation: permanently clear {clearTarget === "anime"
+                          ? "every Anime entry"
+                          : clearTarget === "manga"
+                            ? "every Manga entry"
+                            : "every Anime and Manga entry"}?
+                      </p>
+                      <div className="mt-4 flex flex-wrap gap-3">
                         <button
                           type="button"
                           disabled={isClearingList}
                           onClick={async () => {
                             try {
                               setIsClearingList(true);
-                              const result = await onClearMyList();
+                              const result = await onClearLists(clearTarget);
                               setClearFeedback({
                                 kind: result.ok ? "success" : "error",
                                 message: result.message,
                               });
+                            } catch (error) {
+                              setClearFeedback({
+                                kind: "error",
+                                message:
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Seenary could not clear the selected list.",
+                              });
                             } finally {
                               setIsClearingList(false);
-                              setIsClearArmed(false);
+                              setClearTarget(null);
                             }
                           }}
-                          className={`rounded-2xl border px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                            isClearingList
-                              ? "cursor-not-allowed border-white/5 bg-white/[0.03] text-white/35"
-                              : "border-rose-400/25 bg-rose-500 text-white hover:opacity-90"
-                          }`}
+                          className="rounded-2xl border border-rose-400/25 bg-rose-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          {isClearingList ? "Clearing..." : "Yes, clear it"}
+                          {isClearingList ? "Clearing..." : "Yes, clear permanently"}
                         </button>
-
                         <button
                           type="button"
                           disabled={isClearingList}
-                          onClick={() => setIsClearArmed(false)}
-                          className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-white/70 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/55"
+                          onClick={() => setClearTarget(null)}
+                          className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-white/70 transition hover:bg-white/8 hover:text-white"
                         >
                           Cancel
                         </button>
-                      </>
-                    )}
-                  </div>
-
-                  {isClearArmed && (
-                    <p className="mt-4 text-sm leading-6 text-rose-100/85">
-                      Second confirmation: this will remove every list entry tied to your account.
-                    </p>
+                      </div>
+                    </div>
                   )}
 
                   {clearFeedback && (
                     <div
-                      className={`mt-5 rounded-3xl border p-4 ${
+                      className={`rounded-2xl border p-4 ${
                         clearFeedback.kind === "success"
                           ? "border-emerald-400/20 bg-emerald-400/10"
                           : "border-rose-400/20 bg-rose-400/10"
                       }`}
                     >
-                      <p className="text-sm font-semibold text-white">
-                        {clearFeedback.message}
-                      </p>
+                      <p className="text-sm font-semibold text-white">{clearFeedback.message}</p>
                     </div>
                   )}
+
+                  <div className="border-t border-rose-300/15 pt-5">
+                    <p className="font-semibold text-white">Delete account</p>
+                    <p className="mt-2 text-sm leading-6 text-white/70">
+                      Permanently removes this Seenary profile, both local media lists, sync history,
+                      linked-service credentials, sessions, and saved layout configuration. Your AniList
+                      and MyAnimeList accounts and their lists are not deleted.
+                    </p>
+
+                    {!isDeleteAccountArmed ? (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setDeleteAccountFeedback(null);
+                          setDeleteAccountConfirmation("");
+                          setIsDeleteAccountArmed(true);
+                        }}
+                        className="mt-4 rounded-2xl border border-rose-300/30 bg-rose-600/30 px-4 py-2.5 text-sm font-semibold text-rose-50 transition hover:bg-rose-600/40"
+                      >
+                        Delete my account
+                      </button>
+                    ) : (
+                      <div className="mt-4 rounded-2xl border border-rose-300/25 bg-black/25 p-4">
+                        <label className="block text-sm font-semibold text-rose-50" htmlFor="delete-account-confirmation">
+                          Type <span className="select-all text-white">{username}</span> to confirm
+                        </label>
+                        <input
+                          id="delete-account-confirmation"
+                          value={deleteAccountConfirmation}
+                          disabled={isDeletingAccount}
+                          onChange={(event) => setDeleteAccountConfirmation(event.target.value)}
+                          autoComplete="off"
+                          spellCheck={false}
+                          className="mt-3 w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-rose-300/45 focus:ring-2 focus:ring-rose-300/15"
+                          placeholder={username}
+                        />
+                        <div className="mt-4 flex flex-wrap gap-3">
+                          <button
+                            type="button"
+                            disabled={isDeletingAccount || deleteAccountConfirmation !== username}
+                            onClick={async () => {
+                              setIsDeletingAccount(true);
+                              setDeleteAccountFeedback(null);
+                              try {
+                                const result = await onDeleteAccount(deleteAccountConfirmation);
+                                if (!result.ok) setDeleteAccountFeedback(result.message);
+                              } catch (error) {
+                                setDeleteAccountFeedback(
+                                  error instanceof Error
+                                    ? error.message
+                                    : "Seenary could not delete the account."
+                                );
+                              } finally {
+                                setIsDeletingAccount(false);
+                              }
+                            }}
+                            className="rounded-2xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:cursor-not-allowed disabled:opacity-35"
+                          >
+                            {isDeletingAccount ? "Deleting account..." : "Delete account permanently"}
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isDeletingAccount}
+                            onClick={() => {
+                              setIsDeleteAccountArmed(false);
+                              setDeleteAccountConfirmation("");
+                              setDeleteAccountFeedback(null);
+                            }}
+                            className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-white/70 transition hover:bg-white/8 hover:text-white"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                        {deleteAccountFeedback && (
+                          <p className="mt-3 text-sm font-medium text-rose-200">{deleteAccountFeedback}</p>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -3785,6 +3900,7 @@ export function SettingsPage({
         selectedKeys={selectedImportKeys}
         openGroups={openImportGroups}
         titleLanguage={settings.titleLanguage}
+        fileMediaType={importProvider === "pdf" ? pdfImportMediaType : textImportMediaType}
         onClose={() => setIsImportModalOpen(false)}
         onToggleGroup={(status) =>
           setOpenImportGroups((current) => ({ ...current, [status]: !current[status] }))
@@ -3825,15 +3941,11 @@ export function SettingsPage({
 
           try {
             setIsImporting(true);
-            const selectedAnimeIds = selectedImportKeys
-              .filter((key) => key.startsWith("ANIME:"))
-              .map((key) => Number(key.slice(6)))
-              .filter((id) => Number.isInteger(id) && id > 0);
             const result =
               feedbackProvider === "txt" || feedbackProvider === "pdf"
                 ? await onImportTextList(
                     importPreview?.groups.flatMap((group) => group.items) ?? [],
-                    selectedAnimeIds,
+                    selectedImportKeys,
                     { signal: controller.signal }
                   )
                 : feedbackProvider === "mal"
@@ -4332,11 +4444,50 @@ function SyncActivityModal({
   );
 }
 
+function FileImportMediaSelector({
+  value,
+  onChange,
+  label,
+}: {
+  value: FileImportMediaType;
+  onChange: (value: FileImportMediaType) => void;
+  label: string;
+}) {
+  return (
+    <div className="mb-5 flex flex-col gap-3 rounded-2xl border border-white/10 bg-black/20 p-3 sm:flex-row sm:items-center sm:justify-between">
+      <p className="text-sm font-semibold text-white/75">{label}</p>
+      <div
+        className="grid grid-cols-2 rounded-2xl border border-white/10 bg-black/25 p-1"
+        role="radiogroup"
+        aria-label={label}
+      >
+        {(["ANIME", "MANGA"] as FileImportMediaType[]).map((mediaType) => (
+          <button
+            key={mediaType}
+            type="button"
+            role="radio"
+            aria-checked={value === mediaType}
+            onClick={() => onChange(mediaType)}
+            className={`min-w-24 rounded-xl px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+              value === mediaType
+                ? "bg-[var(--app-accent)] text-black"
+                : "text-white/50 hover:bg-white/8 hover:text-white"
+            }`}
+          >
+            {mediaType === "MANGA" ? "Manga" : "Anime"}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function getImportModalCopy(
   provider: "anilist" | "mal" | "txt" | "pdf",
   username: string,
   preview: ImportPreviewResponse["preview"] | null,
-  isPreviewLoading: boolean
+  isPreviewLoading: boolean,
+  fileMediaType: FileImportMediaType
 ) {
   const sourceName =
     username ||
@@ -4349,21 +4500,23 @@ function getImportModalCopy(
         : "your AniList account");
 
   if (provider === "txt" || provider === "pdf") {
+    const mediaLabel = fileMediaType === "MANGA" ? "Manga" : "Anime";
+    const unitLabel = fileMediaType === "MANGA" ? "chapters" : "episodes";
     const matchedCount =
       preview?.groups.reduce((sum, group) => sum + group.items.length, 0) ?? 0;
     const totalFound = preview?.totalFound ?? 0;
     const sourceType = provider === "pdf" ? "PDF" : "text file";
 
     return {
-      title: isPreviewLoading ? "Matching anime titles" : "Choose exact anime to import",
+      title: isPreviewLoading ? `Matching ${mediaLabel} titles` : `Choose exact ${mediaLabel} to import`,
       description: isPreviewLoading
-        ? `Reading ${sourceName} and matching extracted title lines to AniList Anime records. Manga is not supported and may be misidentified as Anime.`
+        ? `Reading ${sourceName} and matching extracted title lines exclusively to AniList ${mediaLabel} records.`
         : preview
-          ? `Anime-only import: matched ${matchedCount} of ${totalFound} line${totalFound === 1 ? "" : "s"} from ${sourceName}. Manga entries may be misidentified as Anime and corrupt imported data, so review every match carefully.`
-          : `Anime-only import. Manga entries are unsupported and may be misidentified as Anime; review every match before importing.`,
+          ? `${mediaLabel} import: matched ${matchedCount} of ${totalFound} line${totalFound === 1 ? "" : "s"} from ${sourceName}. Review every match before importing.`
+          : `${mediaLabel} import. Review every match before importing.`,
       loadingTitle: `Matching titles from your ${sourceType}`,
       loadingDescription:
-        `Seenary checks each extracted line against AniList Anime records so the preview can show covers, episodes, and the exact Anime that will be imported. Manga is not supported. Larger ${sourceType}s can take a few minutes.`,
+        `Seenary checks each extracted line against AniList ${mediaLabel} records so the preview can show covers, ${unitLabel}, and the exact ${mediaLabel} that will be imported. Larger ${sourceType}s can take a few minutes.`,
     };
   }
 
@@ -4424,6 +4577,7 @@ function ImportSelectionModal({
   selectedKeys,
   openGroups,
   titleLanguage,
+  fileMediaType,
   onClose,
   onToggleGroup,
   onToggleItem,
@@ -4443,6 +4597,7 @@ function ImportSelectionModal({
   selectedKeys: string[];
   openGroups: Record<string, boolean>;
   titleLanguage: TitleLanguage;
+  fileMediaType: FileImportMediaType;
   onClose: () => void;
   onToggleGroup: (status: string) => void;
   onToggleItem: (itemKey: string) => void;
@@ -4505,7 +4660,7 @@ function ImportSelectionModal({
     [preview]
   );
 
-  const copy = getImportModalCopy(provider, username, preview, isPreviewLoading);
+  const copy = getImportModalCopy(provider, username, preview, isPreviewLoading, fileMediaType);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-6 py-10">
@@ -4821,10 +4976,10 @@ function ImportSelectionModal({
               {selectedKeys.length > 0
                 ? provider === "anilist" || provider === "mal"
                   ? `${selectedKeys.filter((key) => key.startsWith("ANIME:")).length} Anime · ${selectedKeys.filter((key) => key.startsWith("MANGA:")).length} Manga selected`
-                  : `${selectedKeys.length} anime selected`
+                  : `${selectedKeys.length} ${fileMediaType === "MANGA" ? "Manga" : "Anime"} selected`
                 : provider === "anilist" || provider === "mal"
                   ? "Choose at least one title to import"
-                  : "Choose at least one anime to import"}
+                  : `Choose at least one ${fileMediaType === "MANGA" ? "Manga" : "Anime"} title to import`}
             </p>
 
             <div className="flex items-center gap-3">

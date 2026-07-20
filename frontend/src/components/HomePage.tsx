@@ -6,6 +6,7 @@ import {
   ArrowRightIcon,
   ArrowTrendingUpIcon,
   BookmarkIcon,
+  BookOpenIcon,
   CalendarDaysIcon,
   ChartBarIcon,
   CheckCircleIcon,
@@ -23,13 +24,14 @@ import {
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
+import { LibraryLens, type LibraryDestination } from "./LibraryLens";
+import type { MediaType, TrackedMangaEntry } from "../types/domain";
 
-const HOME_TAB_STORAGE_KEY = "seenary.home-tab";
-const HOME_TAB_LEGACY_STORAGE_KEY = "media-tracker.home-tab";
 const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
 const HOME_DISCOVER_STATE_LEGACY_STORAGE_KEY = "media-tracker.discover-state";
 const HOME_PERSONAL_LAYOUT_STORAGE_KEY = "seenary.personal-layout-order";
 const HOME_PERSONAL_LAYOUT_LEGACY_STORAGE_KEY = "media-tracker.personal-layout-order";
+const HOME_MANGA_PERSONAL_LAYOUT_STORAGE_KEY = "seenary.manga-personal-layout-order";
 const HOME_DISCOVER_LAYOUT_STORAGE_KEY = "seenary.discover-layout-order";
 const HOME_DISCOVER_LAYOUT_LEGACY_STORAGE_KEY = "media-tracker.discover-layout-order";
 const TRENDING_CYCLE_MS = 6500;
@@ -60,6 +62,15 @@ const PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = 
   stats: "Stats",
   continue: "Continue Watching",
   planned: "Planned Picks",
+  sinceLiked: "Since You Liked",
+  recent: "Recently Updated",
+};
+
+const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
+  overview: "Reading spotlight overview",
+  stats: "Stats",
+  continue: "Continue Reading",
+  planned: "Plan to Read",
   sinceLiked: "Since You Liked",
   recent: "Recently Updated",
 };
@@ -203,6 +214,7 @@ type RecommendationEntry = {
 
 type RecommendationMedia = {
   id: number;
+  type?: MediaType | string | null;
   title?: {
     romaji?: string | null;
     english?: string | null;
@@ -289,15 +301,18 @@ type DiscoverShelf = {
   items: TrendingAnime[];
 };
 
+type DiscoverMediaCatalog = {
+  anime: { trending: TrendingAnime[]; shelves: DiscoverShelf[] };
+  manga: { trending: TrendingAnime[]; shelves: DiscoverShelf[] };
+};
+
 type HomeAnimeCacheEntry<T> = {
   data: T;
   savedAt: number;
 };
 
-const trendingAnimeCache = new Map<string, HomeAnimeCacheEntry<TrendingAnime[]>>();
-const discoverShelvesCache = new Map<string, HomeAnimeCacheEntry<DiscoverShelf[]>>();
-const trendingAnimeRequests = new Map<string, Promise<TrendingAnime[]>>();
-const discoverShelvesRequests = new Map<string, Promise<DiscoverShelf[]>>();
+const discoverMediaCache = new Map<string, HomeAnimeCacheEntry<DiscoverMediaCatalog>>();
+const discoverMediaRequests = new Map<string, Promise<DiscoverMediaCatalog>>();
 
 function getHomeAnimeCacheKey(hideAdultContent: boolean) {
   return hideAdultContent ? "safe" : "all";
@@ -324,6 +339,10 @@ function writeHomeAnimeCache<T>(
     data,
     savedAt: Date.now(),
   });
+}
+
+function getDiscoverShelfStateKey(mediaType: MediaType, shelfId: string) {
+  return `${mediaType}:${shelfId}`;
 }
 
 type DiscoverPageInfo = {
@@ -358,6 +377,13 @@ type HomePageProps = {
   showTutorial: boolean;
   onDismissTutorial: (dontShowAgain: boolean) => void | Promise<void>;
   trackedEntries: TrackedAnimeEntry[];
+  trackedMangaEntries: TrackedMangaEntry[];
+  mediaType: MediaType;
+  activeHomeTab: HomeTab;
+  onMediaTypeChange: (mediaType: MediaType) => void;
+  onLibraryDestinationChange: (destination: LibraryDestination) => void;
+  onLibraryLensVisibilityChange: (isVisible: boolean) => void;
+  onSelectMedia: (mediaId: number, mediaType: MediaType) => void;
   onSelectAnime: (animeId: number) => void;
   onQuickAddAnime: (anime: QuickAddAnime) => void;
   onEditEntry: (entry: TrackedAnimeEntry) => void;
@@ -399,6 +425,13 @@ export function HomePage({
   showTutorial,
   onDismissTutorial,
   trackedEntries,
+  trackedMangaEntries,
+  mediaType,
+  activeHomeTab,
+  onMediaTypeChange,
+  onLibraryDestinationChange,
+  onLibraryLensVisibilityChange,
+  onSelectMedia,
   onSelectAnime,
   onQuickAddAnime,
   onEditEntry,
@@ -416,17 +449,14 @@ export function HomePage({
   children,
 }: HomePageProps) {
   const [dontShowAgain, setDontShowAgain] = useState(false);
-  const [activeHomeTab, setActiveHomeTab] = useState<HomeTab>(() => {
-    const savedTab = getMigratedLocalStorageItem(
-      HOME_TAB_STORAGE_KEY,
-      HOME_TAB_LEGACY_STORAGE_KEY
-    );
-    return savedTab === "discover" ? "discover" : "personal";
-  });
   const [personalLayoutOrder, setPersonalLayoutOrder] = useState<PersonalLayoutSectionId[]>(
     readPersonalLayoutOrder
   );
   const personalLayoutOrderRef = useRef(personalLayoutOrder);
+  const [mangaPersonalLayoutOrder, setMangaPersonalLayoutOrder] = useState<
+    PersonalLayoutSectionId[]
+  >(readMangaPersonalLayoutOrder);
+  const mangaPersonalLayoutOrderRef = useRef(mangaPersonalLayoutOrder);
   const [isEditingPersonalLayout, setIsEditingPersonalLayout] = useState(false);
   const [draggedPersonalSectionId, setDraggedPersonalSectionId] =
     useState<PersonalLayoutSectionId | null>(null);
@@ -449,6 +479,10 @@ export function HomePage({
     Record<number, RecommendationEntry[]>
   >({});
   const requestedFavoriteRecommendationIds = useRef(new Set<number>());
+  const [favoriteRecommendationsByMangaId, setFavoriteRecommendationsByMangaId] = useState<
+    Record<number, RecommendationEntry[]>
+  >({});
+  const requestedFavoriteMangaRecommendationIds = useRef(new Set<number>());
   const savedDiscoverState = useMemo(() => readSavedDiscoverState(), []);
   const [activeDiscoverShelfId, setActiveDiscoverShelfId] = useState<string | null>(
     savedDiscoverState?.activeDiscoverShelfId ?? null
@@ -498,13 +532,23 @@ export function HomePage({
   const discoverOverviewRailScrolls = useRef<Record<string, number>>(
     savedDiscoverState?.overviewRailScrolls ?? {}
   );
+  const previousDiscoverMediaType = useRef(mediaType);
   const trendingTimerStartedAt = useRef<number | null>(null);
   const trendingRemainingMs = useRef(TRENDING_CYCLE_MS);
   const isRestoringScroll = useRef(false);
+  const latestInitialScrollTop = useRef(initialScrollTop);
+  const restoringScrollTarget = useRef(initialScrollTop);
+  latestInitialScrollTop.current = initialScrollTop;
 
   useEffect(() => {
     discoverShelfPagesRef.current = discoverShelfPages;
   }, [discoverShelfPages]);
+
+  useEffect(() => {
+    if (previousDiscoverMediaType.current === mediaType) return;
+    previousDiscoverMediaType.current = mediaType;
+    setActiveDiscoverShelfId(null);
+  }, [mediaType]);
 
   useEffect(() => {
     if (!window.desktopConfig) return;
@@ -519,6 +563,7 @@ export function HomePage({
 
         const missingLayouts: {
           personalLayoutOrder?: string[];
+          mangaPersonalLayoutOrder?: string[];
           discoverLayoutOrder?: string[];
         } = {};
 
@@ -529,6 +574,15 @@ export function HomePage({
           setPersonalLayoutOrder(order);
         } else {
           missingLayouts.personalLayoutOrder = personalLayoutOrderRef.current;
+        }
+
+        if (result.mangaPersonalLayoutOrder) {
+          const order = normalizePersonalLayoutOrder(result.mangaPersonalLayoutOrder);
+          mangaPersonalLayoutOrderRef.current = order;
+          persistMangaPersonalLayoutOrder(order);
+          setMangaPersonalLayoutOrder(order);
+        } else {
+          missingLayouts.mangaPersonalLayoutOrder = mangaPersonalLayoutOrderRef.current;
         }
 
         if (result.discoverLayoutOrder) {
@@ -566,8 +620,10 @@ export function HomePage({
     let timeout = 0;
     let cancelled = false;
     let attempts = 0;
+    const targetScrollTop = latestInitialScrollTop.current;
 
-    isRestoringScroll.current = initialScrollTop > 0;
+    restoringScrollTarget.current = targetScrollTop;
+    isRestoringScroll.current = targetScrollTop > 0;
 
     function restoreScroll() {
       if (cancelled) return;
@@ -578,13 +634,13 @@ export function HomePage({
         return;
       }
 
-      container.scrollTop = initialScrollTop;
-      const isAtTarget = Math.abs(container.scrollTop - initialScrollTop) < 2;
-      const isAtTopTarget = initialScrollTop <= 0;
+      container.scrollTop = targetScrollTop;
+      const isAtTarget = Math.abs(container.scrollTop - targetScrollTop) < 2;
+      const isAtTopTarget = targetScrollTop <= 0;
 
       if (isAtTarget || isAtTopTarget || attempts >= 40) {
         isRestoringScroll.current = false;
-        onScrollPositionChange(initialScrollTop);
+        onScrollPositionChange(targetScrollTop);
         return;
       }
 
@@ -602,24 +658,41 @@ export function HomePage({
       window.clearTimeout(timeout);
       isRestoringScroll.current = false;
     };
-  }, [initialScrollTop, onScrollPositionChange]);
+  }, [hasResults, onScrollPositionChange]);
 
-  function handleChangeHomeTab(tab: HomeTab) {
-    window.localStorage.setItem(HOME_TAB_STORAGE_KEY, tab);
-    setActiveHomeTab(tab);
-
-    if (tab !== "personal") {
+  useEffect(() => {
+    if (activeHomeTab !== "personal") {
       setIsEditingPersonalLayout(false);
       setDraggedPersonalSectionId(null);
     }
 
-    if (tab !== "discover") {
+    if (activeHomeTab !== "discover") {
       setIsEditingDiscoverLayout(false);
       setDraggedDiscoverSectionId(null);
     }
-  }
+  }, [activeHomeTab]);
+
+  useEffect(() => {
+    setIsEditingPersonalLayout(false);
+    setDraggedPersonalSectionId(null);
+    setIsEditingDiscoverLayout(false);
+    setDraggedDiscoverSectionId(null);
+  }, [mediaType]);
 
   function savePersonalLayoutOrder(order: PersonalLayoutSectionId[]) {
+    if (mediaType === "MANGA") {
+      mangaPersonalLayoutOrderRef.current = order;
+      persistMangaPersonalLayoutOrder(order);
+      setMangaPersonalLayoutOrder(order);
+      const result = window.desktopConfig?.setLayoutOrders(userId, {
+        mangaPersonalLayoutOrder: order,
+      });
+      if (result && !result.ok) {
+        console.warn(result.message || "Failed to save Manga Personal layout.");
+      }
+      return;
+    }
+
     personalLayoutOrderRef.current = order;
     persistPersonalLayoutOrder(order);
     setPersonalLayoutOrder(order);
@@ -673,9 +746,11 @@ export function HomePage({
       return;
     }
 
-    savePersonalLayoutOrder(
-      movePersonalLayoutSection(personalLayoutOrderRef.current, activeSectionId, sectionId)
-    );
+    const activeOrder =
+      mediaType === "MANGA"
+        ? mangaPersonalLayoutOrderRef.current
+        : personalLayoutOrderRef.current;
+    savePersonalLayoutOrder(movePersonalLayoutSection(activeOrder, activeSectionId, sectionId));
   }
 
   function handlePersonalSectionDragEnd() {
@@ -723,7 +798,11 @@ export function HomePage({
 
   function handleTogglePersonalLayoutEdit() {
     if (isEditingPersonalLayout) {
-      persistPersonalLayoutOrder(personalLayoutOrderRef.current);
+      if (mediaType === "MANGA") {
+        persistMangaPersonalLayoutOrder(mangaPersonalLayoutOrderRef.current);
+      } else {
+        persistPersonalLayoutOrder(personalLayoutOrderRef.current);
+      }
     }
 
     setIsEditingPersonalLayout((current) => !current);
@@ -768,12 +847,15 @@ export function HomePage({
     nextDiscoverShelfPages = discoverShelfPages
   ) => {
     const scrollTop = homeScrollRef.current?.scrollTop ?? 0;
+    const activeStateKey = nextActiveDiscoverShelfId
+      ? getDiscoverShelfStateKey(mediaType, nextActiveDiscoverShelfId)
+      : null;
     const pages =
-      nextActiveDiscoverShelfId && nextDiscoverShelfPages[nextActiveDiscoverShelfId]
+      activeStateKey && nextDiscoverShelfPages[activeStateKey]
         ? {
             ...nextDiscoverShelfPages,
-            [nextActiveDiscoverShelfId]: {
-              ...nextDiscoverShelfPages[nextActiveDiscoverShelfId],
+            [activeStateKey]: {
+              ...nextDiscoverShelfPages[activeStateKey],
               scrollTop,
             },
           }
@@ -788,7 +870,7 @@ export function HomePage({
         overviewRailScrolls: discoverOverviewRailScrolls.current,
       } satisfies SavedDiscoverState)
     );
-  }, [activeDiscoverShelfId, discoverShelfPages]);
+  }, [activeDiscoverShelfId, discoverShelfPages, mediaType]);
 
   function restoreDiscoverOverviewPosition() {
     window.requestAnimationFrame(() => {
@@ -810,14 +892,15 @@ export function HomePage({
   function saveActiveDiscoverListPosition() {
     if (!activeDiscoverShelfId) return;
 
+    const stateKey = getDiscoverShelfStateKey(mediaType, activeDiscoverShelfId);
     const scrollTop = homeScrollRef.current?.scrollTop ?? 0;
     setDiscoverShelfPages((current) => {
-      const existing = current[activeDiscoverShelfId];
+      const existing = current[stateKey];
       if (!existing) return current;
 
       return {
         ...current,
-        [activeDiscoverShelfId]: {
+        [stateKey]: {
           ...existing,
           scrollTop,
         },
@@ -831,17 +914,18 @@ export function HomePage({
     scrollTop = 0,
     append = false
   ) {
+    const stateKey = getDiscoverShelfStateKey(mediaType, shelf.id);
     setDiscoverShelfPages((current) => ({
       ...current,
-      [shelf.id]: {
+      [stateKey]: {
         shelf,
-        items: current[shelf.id]?.items ?? shelf.items,
-        pageInfo: current[shelf.id]?.pageInfo ?? null,
+        items: current[stateKey]?.items ?? shelf.items,
+        pageInfo: current[stateKey]?.pageInfo ?? null,
         page,
         isLoading: !append,
         isLoadingMore: append,
         scrollTop,
-        warning: current[shelf.id]?.warning ?? null,
+        warning: current[stateKey]?.warning ?? null,
       },
     }));
 
@@ -849,12 +933,13 @@ export function HomePage({
       const data = await window.api.getDiscoverShelfAnime(
         shelf.id,
         page,
-        hideAdultContent
+        hideAdultContent,
+        mediaType
       );
 
       setDiscoverShelfPages((current) => ({
         ...current,
-        [shelf.id]: {
+        [stateKey]: {
           shelf: {
             id: data.id ?? shelf.id,
             title: data.title ?? shelf.title,
@@ -863,7 +948,7 @@ export function HomePage({
             items: Array.isArray(data.items) ? data.items : shelf.items,
           },
           items: append
-            ? mergeAnimeItems(current[shelf.id]?.items ?? [], data.items ?? [])
+            ? mergeAnimeItems(current[stateKey]?.items ?? [], data.items ?? [])
             : Array.isArray(data.items)
             ? data.items
             : [],
@@ -879,8 +964,8 @@ export function HomePage({
       console.error("Failed to load discover shelf page:", error);
       setDiscoverShelfPages((current) => ({
         ...current,
-        [shelf.id]: {
-          ...(current[shelf.id] ?? {
+        [stateKey]: {
+          ...(current[stateKey] ?? {
             shelf,
             items: shelf.items,
             pageInfo: null,
@@ -899,7 +984,8 @@ export function HomePage({
     saveDiscoverOverviewPosition();
     setActiveDiscoverShelfId(shelf.id);
 
-    const existing = discoverShelfPages[shelf.id];
+    const stateKey = getDiscoverShelfStateKey(mediaType, shelf.id);
+    const existing = discoverShelfPages[stateKey];
     if (!existing) {
       void loadDiscoverShelfPage(shelf, 1, 0);
       window.requestAnimationFrame(() => {
@@ -924,7 +1010,7 @@ export function HomePage({
   }
 
   function handleLoadMoreDiscoverShelf(shelf: DiscoverShelf) {
-    const state = discoverShelfPages[shelf.id];
+    const state = discoverShelfPages[getDiscoverShelfStateKey(mediaType, shelf.id)];
     if (!state?.pageInfo?.hasNextPage || state.isLoading || state.isLoadingMore) {
       return;
     }
@@ -939,8 +1025,9 @@ export function HomePage({
 
   function handleRetryDiscover() {
     const cacheKey = getHomeAnimeCacheKey(hideAdultContent);
-    discoverShelvesRequests.delete(cacheKey);
-    discoverShelvesCache.delete(cacheKey);
+    discoverMediaRequests.delete(cacheKey);
+    discoverMediaCache.delete(cacheKey);
+    setTrendingAnime([]);
     setDiscoverShelves([]);
     setDiscoverError(null);
     setDiscoverRetryKey((current) => current + 1);
@@ -950,6 +1037,12 @@ export function HomePage({
     saveActiveDiscoverListPosition();
     saveDiscoverStateSnapshot();
     onSelectAnime(animeId);
+  }
+
+  function handleSelectDiscoverMedia(mediaId: number) {
+    saveActiveDiscoverListPosition();
+    saveDiscoverStateSnapshot();
+    onSelectMedia(mediaId, mediaType);
   }
 
   useEffect(() => {
@@ -971,7 +1064,12 @@ export function HomePage({
     if (activeHomeTab !== "discover") return;
 
     window.requestAnimationFrame(() => {
-      if (activeDiscoverShelfId && discoverShelfPagesRef.current[activeDiscoverShelfId]) {
+      if (
+        activeDiscoverShelfId &&
+        discoverShelfPagesRef.current[
+          getDiscoverShelfStateKey(mediaType, activeDiscoverShelfId)
+        ]
+      ) {
         return;
       }
 
@@ -984,142 +1082,114 @@ export function HomePage({
         }
       }
     });
-  }, [activeDiscoverShelfId, activeHomeTab]);
+  }, [activeDiscoverShelfId, activeHomeTab, mediaType]);
 
   useEffect(() => {
     let mounted = true;
     const cacheKey = getHomeAnimeCacheKey(hideAdultContent);
 
-    async function loadTrendingAnime() {
-      const cached = readFreshHomeAnimeCache(trendingAnimeCache, cacheKey);
-      if (cached) {
-        setTrendingAnime(cached);
-        setActiveTrendingIndex(0);
-        setTrendingCycleKey(0);
-        setIsTrendingPaused(false);
-        setIsTrendingLoading(false);
-        trendingRemainingMs.current = TRENDING_CYCLE_MS;
-        return;
-      }
-
-      setIsTrendingLoading(true);
-
-      try {
-        let request = trendingAnimeRequests.get(cacheKey);
-
-        if (!request) {
-          request = (async (): Promise<TrendingAnime[]> => {
-            const data: unknown = await window.api.getTrendingAnime(hideAdultContent);
-            return Array.isArray(data) ? (data as TrendingAnime[]) : [];
-          })();
-          trendingAnimeRequests.set(cacheKey, request);
-        }
-
-        const data = await request;
-        writeHomeAnimeCache(trendingAnimeCache, cacheKey, data);
-
-        if (mounted) {
-          setTrendingAnime(data);
-          setActiveTrendingIndex(0);
-          setTrendingCycleKey(0);
-          setIsTrendingPaused(false);
-          trendingRemainingMs.current = TRENDING_CYCLE_MS;
-        }
-      } catch (error) {
-        console.error("Failed to load trending anime:", error);
-        if (mounted) {
-          setTrendingAnime(trendingAnimeCache.get(cacheKey)?.data ?? []);
-        }
-      } finally {
-        trendingAnimeRequests.delete(cacheKey);
-        if (mounted) {
-          setIsTrendingLoading(false);
-        }
-      }
-    }
-
-    if (
-      !hasResults &&
-      !showTutorial &&
-      showTrendingCarousel &&
-      activeHomeTab === "discover"
-    ) {
-      loadTrendingAnime();
-    } else if (!showTrendingCarousel || activeHomeTab !== "discover") {
-      setTrendingAnime([]);
-      setIsTrendingLoading(false);
+    function applyCatalog(catalog: DiscoverMediaCatalog) {
+      const activeCatalog = mediaType === "MANGA" ? catalog.manga : catalog.anime;
+      setTrendingAnime(showTrendingCarousel ? activeCatalog.trending : []);
+      setDiscoverShelves(activeCatalog.shelves);
       setActiveTrendingIndex(0);
       setTrendingCycleKey(0);
       setIsTrendingPaused(false);
+      setDiscoverError(null);
+      setIsTrendingLoading(false);
+      setIsDiscoverLoading(false);
       trendingRemainingMs.current = TRENDING_CYCLE_MS;
     }
 
-    return () => {
-      mounted = false;
-    };
-  }, [hasResults, showTutorial, showTrendingCarousel, hideAdultContent, activeHomeTab]);
-
-  useEffect(() => {
-    let mounted = true;
-    const cacheKey = getHomeAnimeCacheKey(hideAdultContent);
-
-    async function loadDiscoverAnime() {
-      const cached = readFreshHomeAnimeCache(discoverShelvesCache, cacheKey);
+    async function loadDiscoverMedia() {
+      const cached = readFreshHomeAnimeCache(discoverMediaCache, cacheKey);
       if (cached) {
-        setDiscoverShelves(cached);
-        setDiscoverError(null);
-        setIsDiscoverLoading(false);
+        applyCatalog(cached);
         return;
       }
 
+      setIsTrendingLoading(showTrendingCarousel);
       setIsDiscoverLoading(true);
       setDiscoverError(null);
 
       try {
-        let request = discoverShelvesRequests.get(cacheKey);
+        let request = discoverMediaRequests.get(cacheKey);
 
         if (!request) {
-          request = (async (): Promise<DiscoverShelf[]> => {
-            const data: unknown = await window.api.getDiscoverAnime(hideAdultContent);
-            return Array.isArray(data) ? (data as DiscoverShelf[]) : [];
+          request = (async (): Promise<DiscoverMediaCatalog> => {
+            const result = await window.api.getDiscoverMedia(hideAdultContent);
+            return {
+              anime: {
+                trending: Array.isArray(result?.anime?.trending)
+                  ? (result.anime.trending as TrendingAnime[])
+                  : [],
+                shelves: Array.isArray(result?.anime?.shelves)
+                  ? (result.anime.shelves as DiscoverShelf[])
+                  : [],
+              },
+              manga: {
+                trending: Array.isArray(result?.manga?.trending)
+                  ? (result.manga.trending as TrendingAnime[])
+                  : [],
+                shelves: Array.isArray(result?.manga?.shelves)
+                  ? (result.manga.shelves as DiscoverShelf[])
+                  : [],
+              },
+            };
           })();
-          discoverShelvesRequests.set(cacheKey, request);
+          discoverMediaRequests.set(cacheKey, request);
         }
 
         const data = await request;
-        writeHomeAnimeCache(discoverShelvesCache, cacheKey, data);
+        writeHomeAnimeCache(discoverMediaCache, cacheKey, data);
 
         if (mounted) {
-          setDiscoverShelves(data);
-          setDiscoverError(null);
+          applyCatalog(data);
         }
       } catch (error) {
-        console.error("Failed to load discover anime:", error);
+        console.error("Failed to load Anime and Manga discovery:", error);
         if (mounted) {
-          const fallbackShelves = discoverShelvesCache.get(cacheKey)?.data ?? [];
-          setDiscoverShelves(fallbackShelves);
+          const fallback = discoverMediaCache.get(cacheKey)?.data;
+          const fallbackCatalog = fallback
+            ? mediaType === "MANGA"
+              ? fallback.manga
+              : fallback.anime
+            : null;
+          setTrendingAnime(
+            showTrendingCarousel ? fallbackCatalog?.trending ?? [] : []
+          );
+          setDiscoverShelves(fallbackCatalog?.shelves ?? []);
           setDiscoverError(
-            fallbackShelves.length
+            fallbackCatalog?.shelves.length
               ? "Some discovery content could not refresh."
               : "AniList may be temporarily unavailable. Try again in a moment."
           );
         }
       } finally {
-        discoverShelvesRequests.delete(cacheKey);
+        discoverMediaRequests.delete(cacheKey);
         if (mounted) {
+          setIsTrendingLoading(false);
           setIsDiscoverLoading(false);
         }
       }
     }
 
     if (!hasResults && !showTutorial && activeHomeTab === "discover") {
-      loadDiscoverAnime();
+      void loadDiscoverMedia();
     }
 
     return () => {
       mounted = false;
     };
-  }, [activeHomeTab, discoverRetryKey, hasResults, hideAdultContent, showTutorial]);
+  }, [
+    activeHomeTab,
+    discoverRetryKey,
+    hasResults,
+    hideAdultContent,
+    mediaType,
+    showTrendingCarousel,
+    showTutorial,
+  ]);
 
   useEffect(() => {
     if (!autoRotateTrending || privacySafeTrendingAnime.length <= 1 || isTrendingPaused) {
@@ -1153,7 +1223,14 @@ export function HomePage({
   }
 
   useEffect(() => {
-    if (hasResults || showTutorial || activeHomeTab !== "personal") return;
+    if (
+      hasResults ||
+      showTutorial ||
+      mediaType !== "ANIME" ||
+      activeHomeTab !== "personal"
+    ) {
+      return;
+    }
 
     const favoriteEntries = trackedEntries.filter(
       (entry) => Boolean(entry.is_favorite) && entry.status !== "dropped"
@@ -1209,8 +1286,77 @@ export function HomePage({
     activeHomeTab,
     favoriteRecommendationsByAnimeId,
     hasResults,
+    mediaType,
     showTutorial,
     trackedEntries,
+  ]);
+
+  useEffect(() => {
+    if (
+      hasResults ||
+      showTutorial ||
+      mediaType !== "MANGA" ||
+      activeHomeTab !== "personal"
+    ) {
+      return;
+    }
+
+    const favoriteEntries = trackedMangaEntries.filter(
+      (entry) => Boolean(entry.is_favorite) && entry.status !== "dropped"
+    );
+    const availableSourceCount = favoriteEntries.filter((entry) => {
+      const loadedRecommendations = favoriteRecommendationsByMangaId[entry.manga_id];
+      return (loadedRecommendations ?? entry.recommendations ?? []).length > 0;
+    }).length;
+
+    if (availableSourceCount >= 4) return;
+
+    const missingEntries = favoriteEntries
+      .filter(
+        (entry) =>
+          !(entry.recommendations?.length) &&
+          !Object.hasOwn(favoriteRecommendationsByMangaId, entry.manga_id) &&
+          !requestedFavoriteMangaRecommendationIds.current.has(entry.manga_id)
+      )
+      .sort((left, right) => (right.score ?? 0) - (left.score ?? 0));
+
+    if (!missingEntries.length) return;
+
+    let cancelled = false;
+
+    async function loadNextFavoriteMangaRecommendations() {
+      const entry = missingEntries[0];
+      requestedFavoriteMangaRecommendationIds.current.add(entry.manga_id);
+
+      try {
+        const media = await window.api.getMediaDetails("MANGA", entry.manga_id);
+        if (cancelled) return;
+
+        setFavoriteRecommendationsByMangaId((current) => ({
+          ...current,
+          [entry.manga_id]: (media.recommendations?.nodes ?? []) as RecommendationEntry[],
+        }));
+      } catch {
+        if (cancelled) return;
+
+        setFavoriteRecommendationsByMangaId((current) => ({
+          ...current,
+          [entry.manga_id]: [],
+        }));
+      }
+    }
+
+    void loadNextFavoriteMangaRecommendations();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeHomeTab,
+    favoriteRecommendationsByMangaId,
+    hasResults,
+    mediaType,
+    showTutorial,
+    trackedMangaEntries,
   ]);
 
   const watching = useMemo(
@@ -1298,6 +1444,24 @@ export function HomePage({
       favoriteSourcesOnly: true,
     }),
     [recommendationReadyEntries, titleLanguage]
+  );
+  const recommendationReadyMangaEntries = useMemo(
+    () =>
+      trackedMangaEntries.map((entry) => ({
+        ...entry,
+        anime_id: entry.manga_id,
+        recommendations:
+          favoriteRecommendationsByMangaId[entry.manga_id] ?? entry.recommendations ?? [],
+      })) as unknown as TrackedAnimeEntry[],
+    [favoriteRecommendationsByMangaId, trackedMangaEntries]
+  );
+  const favoriteBasedMangaRecommendations = useMemo(
+    () =>
+      buildPersonalizedRecommendations(recommendationReadyMangaEntries, titleLanguage, {
+        favoriteSourcesOnly: true,
+        mediaType: "MANGA",
+      }),
+    [recommendationReadyMangaEntries, titleLanguage]
   );
   const trackedAnimeIds = useMemo(
     () => new Set(trackedEntries.map((entry) => entry.anime_id)),
@@ -1462,11 +1626,11 @@ export function HomePage({
   const discoverLayoutSections: Record<string, ReactNode> = {
     [DISCOVER_CAROUSEL_LAYOUT_ID]: showTrendingCarousel ? (
       <TrendingCarousel
-        key={hideAdultContent ? "safe" : "all"}
+        key={`${mediaType}-${hideAdultContent ? "safe" : "all"}`}
         items={privacySafeTrendingAnime}
         activeIndex={activeTrendingIndex}
         onSelectIndex={handleSelectTrendingIndex}
-        onSelectAnime={handleSelectAnimeFromHome}
+        onSelectAnime={handleSelectDiscoverMedia}
         titleLanguage={titleLanguage}
         autoRotate={autoRotateTrending && !isEditingDiscoverLayout}
         animateEntryChanges={animationLevel !== "off"}
@@ -1483,7 +1647,8 @@ export function HomePage({
         <DiscoverAnimeShelf
           key={shelf.id}
           shelf={shelf}
-          onSelectAnime={handleSelectAnimeFromHome}
+          mediaType={mediaType}
+          onSelectAnime={handleSelectDiscoverMedia}
           onQuickAddAnime={onQuickAddAnime}
           onEditEntry={onEditEntry}
           onSeeAll={handleOpenDiscoverShelf}
@@ -1493,7 +1658,9 @@ export function HomePage({
           autoScroll={autoScrollHomeShelves && !isEditingDiscoverLayout}
           density={discoverDensity}
           railRef={(element) => {
-            discoverRailRefs.current[shelf.id] = element;
+            discoverRailRefs.current[
+              getDiscoverShelfStateKey(mediaType, shelf.id)
+            ] = element;
           }}
         />,
       ])
@@ -1506,17 +1673,18 @@ export function HomePage({
 
   return (
     <div
+      data-global-scroll-root
       ref={rememberHomeScrollElement}
       onScroll={(event) => {
         const scrollTop = event.currentTarget.scrollTop;
 
-        if (isRestoringScroll.current && scrollTop < initialScrollTop) {
+        if (isRestoringScroll.current && scrollTop < restoringScrollTarget.current) {
           return;
         }
 
         onScrollPositionChange(scrollTop);
 
-        if (activeHomeTab === "discover" && !activeDiscoverShelfId) {
+        if (mediaType === "ANIME" && activeHomeTab === "discover" && !activeDiscoverShelfId) {
           discoverOverviewScrollTop.current = scrollTop;
         }
       }}
@@ -1527,14 +1695,43 @@ export function HomePage({
           <div>
             <p className="text-sm uppercase tracking-[0.24em] text-white/35">Home</p>
             <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">
-              {activeHomeTab === "personal" ? "Personal overview" : "Discover anime"}
+              {activeHomeTab === "personal"
+                ? mediaType === "MANGA"
+                  ? "Manga overview"
+                  : "Personal overview"
+                : mediaType === "MANGA"
+                  ? "Discover manga"
+                  : "Discover anime"}
             </h1>
           </div>
 
-          <HomeModeSwitch activeTab={activeHomeTab} onChange={handleChangeHomeTab} />
+          <LibraryLens
+            mediaType={mediaType}
+            destination={activeHomeTab}
+            onMediaChange={onMediaTypeChange}
+            onDestinationChange={onLibraryDestinationChange}
+            onVisibilityChange={onLibraryLensVisibilityChange}
+          />
         </section>
 
-        {activeHomeTab === "personal" ? (
+        {activeHomeTab === "personal" && mediaType === "MANGA" ? (
+          <MangaHomePreview
+            entries={trackedMangaEntries}
+            recommendations={favoriteBasedMangaRecommendations}
+            layoutOrder={mangaPersonalLayoutOrder}
+            isEditingLayout={isEditingPersonalLayout}
+            draggedSectionId={draggedPersonalSectionId}
+            titleLanguage={titleLanguage}
+            onSelectManga={(mangaId) => onSelectMedia(mangaId, "MANGA")}
+            onToggleLayoutEdit={handleTogglePersonalLayoutEdit}
+            onResetLayout={handleResetPersonalLayout}
+            onDragStart={handlePersonalSectionDragStart}
+            onDragOver={handlePersonalSectionDragOver}
+            onDragEnd={handlePersonalSectionDragEnd}
+            density={homeDensity}
+            autoScroll={autoScrollHomeShelves}
+          />
+        ) : activeHomeTab === "personal" ? (
           <>
             <HomeLayoutToolbar
               title='"Personal" layout'
@@ -1568,12 +1765,17 @@ export function HomePage({
           </>
         ) : activeDiscoverShelfId ? (
           <DiscoverShelfListPage
-            state={privacySafeDiscoverShelfPages[activeDiscoverShelfId]}
+            state={
+              privacySafeDiscoverShelfPages[
+                getDiscoverShelfStateKey(mediaType, activeDiscoverShelfId)
+              ]
+            }
             fallbackShelf={privacySafeDiscoverShelves.find(
               (shelf) => shelf.id === activeDiscoverShelfId
             )}
             onBack={handleCloseDiscoverShelf}
-            onSelectAnime={handleSelectAnimeFromHome}
+            mediaType={mediaType}
+            onSelectAnime={handleSelectDiscoverMedia}
             onQuickAddAnime={onQuickAddAnime}
             onEditEntry={onEditEntry}
             onLoadMore={handleLoadMoreDiscoverShelf}
@@ -1698,35 +1900,502 @@ function DiscoverLoadError({
   );
 }
 
-function HomeModeSwitch({
-  activeTab,
-  onChange,
+function MangaHomePreview({
+  entries,
+  recommendations,
+  layoutOrder,
+  isEditingLayout,
+  draggedSectionId,
+  titleLanguage,
+  onSelectManga,
+  onToggleLayoutEdit,
+  onResetLayout,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+  density,
+  autoScroll,
 }: {
-  activeTab: HomeTab;
-  onChange: (tab: HomeTab) => void;
+  entries: TrackedMangaEntry[];
+  recommendations: RecommendationCandidate[];
+  layoutOrder: PersonalLayoutSectionId[];
+  isEditingLayout: boolean;
+  draggedSectionId: PersonalLayoutSectionId | null;
+  titleLanguage: TitleLanguage;
+  onSelectManga: (mangaId: number) => void;
+  onToggleLayoutEdit: () => void;
+  onResetLayout: () => void;
+  onDragStart: (sectionId: string, event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (sectionId: string, event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+  density: HomeDensity;
+  autoScroll: boolean;
 }) {
-  const tabs: Array<{ value: HomeTab; label: string }> = [
-    { value: "personal", label: "Personal" },
-    { value: "discover", label: "Discover" },
-  ];
+  const reading = entries.filter((entry) => entry.status === "watching");
+  const planned = entries.filter((entry) => entry.status === "planned");
+  const completed = entries.filter((entry) => entry.status === "completed");
+  const paused = entries.filter((entry) => entry.status === "paused");
+  const dropped = entries.filter((entry) => entry.status === "dropped");
+  const chaptersRead = entries.reduce((total, entry) => total + Number(entry.progress ?? 0), 0);
+  const volumesRead = entries.reduce(
+    (total, entry) => total + Number(entry.volume_progress ?? 0),
+    0
+  );
+  const favorites = entries.filter((entry) => Boolean(entry.is_favorite)).length;
+  const rereads = entries.reduce((total, entry) => total + Number(entry.repeat_count ?? 0), 0);
+  const scoredEntries = entries.filter(
+    (entry) => typeof entry.score === "number" && entry.score > 0
+  );
+  const averageScore = scoredEntries.length
+    ? scoredEntries.reduce((total, entry) => total + Number(entry.score), 0) /
+      scoredEntries.length
+    : null;
+  const spotlight =
+    reading.find((entry) => entry.banner_image || entry.cover_image_large) ||
+    planned.find((entry) => entry.banner_image || entry.cover_image_large) ||
+    entries.find((entry) => entry.banner_image || entry.cover_image_large) ||
+    null;
+  const recentlyUpdated = entries.slice(0, 6);
+
+  const sections: Record<PersonalLayoutSectionId, ReactNode> = {
+    overview: (
+      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[1.45fr_0.9fr]">
+        <MangaSpotlightPanel
+          entry={spotlight}
+          onSelectManga={onSelectManga}
+          titleLanguage={titleLanguage}
+        />
+        <MangaAccountOverviewPanel
+          total={entries.length}
+          chaptersRead={chaptersRead}
+          volumesRead={volumesRead}
+          averageScore={averageScore}
+          favorites={favorites}
+          rereads={rereads}
+        />
+      </section>
+    ),
+    stats: (
+      <section className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+        <StatTile icon={BookOpenIcon} label="Reading" value={reading.length} />
+        <StatTile icon={BookmarkIcon} label="Plan to Read" value={planned.length} />
+        <StatTile icon={CheckCircleIcon} label="Completed" value={completed.length} />
+        <StatTile icon={ClockIcon} label="Paused" value={paused.length} />
+        <StatTile icon={HeartIcon} label="Dropped" value={dropped.length} />
+      </section>
+    ),
+    continue: (
+      <MangaHomeShelf
+        title="Continue Reading"
+        icon={BookOpenIcon}
+        entries={reading.slice(0, 15)}
+        emptyText="Move something into Reading and it will appear here."
+        onSelectManga={onSelectManga}
+        density={density}
+        titleLanguage={titleLanguage}
+        carousel
+        autoScroll={autoScroll && !isEditingLayout}
+      />
+    ),
+    planned: (
+      <MangaHomeShelf
+        title="Plan to Read"
+        icon={BookmarkIcon}
+        entries={planned.slice(0, 15)}
+        emptyText="Add Manga as Plan to Read to build your reading queue."
+        onSelectManga={onSelectManga}
+        density={density}
+        titleLanguage={titleLanguage}
+        carousel
+        autoScroll={autoScroll && !isEditingLayout}
+      />
+    ),
+    sinceLiked: (
+      <HomeShelf
+        title="Since You Liked"
+        icon={HeartIcon}
+        entries={recommendations}
+        emptyText="Favorite and score more Manga to build recommendations."
+        onSelectAnime={onSelectManga}
+        variant="medium"
+        density={density}
+        titleLanguage={titleLanguage}
+        mode="recommendations"
+      />
+    ),
+    recent: (
+      <MangaHomeShelf
+        title="Recently Updated"
+        icon={CalendarDaysIcon}
+        entries={recentlyUpdated}
+        emptyText="Your latest Manga list activity will collect here."
+        onSelectManga={onSelectManga}
+        density={density}
+        titleLanguage={titleLanguage}
+        variant="gridCompact"
+      />
+    ),
+  };
 
   return (
-    <div className="grid w-full grid-cols-2 rounded-2xl border border-white/10 bg-white/4 p-1 md:w-72">
-      {tabs.map((tab) => (
-        <button
-          key={tab.value}
-          type="button"
-          onClick={() => onChange(tab.value)}
-          className={`rounded-xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55 ${
-            activeTab === tab.value
-              ? "bg-(--app-accent) text-black shadow-lg shadow-(--app-accent)/20"
-              : "text-white/55 hover:bg-white/8 hover:text-white"
-          }`}
-        >
-          {tab.label}
-        </button>
-      ))}
+    <div className="space-y-10">
+      <HomeLayoutToolbar
+        title='"Manga Personal" layout'
+        isEditing={isEditingLayout}
+        onToggleEdit={onToggleLayoutEdit}
+        onReset={onResetLayout}
+      />
+
+      {(entries.length ? layoutOrder : (["overview", "stats"] as PersonalLayoutSectionId[])).map(
+        (sectionId) =>
+          entries.length ? (
+            <LayoutEditBlock
+              key={sectionId}
+              sectionId={sectionId}
+              label={MANGA_PERSONAL_LAYOUT_SECTION_LABELS[sectionId]}
+              isEditing={isEditingLayout}
+              isDragging={draggedSectionId === sectionId}
+              onDragStart={onDragStart}
+              onDragOver={onDragOver}
+              onDragEnd={onDragEnd}
+            >
+              {sections[sectionId]}
+            </LayoutEditBlock>
+          ) : (
+            <div key={sectionId}>{sections[sectionId]}</div>
+          )
+      )}
+
+      {!entries.length && <EmptyMangaHomeState />}
     </div>
+  );
+}
+
+function MangaSpotlightPanel({
+  entry,
+  onSelectManga,
+  titleLanguage,
+}: {
+  entry: TrackedMangaEntry | null;
+  onSelectManga: (mangaId: number) => void;
+  titleLanguage: TitleLanguage;
+}) {
+  if (!entry) {
+    return (
+      <section className="relative min-h-72 overflow-hidden rounded-3xl border border-white/10 bg-white/5 p-8 shadow-xl">
+        <div className="absolute inset-0 bg-linear-to-br from-white/8 via-transparent to-black/30" />
+        <div className="relative flex h-full flex-col justify-end">
+          <p className="text-sm uppercase tracking-[0.3em] text-white/35">Manga</p>
+          <h2 className="mt-3 max-w-xl text-3xl font-bold tracking-tight text-white">
+            Add your first Manga and build a reading dashboard.
+          </h2>
+        </div>
+      </section>
+    );
+  }
+
+  const title = getMangaEntryTitle(entry, titleLanguage);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectManga(entry.manga_id)}
+      className="group relative min-h-72 overflow-hidden rounded-3xl border border-white/10 bg-white/5 text-left shadow-xl focus:outline-none focus:ring-2 focus:ring-white/55"
+    >
+      <HeroBackdrop
+        bannerImage={entry.banner_image ?? null}
+        coverImage={entry.cover_image_large ?? null}
+        title={title}
+        className="absolute inset-0"
+        drift
+      />
+      <div className="absolute inset-0 bg-linear-to-r from-[#0f0f0f] via-[#0f0f0f]/75 to-[#0f0f0f]/20" />
+      <div className="absolute inset-0 bg-linear-to-t from-[#0f0f0f] via-transparent to-transparent" />
+      <div className="relative flex h-full min-h-72 flex-col justify-end p-6 md:p-8">
+        <span className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/65 backdrop-blur">
+          <BookOpenIcon className="h-4 w-4" /> Reading spotlight
+        </span>
+        <h2 className="max-w-2xl text-3xl font-bold tracking-tight text-white">{title}</h2>
+        <div className="mt-4 flex flex-wrap gap-2">
+          <MetaPill>{formatMangaHomeStatus(entry.status)}</MetaPill>
+          <MetaPill>{formatMangaProgress(entry)}</MetaPill>
+          {entry.average_score ? <MetaPill>{entry.average_score}% avg</MetaPill> : null}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function MangaAccountOverviewPanel({
+  total,
+  chaptersRead,
+  volumesRead,
+  averageScore,
+  favorites,
+  rereads,
+}: {
+  total: number;
+  chaptersRead: number;
+  volumesRead: number;
+  averageScore: number | null;
+  favorites: number;
+  rereads: number;
+}) {
+  return (
+    <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-xl">
+      <div className="mb-5 flex items-center gap-3">
+        <div className="rounded-2xl border border-white/10 bg-white/5 p-2.5 text-white/70">
+          <BookOpenIcon className="h-5 w-5" />
+        </div>
+        <div>
+          <h2 className="font-semibold text-white">Reading Overview</h2>
+          <p className="text-sm text-white/40">Your Manga list at a glance</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-3">
+        {[
+          ["Library", formatNumber(total)],
+          ["Chapters read", formatNumber(chaptersRead)],
+          ["Volumes read", formatNumber(volumesRead)],
+          ["Avg score", averageScore === null ? "—" : formatScore10(averageScore)],
+          ["Favorites", formatNumber(favorites)],
+          ["Rereads", formatNumber(rereads)],
+        ].map(([label, value]) => (
+          <OverviewMetric key={label} label={label} value={value} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function MangaHomeShelf({
+  title,
+  icon: Icon,
+  entries,
+  emptyText,
+  onSelectManga,
+  density,
+  titleLanguage,
+  variant = "medium",
+  carousel = false,
+  autoScroll = false,
+}: {
+  title: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  entries: TrackedMangaEntry[];
+  emptyText: string;
+  onSelectManga: (mangaId: number) => void;
+  density: HomeDensity;
+  titleLanguage: TitleLanguage;
+  variant?: "medium" | "gridCompact";
+  carousel?: boolean;
+  autoScroll?: boolean;
+}) {
+  const railRef = useRef<HTMLDivElement | null>(null);
+  const densityStyles = HOME_DENSITY_STYLES[density];
+  const manualPauseUntil = useRef(0);
+  const [isInteracting, setIsInteracting] = useState(false);
+  const shouldUseCarousel = carousel && variant === "medium" && entries.length > 0;
+
+  const scrollRail = useCallback((direction: "left" | "right", automatic = false) => {
+    const rail = railRef.current;
+    if (!rail) return;
+    if (!automatic) manualPauseUntil.current = Date.now() + 12000;
+
+    const firstCard = rail.querySelector<HTMLElement>("[data-manga-home-card]");
+    const cardWidth = firstCard?.offsetWidth ?? Math.max(220, rail.clientWidth * 0.35);
+    const distance = cardWidth + densityStyles.railGapPixels;
+    const maxScrollLeft = rail.scrollWidth - rail.clientWidth;
+
+    if (direction === "right" && rail.scrollLeft >= maxScrollLeft - distance * 0.5) {
+      rail.scrollTo({ left: 0, behavior: "smooth" });
+      return;
+    }
+    rail.scrollBy({
+      left: direction === "right" ? distance : -distance,
+      behavior: "smooth",
+    });
+  }, [densityStyles.railGapPixels]);
+
+  useEffect(() => {
+    if (!shouldUseCarousel || !autoScroll || entries.length <= 5) return;
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+
+    const timer = window.setInterval(() => {
+      if (!isInteracting && Date.now() >= manualPauseUntil.current) {
+        scrollRail("right", true);
+      }
+    }, 8500);
+    return () => window.clearInterval(timer);
+  }, [autoScroll, entries.length, isInteracting, scrollRail, shouldUseCarousel]);
+
+  return (
+    <section>
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2.5 text-white/80">
+            <Icon className="h-5 w-5" />
+          </div>
+          <div>
+            <h2 className="text-lg font-semibold text-white">{title}</h2>
+            <p className="text-sm text-white/40">{entries.length || emptyText}</p>
+          </div>
+        </div>
+
+        {shouldUseCarousel && entries.length > 5 && (
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => scrollRail("left")}
+              className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80 transition hover:border-(--app-accent)/35 focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+              title={`Scroll ${title} left`}
+            >
+              <ArrowLeftIcon className="h-5 w-5" />
+            </button>
+            <button
+              type="button"
+              onClick={() => scrollRail("right")}
+              className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80 transition hover:border-(--app-accent)/35 focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+              title={`Scroll ${title} right`}
+            >
+              <ArrowRightIcon className="h-5 w-5" />
+            </button>
+          </div>
+        )}
+      </div>
+
+      {entries.length ? (
+        <div
+          ref={shouldUseCarousel ? railRef : undefined}
+          onMouseEnter={() => setIsInteracting(true)}
+          onMouseLeave={() => setIsInteracting(false)}
+          onFocusCapture={() => setIsInteracting(true)}
+          onBlurCapture={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setIsInteracting(false);
+            }
+          }}
+          className={
+            shouldUseCarousel
+              ? `scroll-container flex snap-x overflow-x-auto overflow-y-hidden pb-2 scroll-smooth ${densityStyles.railGapClass}`
+              : densityStyles.compactGridClass
+          }
+        >
+          {entries.map((entry) => (
+            <div
+              key={`${title}-${entry.manga_id}`}
+              data-manga-home-card={shouldUseCarousel ? true : undefined}
+              className={shouldUseCarousel ? "min-w-0 shrink-0 snap-start" : ""}
+              style={
+                shouldUseCarousel
+                  ? {
+                      flexBasis: `calc((100% - ${
+                        densityStyles.railGapPixels * (densityStyles.railVisibleCards - 1)
+                      }px) / ${densityStyles.railVisibleCards})`,
+                    }
+                  : undefined
+              }
+            >
+              <MangaHomeCard
+                entry={entry}
+                onSelectManga={onSelectManga}
+                density={density}
+                titleLanguage={titleLanguage}
+                variant={variant}
+              />
+            </div>
+          ))}
+        </div>
+      ) : (
+        <div className="rounded-3xl border border-dashed border-white/10 bg-white/3 px-5 py-8 text-sm text-white/45">
+          {emptyText}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function MangaHomeCard({
+  entry,
+  onSelectManga,
+  density,
+  titleLanguage,
+  variant,
+}: {
+  entry: TrackedMangaEntry;
+  onSelectManga: (mangaId: number) => void;
+  density: HomeDensity;
+  titleLanguage: TitleLanguage;
+  variant: "medium" | "gridCompact";
+}) {
+  const title = getMangaEntryTitle(entry, titleLanguage);
+  const densityStyles = HOME_DENSITY_STYLES[density];
+  const score = getMangaDisplayScore(entry);
+
+  if (variant === "gridCompact") {
+    return (
+      <button
+        type="button"
+        onClick={() => onSelectManga(entry.manga_id)}
+        className={`group flex w-full items-center gap-4 rounded-3xl border border-white/10 bg-white/5 text-left shadow-xl transition hover:bg-white/8 focus:outline-none focus:ring-2 focus:ring-white/55 ${densityStyles.compactCardClass}`}
+      >
+        <div className={`${densityStyles.compactPosterClass} shrink-0 overflow-hidden rounded-2xl bg-white/5`}>
+          {entry.cover_image_large ? (
+            <img src={entry.cover_image_large} alt={title} className="h-full w-full object-cover object-top transition group-hover:scale-105" />
+          ) : (
+            <BookOpenIcon className="m-auto h-full w-6 text-white/20" />
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="truncate text-sm font-semibold text-white">{title}</h3>
+          <p className="mt-1 truncate text-xs text-white/45">
+            {formatMangaHomeStatus(entry.status)} · {formatMangaProgress(entry)}
+          </p>
+          <div className="mt-3 flex flex-wrap gap-1.5">
+            {score && <SmallInfoPill icon={StarIcon}>{score}</SmallInfoPill>}
+            {entry.format && <SmallInfoPill icon={BookOpenIcon}>{formatEnum(entry.format)}</SmallInfoPill>}
+          </div>
+        </div>
+      </button>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={() => onSelectManga(entry.manga_id)}
+      className="browse-home-card group block w-full text-left focus:outline-none focus:ring-2 focus:ring-white/55"
+    >
+      <div className="browse-home-card-poster overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl">
+        {entry.cover_image_large ? (
+          <img src={entry.cover_image_large} alt={title} className={`${densityStyles.mediumPosterClass} object-cover object-top transition duration-300 group-hover:scale-[1.04]`} />
+        ) : (
+          <div className={`${densityStyles.mediumPosterClass} flex items-center justify-center bg-white/5`}>
+            <BookOpenIcon className="h-8 w-8 text-white/20" />
+          </div>
+        )}
+      </div>
+      <div className="browse-home-card-body mt-3">
+        <h3 className={densityStyles.mediumTitleClass}>{title}</h3>
+        <p className="mt-1 truncate text-sm text-white/45">{formatMangaProgress(entry)}</p>
+        <div className={densityStyles.mediumMetaClass}>
+          {entry.format && <SmallInfoPill icon={BookOpenIcon}>{formatEnum(entry.format)}</SmallInfoPill>}
+          {score && <SmallInfoPill icon={StarIcon}>{score}</SmallInfoPill>}
+          {entry.is_favorite && <SmallInfoPill icon={HeartIcon}>Favorite</SmallInfoPill>}
+        </div>
+      </div>
+    </button>
+  );
+}
+
+function EmptyMangaHomeState() {
+  return (
+    <section className="rounded-3xl border border-dashed border-white/10 bg-white/3 px-6 py-12 text-center">
+      <BookOpenIcon className="mx-auto h-9 w-9 text-white/25" />
+      <h2 className="mt-4 text-lg font-semibold text-white">Your Manga dashboard is ready.</h2>
+      <p className="mx-auto mt-2 max-w-lg text-sm leading-6 text-white/45">
+        Add a Manga to start tracking chapters, volumes, reading plans, favorites, and recommendations here.
+      </p>
+    </section>
   );
 }
 
@@ -1896,6 +2565,7 @@ function OverviewMetric({
 
 function DiscoverAnimeShelf({
   shelf,
+  mediaType,
   onSelectAnime,
   onQuickAddAnime,
   onEditEntry,
@@ -1908,6 +2578,7 @@ function DiscoverAnimeShelf({
   railRef,
 }: {
   shelf: DiscoverShelf;
+  mediaType: MediaType;
   onSelectAnime: (animeId: number) => void;
   onQuickAddAnime: (anime: QuickAddAnime) => void;
   onEditEntry: (entry: TrackedAnimeEntry) => void;
@@ -2017,13 +2688,16 @@ function DiscoverAnimeShelf({
           >
             <DiscoverAnimeCard
               anime={anime}
+              mediaType={mediaType}
               onSelectAnime={onSelectAnime}
               onQuickAddAnime={onQuickAddAnime}
               onEditEntry={onEditEntry}
               titleLanguage={titleLanguage}
               density={density}
-              isTracked={trackedAnimeIds.has(anime.id)}
-              trackedEntry={trackedEntryByAnimeId.get(anime.id)}
+              isTracked={mediaType === "ANIME" && trackedAnimeIds.has(anime.id)}
+              trackedEntry={
+                mediaType === "ANIME" ? trackedEntryByAnimeId.get(anime.id) : undefined
+              }
             />
           </div>
         ))}
@@ -2035,6 +2709,7 @@ function DiscoverAnimeShelf({
 function DiscoverShelfListPage({
   state,
   fallbackShelf,
+  mediaType,
   onBack,
   onSelectAnime,
   onQuickAddAnime,
@@ -2047,6 +2722,7 @@ function DiscoverShelfListPage({
 }: {
   state?: DiscoverShelfPageState;
   fallbackShelf?: DiscoverShelf;
+  mediaType: MediaType;
   onBack: () => void;
   onSelectAnime: (animeId: number) => void;
   onQuickAddAnime: (anime: QuickAddAnime) => void;
@@ -2137,14 +2813,17 @@ function DiscoverShelfListPage({
             <DiscoverAnimeCard
               key={`${shelf.id}-full-${anime.id}`}
               anime={anime}
+              mediaType={mediaType}
               onSelectAnime={onSelectAnime}
               onQuickAddAnime={onQuickAddAnime}
               onEditEntry={onEditEntry}
               titleLanguage={titleLanguage}
               variant="grid"
               density={density}
-              isTracked={trackedAnimeIds.has(anime.id)}
-              trackedEntry={trackedEntryByAnimeId.get(anime.id)}
+              isTracked={mediaType === "ANIME" && trackedAnimeIds.has(anime.id)}
+              trackedEntry={
+                mediaType === "ANIME" ? trackedEntryByAnimeId.get(anime.id) : undefined
+              }
             />
           ))}
         </div>
@@ -2168,6 +2847,7 @@ function DiscoverShelfListPage({
 
 function DiscoverAnimeCard({
   anime,
+  mediaType,
   onSelectAnime,
   onQuickAddAnime,
   onEditEntry,
@@ -2178,6 +2858,7 @@ function DiscoverAnimeCard({
   trackedEntry,
 }: {
   anime: TrendingAnime;
+  mediaType: MediaType;
   onSelectAnime: (animeId: number) => void;
   onQuickAddAnime: (anime: QuickAddAnime) => void;
   onEditEntry: (entry: TrackedAnimeEntry) => void;
@@ -2200,7 +2881,12 @@ function DiscoverAnimeCard({
     : season;
   const metadataItems = [
     anime.format
-      ? { key: "format", icon: TvIcon, tone: "sky" as const, label: anime.format }
+      ? {
+          key: "format",
+          icon: mediaType === "MANGA" ? BookOpenIcon : TvIcon,
+          tone: "sky" as const,
+          label: anime.format,
+        }
       : null,
     score
       ? {
@@ -2266,29 +2952,31 @@ function DiscoverAnimeCard({
         ) : (
           <div className="h-full w-full bg-white/5" />
         )}
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            if (trackedEntry) {
-              onEditEntry(trackedEntry);
-              return;
-            }
+        {mediaType === "ANIME" && (
+          <button
+            type="button"
+            onClick={(event) => {
+              event.stopPropagation();
+              if (trackedEntry) {
+                onEditEntry(trackedEntry);
+                return;
+              }
 
-            if (!isTracked) {
-              onQuickAddAnime(toQuickAddAnime(anime));
-            }
-          }}
-          className={`absolute inline-flex items-center justify-center border border-(--app-accent)/35 bg-black/55 text-white/90 shadow-lg backdrop-blur transition hover:bg-(--app-accent-soft) hover:text-white disabled:cursor-default disabled:hover:bg-black/55 ${iconButtonClass}`}
-          title={trackedEntry ? "Edit list entry" : "Add to list"}
-          aria-label={trackedEntry ? "Edit list entry" : "Add to list"}
-        >
-          {trackedEntry || isTracked ? (
-            <BookmarkIcon className={iconClass} />
-          ) : (
-            <PlusIcon className={iconClass} />
-          )}
-        </button>
+              if (!isTracked) {
+                onQuickAddAnime(toQuickAddAnime(anime));
+              }
+            }}
+            className={`absolute inline-flex items-center justify-center border border-(--app-accent)/35 bg-black/55 text-white/90 shadow-lg backdrop-blur transition hover:bg-(--app-accent-soft) hover:text-white disabled:cursor-default disabled:hover:bg-black/55 ${iconButtonClass}`}
+            title={trackedEntry ? "Edit list entry" : "Add to list"}
+            aria-label={trackedEntry ? "Edit list entry" : "Add to list"}
+          >
+            {trackedEntry || isTracked ? (
+              <BookmarkIcon className={iconClass} />
+            ) : (
+              <PlusIcon className={iconClass} />
+            )}
+          </button>
+        )}
       </div>
       <div className={`browse-card-body ${isGridCard ? "p-2.5" : densityStyles.bodyClass}`}>
         <h3
@@ -3311,7 +3999,7 @@ function getSmallInfoPillTone(tone: "neutral" | "sky" | "amber" | "violet" | "ro
 function buildPersonalizedRecommendations(
   entries: TrackedAnimeEntry[],
   titleLanguage: TitleLanguage,
-  options: { favoriteSourcesOnly?: boolean } = {}
+  options: { favoriteSourcesOnly?: boolean; mediaType?: MediaType } = {}
 ) {
   const libraryIds = new Set(entries.map((entry) => entry.anime_id));
   const sourceEntries = options.favoriteSourcesOnly
@@ -3329,6 +4017,7 @@ function buildPersonalizedRecommendations(
     for (const recommendation of entry.recommendations ?? []) {
       const media = recommendation.mediaRecommendation;
       if (!media?.id || libraryIds.has(media.id)) continue;
+      if (options.mediaType && media.type !== options.mediaType) continue;
 
       const existing = candidates.get(media.id);
       const recommendationStrength =
@@ -3653,6 +4342,41 @@ function getDisplayScore(entry: TrackedAnimeEntry) {
   return null;
 }
 
+function getMangaEntryTitle(entry: TrackedMangaEntry, titleLanguage: TitleLanguage) {
+  return getPreferredTitle(
+    {
+      english: entry.title_english,
+      romaji: entry.title_romaji,
+      native: entry.title_native,
+      userPreferred: entry.title_preferred,
+    },
+    titleLanguage
+  );
+}
+
+function getMangaDisplayScore(entry: TrackedMangaEntry) {
+  if (typeof entry.score === "number" && entry.score > 0) return `Mine ${entry.score}`;
+  if (typeof entry.average_score === "number" && entry.average_score > 0) {
+    return `Avg ${formatScore10(entry.average_score / 10)}`;
+  }
+  if (typeof entry.mean_score === "number" && entry.mean_score > 0) {
+    return `Avg ${formatScore10(entry.mean_score / 10)}`;
+  }
+  return null;
+}
+
+function formatMangaProgress(entry: TrackedMangaEntry) {
+  const volumes = Math.max(0, Number(entry.volume_progress ?? 0));
+  const chapters = Math.max(0, Number(entry.progress ?? 0));
+  return `${formatNumber(volumes)} vols · ${formatNumber(chapters)} ch`;
+}
+
+function formatMangaHomeStatus(status: TrackedMangaEntry["status"]) {
+  if (status === "watching") return "Reading";
+  if (status === "planned") return "Plan to Read";
+  return formatStatus(status);
+}
+
 function formatScore10(value: number) {
   return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
@@ -3677,6 +4401,24 @@ function readPersonalLayoutOrder() {
 function persistPersonalLayoutOrder(order: PersonalLayoutSectionId[]) {
   window.localStorage.setItem(HOME_PERSONAL_LAYOUT_STORAGE_KEY, JSON.stringify(order));
   window.localStorage.removeItem(HOME_PERSONAL_LAYOUT_LEGACY_STORAGE_KEY);
+}
+
+function readMangaPersonalLayoutOrder() {
+  const savedOrder = window.localStorage.getItem(HOME_MANGA_PERSONAL_LAYOUT_STORAGE_KEY);
+  if (!savedOrder) return [...DEFAULT_PERSONAL_LAYOUT_ORDER];
+
+  try {
+    return normalizePersonalLayoutOrder(JSON.parse(savedOrder));
+  } catch {
+    return [...DEFAULT_PERSONAL_LAYOUT_ORDER];
+  }
+}
+
+function persistMangaPersonalLayoutOrder(order: PersonalLayoutSectionId[]) {
+  window.localStorage.setItem(
+    HOME_MANGA_PERSONAL_LAYOUT_STORAGE_KEY,
+    JSON.stringify(order)
+  );
 }
 
 function persistDiscoverLayoutOrder(order: string[]) {

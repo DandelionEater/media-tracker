@@ -62,6 +62,7 @@ contextBridge.exposeInMainWorld('desktopConfig', {
   getLayoutOrders: (userId) => ipcRenderer.invoke('layout-config:get', userId),
   setLayoutOrders: (userId, layouts) =>
     ipcRenderer.sendSync('layout-config:set', userId, layouts),
+  deleteLayoutOrders: (userId) => ipcRenderer.invoke('layout-config:delete', userId),
 });
 
 contextBridge.exposeInMainWorld('systemLocale', getSystemLocaleInfo());

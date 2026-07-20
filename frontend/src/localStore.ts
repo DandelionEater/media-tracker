@@ -44,7 +44,7 @@ const LEGACY_STATE_PREFIX = "seenary.local-user.";
 const LEGACY_MIGRATED_PREFIX = "seenary.indexeddb-migrated.";
 const FALLBACK_STATE_PREFIX = "seenary.local-fallback.";
 const BACKUP_FORMAT = "seenary.local-backup";
-const BACKUP_VERSION = 1;
+const BACKUP_VERSION = 2;
 
 type ValidSeenaryBackup = SeenaryBackup & {
   format: string;
@@ -55,7 +55,82 @@ function isSeenaryBackup(value: unknown): value is ValidSeenaryBackup {
   if (!value || typeof value !== "object") return false;
 
   const candidate = value as SeenaryBackup;
-  return candidate.format === BACKUP_FORMAT && Boolean(candidate.data);
+  const version = Number(candidate.version ?? 1);
+  return (
+    candidate.format === BACKUP_FORMAT &&
+    Number.isInteger(version) &&
+    version >= 1 &&
+    version <= BACKUP_VERSION &&
+    isPlainRecord(candidate.data)
+  );
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getBackupRecord<T>(value: unknown): Record<string, T> {
+  return isPlainRecord(value) ? (value as Record<string, T>) : {};
+}
+
+function getValidBackupEntries<T extends { anime_id?: number; manga_id?: number }>(
+  value: unknown,
+  idField: "anime_id" | "manga_id"
+) {
+  const valid: Array<[string, T]> = [];
+  let skipped = 0;
+
+  for (const [key, candidate] of Object.entries(getBackupRecord<T>(value))) {
+    if (!isPlainRecord(candidate)) {
+      skipped += 1;
+      continue;
+    }
+
+    const mediaId = Number(candidate[idField] ?? key);
+    if (!Number.isInteger(mediaId) || mediaId <= 0) {
+      skipped += 1;
+      continue;
+    }
+
+    valid.push([String(mediaId), { ...candidate, [idField]: mediaId }]);
+  }
+
+  return { valid, skipped };
+}
+
+function getValidBackupMedia<T extends { anime_id?: number; manga_id?: number }>(
+  value: unknown,
+  idField: "anime_id" | "manga_id"
+) {
+  return Object.fromEntries(
+    Object.entries(getBackupRecord<T>(value)).flatMap(([key, candidate]) => {
+      if (!isPlainRecord(candidate)) return [];
+      const mediaId = Number(candidate[idField] ?? key);
+      return Number.isInteger(mediaId) && mediaId > 0
+        ? [[String(mediaId), { ...candidate, [idField]: mediaId }]]
+        : [];
+    })
+  ) as Record<string, T>;
+}
+
+function mergeSyncHistory(current: SyncActivityItem[], incoming: unknown) {
+  if (!Array.isArray(incoming)) return current;
+
+  const merged = [...incoming.filter(isPlainRecord), ...current] as SyncActivityItem[];
+  const seen = new Set<string>();
+
+  return merged.filter((item) => {
+    const signature = [
+      item.media_type ?? "ANIME",
+      item.manga_id ?? item.anime_id ?? "",
+      item.operation ?? "",
+      item.status ?? "",
+      item.created_at ?? "",
+    ].join(":");
+    if (seen.has(signature)) return false;
+    seen.add(signature);
+    return true;
+  }).slice(0, 150);
 }
 
 let dbPromise: Promise<IDBDatabase> | null = null;
@@ -934,7 +1009,129 @@ export const localStore = {
           ? `Cleared ${removedCount} entr${removedCount === 1 ? "y" : "ies"} from your list.`
           : "Your list was already empty.",
       removedCount,
+      animeRemovedCount: removedCount,
+      mangaRemovedCount: 0,
     };
+  },
+
+  async clearMangaList(userId: number) {
+    const state = await readState(userId);
+    const removedCount = Object.keys(state.mangaEntries).length;
+    state.deletedMangaEntries = {
+      ...state.deletedMangaEntries,
+      ...Object.fromEntries(
+        Object.keys(state.mangaEntries).map((key) => [
+          key,
+          {
+            manga_id: Number(key),
+            media_type: "MANGA" as const,
+            external_ids: state.manga[key]?.external_ids ?? { anilist: key, mal: null },
+            title:
+              state.manga[key]?.title_preferred ??
+              state.manga[key]?.title_english ??
+              state.manga[key]?.title_romaji ??
+              `Manga #${key}`,
+            deleted_at: new Date().toISOString(),
+          },
+        ])
+      ),
+    };
+    state.mangaEntries = {};
+    state.dirtyMangaEntries = {};
+    await writeState(userId, state);
+    return {
+      ok: true,
+      message:
+        removedCount > 0
+          ? `Cleared ${removedCount} Manga entr${removedCount === 1 ? "y" : "ies"} from your list.`
+          : "Your Manga list was already empty.",
+      removedCount,
+      animeRemovedCount: 0,
+      mangaRemovedCount: removedCount,
+    };
+  },
+
+  async clearAllLists(userId: number) {
+    const state = await readState(userId);
+    const animeRemovedCount = Object.keys(state.entries).length;
+    const mangaRemovedCount = Object.keys(state.mangaEntries).length;
+    const now = new Date().toISOString();
+
+    state.deletedEntries = {
+      ...state.deletedEntries,
+      ...Object.fromEntries(
+        Object.keys(state.entries).map((key) => [
+          key,
+          {
+            anime_id: Number(key),
+            media_type: "ANIME" as const,
+            external_ids: state.anime[key]?.external_ids ?? { anilist: key, mal: null },
+            title:
+              state.anime[key]?.title_preferred ??
+              state.anime[key]?.title_english ??
+              state.anime[key]?.title_romaji ??
+              `Anime #${key}`,
+            deleted_at: now,
+          },
+        ])
+      ),
+    };
+    state.deletedMangaEntries = {
+      ...state.deletedMangaEntries,
+      ...Object.fromEntries(
+        Object.keys(state.mangaEntries).map((key) => [
+          key,
+          {
+            manga_id: Number(key),
+            media_type: "MANGA" as const,
+            external_ids: state.manga[key]?.external_ids ?? { anilist: key, mal: null },
+            title:
+              state.manga[key]?.title_preferred ??
+              state.manga[key]?.title_english ??
+              state.manga[key]?.title_romaji ??
+              `Manga #${key}`,
+            deleted_at: now,
+          },
+        ])
+      ),
+    };
+    state.entries = {};
+    state.mangaEntries = {};
+    state.dirtyEntries = {};
+    state.dirtyMangaEntries = {};
+    await writeState(userId, state);
+
+    const removedCount = animeRemovedCount + mangaRemovedCount;
+    return {
+      ok: true,
+      message:
+        removedCount > 0
+          ? `Cleared ${animeRemovedCount} Anime and ${mangaRemovedCount} Manga entries.`
+          : "Both of your media lists were already empty.",
+      removedCount,
+      animeRemovedCount,
+      mangaRemovedCount,
+    };
+  },
+
+  async deleteUserData(userId: number) {
+    if (!indexedDbUnavailable) {
+      try {
+        await runStore("readwrite", (store) => store.delete(userId));
+      } catch (error) {
+        indexedDbUnavailable = true;
+        dbPromise = null;
+        console.warn("Seenary local database deletion failed; clearing browser fallback.", error);
+      }
+    }
+
+    try {
+      window.localStorage.removeItem(getLegacyStateKey(userId));
+      window.localStorage.removeItem(getLegacyMigratedKey(userId));
+      window.localStorage.removeItem(getFallbackStateKey(userId));
+    } catch {
+      // The server-side account is already deleted; blocked storage needs no further action.
+    }
   },
 
   async getSyncPayload(userId: number) {
@@ -1332,6 +1529,14 @@ export const localStore = {
         settings: state.settings,
         anime: state.anime,
         entries: state.entries,
+        manga: state.manga,
+        mangaEntries: state.mangaEntries,
+        dirtyEntries: state.dirtyEntries,
+        deletedEntries: state.deletedEntries,
+        dirtyMangaEntries: state.dirtyMangaEntries,
+        deletedMangaEntries: state.deletedMangaEntries,
+        syncHistory: state.syncHistory,
+        autoSyncEnabled: state.autoSyncEnabled,
       },
     };
   },
@@ -1345,38 +1550,90 @@ export const localStore = {
     }
 
     const state = await readState(userId);
-    const incomingEntries =
-      backup.data.entries && typeof backup.data.entries === "object" ? backup.data.entries : {};
-    const incomingAnime =
-      backup.data.anime && typeof backup.data.anime === "object" ? backup.data.anime : {};
-    let imported = 0;
+    const backupVersion = Number(backup.version ?? 1);
+    const incomingAnime = getValidBackupMedia<StoredAnime>(backup.data.anime, "anime_id");
+    const incomingManga = getValidBackupMedia<StoredManga>(backup.data.manga, "manga_id");
+    const animeEntries = getValidBackupEntries<LocalListEntry>(backup.data.entries, "anime_id");
+    const mangaEntries = getValidBackupEntries<LocalMangaListEntry>(
+      backup.data.mangaEntries,
+      "manga_id"
+    );
+    let animeImported = 0;
+    let mangaImported = 0;
 
-    state.settings = backup.data.settings
+    state.settings = isPlainRecord(backup.data.settings)
       ? normalizeSettings(backup.data.settings as Partial<LocalSettings>)
       : state.settings;
     state.anime = {
       ...state.anime,
       ...incomingAnime,
     };
+    state.manga = {
+      ...state.manga,
+      ...incomingManga,
+    };
 
-    for (const [key, entry] of Object.entries(incomingEntries)) {
-      const animeId = Number(entry.anime_id ?? key);
-      if (!Number.isInteger(animeId) || animeId <= 0) {
-        continue;
+    for (const [key, entry] of animeEntries.valid) {
+      state.entries[key] = entry;
+      delete state.deletedEntries[key];
+      animeImported += 1;
+    }
+
+    for (const [key, entry] of mangaEntries.valid) {
+      state.mangaEntries[key] = entry;
+      delete state.deletedMangaEntries[key];
+      mangaImported += 1;
+    }
+
+    if (backupVersion >= 2) {
+      const incomingDirtyAnime = getBackupRecord<boolean>(backup.data.dirtyEntries);
+      const incomingDirtyManga = getBackupRecord<boolean>(backup.data.dirtyMangaEntries);
+      for (const [key] of animeEntries.valid) {
+        if (incomingDirtyAnime[key]) state.dirtyEntries[key] = true;
+      }
+      for (const [key] of mangaEntries.valid) {
+        if (incomingDirtyManga[key]) state.dirtyMangaEntries[key] = true;
       }
 
-      state.entries[String(animeId)] = entry;
-      state.dirtyEntries[String(animeId)] = true;
-      delete state.deletedEntries[String(animeId)];
-      imported += 1;
+      for (const [key, deletion] of Object.entries(
+        getBackupRecord<DeletedListEntry>(backup.data.deletedEntries)
+      )) {
+        if (isPlainRecord(deletion) && !state.entries[key]) state.deletedEntries[key] = deletion;
+      }
+      for (const [key, deletion] of Object.entries(
+        getBackupRecord<DeletedListEntry>(backup.data.deletedMangaEntries)
+      )) {
+        if (isPlainRecord(deletion) && !state.mangaEntries[key]) {
+          state.deletedMangaEntries[key] = deletion;
+        }
+      }
+
+      state.syncHistory = mergeSyncHistory(state.syncHistory, backup.data.syncHistory);
+      if (typeof backup.data.autoSyncEnabled === "boolean") {
+        state.autoSyncEnabled = backup.data.autoSyncEnabled;
+      }
+    } else {
+      for (const [key] of animeEntries.valid) state.dirtyEntries[key] = true;
     }
 
     await writeState(userId, state);
 
+    const imported = animeImported + mangaImported;
+    const skipped = animeEntries.skipped + mangaEntries.skipped;
+    const importSummary = [
+      animeImported ? `${animeImported} Anime` : "",
+      mangaImported ? `${mangaImported} Manga` : "",
+    ].filter(Boolean).join(" and ");
+
     return {
       ok: true,
-      message: `Imported ${imported} backup entr${imported === 1 ? "y" : "ies"}.`,
+      message: importSummary
+        ? `Imported ${importSummary} backup entr${imported === 1 ? "y" : "ies"}.`
+        : "The backup was valid, but it did not contain any list entries.",
       imported,
+      animeImported,
+      mangaImported,
+      skipped,
     };
   },
 };

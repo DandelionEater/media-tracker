@@ -1,7 +1,7 @@
 const anilist = require('./anilist');
 const { mapAnimeForDb } = require('./animeMapper');
-const { saveAnimeSummary } = require('./db');
-const { saveMyAnimeEntry } = require('./lists');
+const { saveAnimeSummary, saveManga } = require('./db');
+const { saveMyAnimeEntry, saveMyMangaEntry } = require('./lists');
 const zlib = require('zlib');
 
 const MAX_TEXT_IMPORT_LINES = 100;
@@ -14,11 +14,15 @@ const TEXT_IMPORT_STATUS_WORDS = new Set([
   'completed',
   'complete',
   'watching',
+  'reading',
   'planned',
   'planning',
+  'plan to watch',
+  'plan to read',
   'paused',
   'dropped',
   'rewatching',
+  'rereading',
 ]);
 const TEXT_IMPORT_TITLE_ALIASES = new Map([
   ['aoharuride', 'Ao Haru Ride'],
@@ -129,8 +133,8 @@ function parseTextLine(line) {
   const cleanedLine = line
     .replace(/^\s*(?:[-*]|\d+[.)])\s+/, '')
     .replace(progressMatch?.[0] || '', ' ')
-    .replace(/\s+\[(?:completed|complete|watching|planned|paused|dropped)\]\s*$/i, '')
-    .replace(/\s+-\s+(?:completed|complete|watching|planned|paused|dropped)\s*$/i, '')
+    .replace(/\s+\[(?:completed|complete|watching|reading|planned|planning|plan to watch|plan to read|paused|dropped|rewatching|rereading)\]\s*$/i, '')
+    .replace(/\s+-\s+(?:completed|complete|watching|reading|planned|planning|plan to watch|plan to read|paused|dropped|rewatching|rereading)\s*$/i, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
   const title = extractTextImportTitle(cleanedLine);
@@ -213,8 +217,8 @@ function cleanTextImportTitleCandidate(value) {
   return String(value || '')
     .trim()
     .replace(/^["'“”‘’]+|["'“”‘’]+$/g, '')
-    .replace(/\s+\[(?:completed|complete|watching|planned|paused|dropped)\]\s*$/i, '')
-    .replace(/\s+-\s+(?:completed|complete|watching|planned|paused|dropped)\s*$/i, '')
+    .replace(/\s+\[(?:completed|complete|watching|reading|planned|planning|plan to watch|plan to read|paused|dropped|rewatching|rereading)\]\s*$/i, '')
+    .replace(/\s+-\s+(?:completed|complete|watching|reading|planned|planning|plan to watch|plan to read|paused|dropped|rewatching|rereading)\s*$/i, '')
     .replace(/\s{2,}/g, ' ')
     .trim();
 }
@@ -231,7 +235,7 @@ function isLikelyTextImportTitleCandidate(value) {
     return false;
   }
 
-  if (/^(?:title|anime|name|status|score|rating|progress|episodes?|type|format)$/i.test(text)) {
+  if (/^(?:title|anime|manga|name|status|score|rating|progress|episodes?|chapters?|volumes?|type|format)$/i.test(text)) {
     return false;
   }
 
@@ -260,11 +264,13 @@ function hasTextImportTitleAlias(title) {
 }
 
 async function previewTextImport(text, options = {}) {
+  const mediaType = options.mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+  const mediaLabel = mediaType === 'MANGA' ? 'Manga' : 'Anime';
   const parsedEntries = parseTextList(text);
   const searchEntries = prioritizeTextImportEntries(parsedEntries);
 
   if (!parsedEntries.length) {
-    return { ok: false, message: 'Add at least one anime title to the text file.' };
+    return { ok: false, message: `Add at least one ${mediaLabel} title to the text file.` };
   }
 
   const groupsByStatus = {
@@ -287,8 +293,9 @@ async function previewTextImport(text, options = {}) {
     }
 
     const batch = searchEntries.slice(index, index + TEXT_IMPORT_SEARCH_CONCURRENCY);
-    const batchResults = await searchAnimeBatchForTextImport(batch, {
+    const batchResults = await searchMediaBatchForTextImport(batch, {
       hideAdultContent: options.hideAdultContent,
+      mediaType,
       searchCache,
     });
 
@@ -317,14 +324,20 @@ async function previewTextImport(text, options = {}) {
       }
 
       const episodes = Number.isInteger(match.episodes) && match.episodes > 0 ? match.episodes : null;
+      const chapters = Number.isInteger(match.chapters) && match.chapters > 0 ? match.chapters : null;
+      const volumes = Number.isInteger(match.volumes) && match.volumes > 0 ? match.volumes : null;
+      const totalUnits = mediaType === 'MANGA' ? chapters : episodes;
       const hasProgress = typeof parsedEntry.progress === 'number';
-      const progress = hasProgress ? parsedEntry.progress : episodes ?? 0;
-      const total = parsedEntry.total ?? episodes;
+      const progress = hasProgress ? parsedEntry.progress : totalUnits ?? 0;
+      const total = parsedEntry.total ?? totalUnits;
       const status =
-        hasProgress && total && parsedEntry.progress < total ? 'watching' : 'completed';
+        hasProgress && (!total || parsedEntry.progress < total) ? 'watching' : 'completed';
 
       groupsByStatus[status].push({
         animeId: match.id,
+        mangaId: mediaType === 'MANGA' ? match.id : undefined,
+        mediaId: match.id,
+        mediaType,
         status,
         progress,
         score: null,
@@ -332,6 +345,9 @@ async function previewTextImport(text, options = {}) {
         title: match.title || {},
         coverImage: match.coverImage || null,
         episodes,
+        chapters,
+        volumes,
+        volumeProgress: 0,
         format: match.format ?? null,
         season: match.season ?? null,
         seasonYear: match.seasonYear ?? null,
@@ -361,7 +377,7 @@ async function previewTextImport(text, options = {}) {
           ? 'Text import matching took too long. Try importing the matched titles now, or retry with fewer lines.'
           : failedSearchCount > 0
           ? 'AniList did not respond reliably while matching this text file. Try again in a moment, or try fewer titles at once.'
-          : 'No titles from the text file could be matched to AniList anime.',
+          : `No titles from the text file could be matched to AniList ${mediaLabel} records.`,
       unmatched,
     };
   }
@@ -380,7 +396,7 @@ async function previewTextImport(text, options = {}) {
         : `Matched ${matchedCount} title${matchedCount === 1 ? '' : 's'}.`,
     preview: {
       totalFound: parsedEntries.length,
-      groups,
+      groups: groups.map((group) => ({ ...group, mediaType })),
       unmatched,
     },
   };
@@ -467,13 +483,17 @@ function isLikelyPdfAnimeTitleLine(line) {
   return true;
 }
 
-async function searchAnimeBatchForTextImport(parsedEntries, options) {
+async function searchMediaBatchForTextImport(parsedEntries, options) {
   const searchCache = options.searchCache;
   const resultsByTitle = new Map();
   const missingEntries = [];
 
   for (const parsedEntry of parsedEntries) {
-    const cacheKey = normalizeSearchCacheKey(parsedEntry.title, options.hideAdultContent);
+    const cacheKey = normalizeSearchCacheKey(
+      parsedEntry.title,
+      options.hideAdultContent,
+      options.mediaType
+    );
 
     if (searchCache.has(cacheKey)) {
       resultsByTitle.set(parsedEntry.title, searchCache.get(cacheKey));
@@ -502,7 +522,8 @@ async function searchAnimeBatchForTextImport(parsedEntries, options) {
     }
 
     try {
-      const batchResults = await anilist.searchAnimeBatch(
+      const searchBatch = options.mediaType === 'MANGA' ? anilist.searchMangaBatch : anilist.searchAnimeBatch;
+      const batchResults = await searchBatch(
         variantEntries.map((entry) => entry.searchTitles[variantIndex].title),
         { hideAdultContent: options.hideAdultContent }
       );
@@ -626,8 +647,8 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function normalizeSearchCacheKey(title, hideAdultContent) {
-  return `${hideAdultContent ? 'safe' : 'all'}:${String(title || '')
+function normalizeSearchCacheKey(title, hideAdultContent, mediaType = 'ANIME') {
+  return `${mediaType}:${hideAdultContent ? 'safe' : 'all'}:${String(title || '')
     .trim()
     .toLowerCase()}`;
 }
@@ -638,13 +659,13 @@ async function delayBetweenTextImportSearchBatches(index, total) {
   }
 }
 
-function importTextEntries(currentSession, entries = [], selectedAnimeIds = []) {
-  const selectedIds = new Set(
-    (Array.isArray(selectedAnimeIds) ? selectedAnimeIds : [])
-      .map((animeId) => Number(animeId))
-      .filter((animeId) => Number.isInteger(animeId) && animeId > 0)
+function importTextEntries(currentSession, entries = [], selectedMediaKeys = []) {
+  const selectedKeys = new Set(
+    (Array.isArray(selectedMediaKeys) ? selectedMediaKeys : []).map((value) =>
+      typeof value === 'number' ? `ANIME:${value}` : String(value)
+    )
   );
-  const hasSelection = selectedIds.size > 0;
+  const hasSelection = selectedKeys.size > 0;
   const flatEntries = Array.isArray(entries) ? entries : [];
 
   let imported = 0;
@@ -653,9 +674,11 @@ function importTextEntries(currentSession, entries = [], selectedAnimeIds = []) 
   let skipped = 0;
 
   for (const entry of flatEntries) {
-    const animeId = Number(entry?.animeId);
+    const mediaType = entry?.mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+    const mediaId = Number(mediaType === 'MANGA' ? entry?.mangaId ?? entry?.mediaId : entry?.animeId ?? entry?.mediaId);
+    const mediaKey = `${mediaType}:${mediaId}`;
 
-    if (!Number.isInteger(animeId) || animeId <= 0 || (hasSelection && !selectedIds.has(animeId))) {
+    if (!Number.isInteger(mediaId) || mediaId <= 0 || (hasSelection && !selectedKeys.has(mediaKey))) {
       skipped += 1;
       continue;
     }
@@ -665,12 +688,15 @@ function importTextEntries(currentSession, entries = [], selectedAnimeIds = []) 
       continue;
     }
 
-    saveAnimeSummary(mapAnimeForDb(entry.media));
-    const result = saveMyAnimeEntry(currentSession, animeId, {
+    if (mediaType === 'MANGA') saveManga(entry.media);
+    else saveAnimeSummary(mapAnimeForDb(entry.media));
+    const saveEntry = mediaType === 'MANGA' ? saveMyMangaEntry : saveMyAnimeEntry;
+    const result = saveEntry(currentSession, mediaId, {
       status: entry.status || 'completed',
       progress: entry.progress ?? 0,
       score: entry.score ?? null,
       notes: entry.notes ?? null,
+      volumeProgress: entry.volumeProgress ?? 0,
     });
 
     if (!result.ok) {
@@ -679,7 +705,7 @@ function importTextEntries(currentSession, entries = [], selectedAnimeIds = []) 
     }
 
     imported += 1;
-    if (result.message === 'Anime added to your list.') {
+    if (result.message === 'Anime added to your list.' || result.message === 'Manga added to your list.') {
       created += 1;
     } else {
       updated += 1;
@@ -693,7 +719,10 @@ function importTextEntries(currentSession, entries = [], selectedAnimeIds = []) 
       sourceUsername: 'Text file',
       totalFound: flatEntries.length,
       selectedStatuses: [],
-      selectedAnimeIds: Array.from(selectedIds),
+      selectedAnimeIds: Array.from(selectedKeys)
+        .filter((key) => key.startsWith('ANIME:'))
+        .map((key) => Number(key.slice(6))),
+      selectedMediaKeys: Array.from(selectedKeys),
       imported,
       created,
       updated,

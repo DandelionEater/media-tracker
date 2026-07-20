@@ -7,6 +7,7 @@ const CONFIG_FILE = 'seenary-config.json';
 const CONFIG_BACKUP_FILE = 'seenary-config.backup.json';
 const LAYOUT_KEYS = new Set([
   'personalLayoutOrder',
+  'mangaPersonalLayoutOrder',
   'discoverLayoutOrder',
   'myListSectionOrder',
   'mangaMyListSectionOrder',
@@ -152,11 +153,23 @@ function setLayoutOrders(userIdValue, payload) {
   return result.ok ? { ok: true, ...current } : result;
 }
 
+function deleteLayoutOrders(userIdValue) {
+  const userId = normalizeUserId(userIdValue);
+  if (!userId) return { ok: false, message: 'A valid Seenary user is required.' };
+
+  const config = readConfig();
+  if (!Object.prototype.hasOwnProperty.call(config.users, userId)) return { ok: true };
+  delete config.users[userId];
+  const result = writeConfig(config);
+  return result.ok ? { ok: true } : result;
+}
+
 function registerLayoutConfigIpc() {
   ipcMain.handle('layout-config:get', (_event, userId) => getLayoutOrders(userId));
   ipcMain.on('layout-config:set', (event, userId, payload) => {
     event.returnValue = setLayoutOrders(userId, payload);
   });
+  ipcMain.handle('layout-config:delete', (_event, userId) => deleteLayoutOrders(userId));
 }
 
-module.exports = { registerLayoutConfigIpc };
+module.exports = { registerLayoutConfigIpc, deleteLayoutOrders };

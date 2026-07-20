@@ -321,33 +321,63 @@ async function logout() {
   return result;
 }
 
-function flattenPreviewEntries(result: AuthImportResult, selectedAnimeIds: number[] = []) {
+function flattenPreviewEntries(result: AuthImportResult, selectedMediaKeys: Array<number | string> = []) {
   const selected = new Set(
-    selectedAnimeIds.map((animeId) => Number(animeId)).filter((animeId) => animeId > 0)
+    selectedMediaKeys.map((value) =>
+      typeof value === "number" ? `ANIME:${value}` : String(value)
+    )
   );
   const hasSelection = selected.size > 0;
 
   return (result.localEntries ?? result.preview?.groups?.flatMap((group) => group.items) ?? [])
-    .filter((item) => !hasSelection || selected.has(Number(item.animeId)))
-    .filter((item) => Number(item.animeId) > 0);
+    .filter((item) => {
+      const mediaType = item.mediaType === "MANGA" ? "MANGA" : "ANIME";
+      const mediaId = Number(mediaType === "MANGA" ? item.mangaId ?? item.mediaId : item.animeId ?? item.mediaId);
+      return Number.isInteger(mediaId) && mediaId > 0 && (!hasSelection || selected.has(`${mediaType}:${mediaId}`));
+    });
 }
 
 async function importLocalEntries(
   userId: number,
   result: AuthImportResult,
-  selectedAnimeIds: number[] = [],
+  selectedMediaKeys: Array<number | string> = [],
   fallbackSource = "Import",
   signal?: AbortSignal
 ) {
   throwIfAborted(signal);
 
-  const items = flattenPreviewEntries(result, selectedAnimeIds);
+  const items = flattenPreviewEntries(result, selectedMediaKeys);
   let imported = 0;
   let created = 0;
   let updated = 0;
 
   for (const item of items) {
     throwIfAborted(signal);
+    if (item.mediaType === "MANGA") {
+      const mangaId = Number(item.mangaId ?? item.mediaId);
+      if (!item.media) continue;
+      await localStore.cacheManga(userId, item.media);
+      throwIfAborted(signal);
+      const existing = await localStore.getMangaEntry(userId, mangaId);
+      const saved = await localStore.saveMangaEntry(userId, mangaId, {
+        status: item.status,
+        progress: item.progress ?? 0,
+        volumeProgress: item.volumeProgress ?? 0,
+        score: item.score ?? null,
+        notes: item.notes ?? null,
+        startedAt: item.startedAt ?? null,
+        completedAt: item.completedAt ?? null,
+        repeatCount: item.repeatCount ?? 0,
+        isFavorite: Boolean(existing?.is_favorite),
+      });
+      if (saved.ok) {
+        imported += 1;
+        if (existing) updated += 1;
+        else created += 1;
+      }
+      continue;
+    }
+
     await localStore.cachePreviewAnime(userId, item);
     throwIfAborted(signal);
     const existing = await localStore.getEntry(userId, Number(item.animeId));
@@ -391,7 +421,11 @@ async function importLocalEntries(
       sourceUsername: result.summary?.sourceUsername ?? fallbackSource,
       totalFound: result?.summary?.totalFound ?? items.length,
       selectedStatuses: result.summary?.selectedStatuses ?? [],
-      selectedAnimeIds,
+      selectedAnimeIds: selectedMediaKeys
+        .map(String)
+        .filter((key) => key.startsWith("ANIME:"))
+        .map((key) => Number(key.slice(6))),
+      selectedMediaKeys: selectedMediaKeys.map(String),
       imported,
       created,
       updated,
@@ -411,9 +445,10 @@ export function installApiClient() {
     searchAnime: (query, hideAdultContent = true) =>
       rpc("searchAnime", [query, hideAdultContent]),
     getTrendingAnime: (hideAdultContent = true) => rpc("getTrendingAnime", [hideAdultContent]),
+    getDiscoverMedia: (hideAdultContent = true) => rpc("getDiscoverMedia", [hideAdultContent]),
     getDiscoverAnime: (hideAdultContent = true) => rpc("getDiscoverAnime", [hideAdultContent]),
-    getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true) =>
-      rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent]),
+    getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = "ANIME") =>
+      rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent, mediaType]),
     previewAniListImport: (username) => rpc("previewAniListImport", [username]),
     importAniList: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {
@@ -474,11 +509,11 @@ export function installApiClient() {
         throw error;
       }
     },
-    previewTextImport: (text, hideAdultContent = true, options?: ImportOptions) =>
-      rpc("previewTextImport", [text, hideAdultContent], { signal: options?.signal }),
-    previewPdfImport: (pdfBase64, hideAdultContent = true, options?: ImportOptions) =>
-      rpc("previewPdfImport", [pdfBase64, hideAdultContent], { signal: options?.signal }),
-    importTextList: async (entries, selectedAnimeIds, options?: ImportOptions) => {
+    previewTextImport: (text, hideAdultContent = true, mediaType = "ANIME", options?: ImportOptions) =>
+      rpc("previewTextImport", [text, hideAdultContent, mediaType], { signal: options?.signal }),
+    previewPdfImport: (pdfBase64, hideAdultContent = true, mediaType = "ANIME", options?: ImportOptions) =>
+      rpc("previewPdfImport", [pdfBase64, hideAdultContent, mediaType], { signal: options?.signal }),
+    importTextList: async (entries, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
         const userId = await requireActiveUserId();
@@ -489,7 +524,7 @@ export function installApiClient() {
             localEntries: entries,
             summary: { sourceUsername: "Text file", totalFound: entries.length },
           },
-          selectedAnimeIds,
+          selectedMediaKeys,
           "text",
           options?.signal
         );
@@ -630,6 +665,18 @@ export function installApiClient() {
     linkMalAccount,
     resolveMalLinkConflict: (action) => rpc("resolveMalLinkConflict", [action]),
     logout,
+    deleteAccount: async (usernameConfirmation) => {
+      const userId = await requireActiveUserId();
+      const result = await rpc("deleteAccount", [usernameConfirmation]);
+      if (result.ok) {
+        if (localAutoSyncTimer !== null) window.clearTimeout(localAutoSyncTimer);
+        localAutoSyncTimer = null;
+        await localStore.deleteUserData(userId);
+        await window.desktopConfig?.deleteLayoutOrders(userId).catch(() => undefined);
+        activeUserId = null;
+      }
+      return result;
+    },
     getSession,
     setTutorialDismissed: (dismissed) => rpc("setTutorialDismissed", [dismissed]),
     getMyList: async () => {
@@ -709,6 +756,22 @@ export function installApiClient() {
     clearMyList: async () => {
       const userId = await requireActiveUserId();
       const result = await localStore.clearList(userId);
+      if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
+    },
+    clearMyMangaList: async () => {
+      const userId = await requireActiveUserId();
+      const result = await localStore.clearMangaList(userId);
+      if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
+        scheduleLocalAutoSync(userId);
+      }
+      return result;
+    },
+    clearAllMediaLists: async () => {
+      const userId = await requireActiveUserId();
+      const result = await localStore.clearAllLists(userId);
       if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
         scheduleLocalAutoSync(userId);
       }

@@ -169,6 +169,17 @@ export type DiscoverShelfResult = {
   warning?: string | null;
 };
 
+export type DiscoverMediaResult = {
+  anime: {
+    trending: AnimeMedia[];
+    shelves: DiscoverShelfResult[];
+  };
+  manga: {
+    trending: AnimeMedia[];
+    shelves: DiscoverShelfResult[];
+  };
+};
+
 export type RelatedAnimeEdge = {
   relationType?: string | null;
   node?: AnimeMedia | null;
@@ -451,5 +462,11 @@ export type SeenaryBackup = {
     entries?: Record<string, LocalListEntry>;
     manga?: Record<string, StoredManga>;
     mangaEntries?: Record<string, LocalMangaListEntry>;
+    dirtyEntries?: Record<string, boolean>;
+    deletedEntries?: Record<string, DeletedListEntry>;
+    dirtyMangaEntries?: Record<string, boolean>;
+    deletedMangaEntries?: Record<string, DeletedListEntry>;
+    syncHistory?: SyncActivityItem[];
+    autoSyncEnabled?: boolean;
   };
 };

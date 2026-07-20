@@ -22,6 +22,7 @@ import { MyListCard } from "./MyListCard";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 import type { MediaType, TrackedMangaEntry } from "../types/domain";
+import { LibraryLens, type LibraryDestination } from "./LibraryLens";
 
 type MyListEntry = {
   anime_id: number;
@@ -67,6 +68,10 @@ type MyListPageProps = {
   ) => void;
   titleLanguage: TitleLanguage;
   density: MyListDensity;
+  activeMediaType: MediaType;
+  onMediaTypeChange: (mediaType: MediaType) => void;
+  onLibraryDestinationChange: (destination: LibraryDestination) => void;
+  onLibraryLensVisibilityChange: (isVisible: boolean) => void;
 };
 
 type SortMode = "alphabetical" | "personalScore";
@@ -155,12 +160,6 @@ const MY_LIST_SORT_MODE_LEGACY_KEY = "media-tracker.my-list.sort-mode";
 const MY_LIST_SECTION_ORDER_KEY = "seenary.my-list.section-order";
 const MY_LIST_SECTION_ORDER_LEGACY_KEY = "media-tracker.my-list.section-order";
 const MY_LIST_VIEW_KEY = "seenary.my-list.view";
-const MY_LIST_MEDIA_TYPE_KEY = "seenary.my-list.media-type";
-
-function readStoredMediaType(): MediaType {
-  if (typeof window === "undefined") return "ANIME";
-  return window.localStorage.getItem(MY_LIST_MEDIA_TYPE_KEY) === "MANGA" ? "MANGA" : "ANIME";
-}
 
 function getMediaPreferenceKey(key: string, mediaType: MediaType) {
   return mediaType === "MANGA" ? `${key}.manga` : key;
@@ -328,8 +327,11 @@ export function MyListPage({
   onNotify,
   titleLanguage,
   density,
+  activeMediaType,
+  onMediaTypeChange,
+  onLibraryDestinationChange,
+  onLibraryLensVisibilityChange,
 }: MyListPageProps) {
-  const [activeMediaType, setActiveMediaType] = useState<MediaType>(readStoredMediaType);
   const entries: MyListEntry[] =
     activeMediaType === "MANGA" ? mangaEntries : animeEntries;
   const [editingEntry, setEditingEntry] = useState<MyListEntry | null>(null);
@@ -358,7 +360,6 @@ export function MyListPage({
   function handleMediaTypeChange(mediaType: MediaType) {
     if (mediaType === activeMediaType) return;
 
-    window.localStorage.setItem(MY_LIST_MEDIA_TYPE_KEY, mediaType);
     const nextOrder = readStoredSectionOrder(mediaType);
     sectionOrderRef.current = nextOrder;
     setSectionOrder(nextOrder);
@@ -367,7 +368,7 @@ export function MyListPage({
     setView(readStoredView(mediaType));
     setIsEditingSectionOrder(false);
     setEditingEntry(null);
-    setActiveMediaType(mediaType);
+    onMediaTypeChange(mediaType);
     setListSearch("");
     setStatusFilter("all");
     setProgressFilter("all");
@@ -597,50 +598,26 @@ export function MyListPage({
 
   return (
     <>
-      <div className="scroll-container h-full overflow-y-auto px-6 py-24">
-        <div className="mx-auto max-w-6xl">
-          <div className="mb-8">
-            <p className="text-sm uppercase tracking-[0.3em] text-white/35">
-              Personal list
-            </p>
-
-            <div className="mt-3 flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-              <div>
-                <h1 className="text-3xl font-bold tracking-tight text-white">
-                  My List
-                </h1>
-                <p className="mt-2 text-white/55">
-                  Your saved {activeMediaType === "MANGA" ? "manga" : "anime"}, grouped by where they currently stand.
-                </p>
-              </div>
-
-              <div className="rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-right shadow-lg">
-                <p className="text-xs uppercase tracking-[0.22em] text-white/35">
-                  Total entries
-                </p>
-                <p className="mt-1 text-2xl font-semibold text-white">
-                  {entries.length}
-                </p>
-              </div>
+      <div data-global-scroll-root className="scroll-container h-full overflow-y-auto px-6 py-24">
+        <div className="mx-auto max-w-6xl space-y-10">
+          <section className="flex flex-col gap-5 border-b border-white/10 pb-6 md:flex-row md:items-end md:justify-between">
+            <div>
+              <p className="text-sm uppercase tracking-[0.24em] text-white/35">
+                Personal list
+              </p>
+              <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">
+                My List
+              </h1>
             </div>
 
-            <div className="mt-5 inline-flex items-center rounded-2xl border border-white/10 bg-black/20 p-1 shadow-lg">
-              {(["ANIME", "MANGA"] as MediaType[]).map((mediaType) => (
-                <button
-                  key={mediaType}
-                  type="button"
-                  onClick={() => handleMediaTypeChange(mediaType)}
-                  className={`rounded-xl px-5 py-2 text-sm font-semibold transition ${
-                    activeMediaType === mediaType
-                      ? "bg-[var(--app-accent)] text-black shadow-lg shadow-[var(--app-accent)]/15"
-                      : "text-white/50 hover:bg-white/7 hover:text-white"
-                  }`}
-                >
-                  {mediaType === "MANGA" ? "Manga" : "Anime"}
-                </button>
-              ))}
-            </div>
-          </div>
+            <LibraryLens
+              mediaType={activeMediaType}
+              destination="list"
+              onMediaChange={handleMediaTypeChange}
+              onDestinationChange={onLibraryDestinationChange}
+              onVisibilityChange={onLibraryLensVisibilityChange}
+            />
+          </section>
 
           <div className="mb-4 space-y-4">
             <div className="flex flex-col gap-4 lg:flex-row lg:items-center">
@@ -649,7 +626,7 @@ export function MyListPage({
                 <input
                   type="text"
                   value={listSearch}
-                  placeholder="Search in your list..."
+                  placeholder={`Search ${entries.length} ${activeMediaType === "MANGA" ? "manga" : "anime"} in your list...`}
                   onChange={(event) => setListSearch(event.target.value)}
                   className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/35"
                 />

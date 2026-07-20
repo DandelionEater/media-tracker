@@ -1,5 +1,6 @@
 import type {
   AnimeMedia,
+  DiscoverMediaResult,
   DiscoverShelfResult,
   ImportPayload,
   ImportPreviewItem,
@@ -138,11 +139,13 @@ declare global {
       ) => Promise<MediaSearchResults>;
       searchAnime: (query: string, hideAdultContent?: boolean) => Promise<SearchAnime[]>;
       getTrendingAnime: (hideAdultContent?: boolean) => Promise<unknown>;
+      getDiscoverMedia: (hideAdultContent?: boolean) => Promise<DiscoverMediaResult>;
       getDiscoverAnime: (hideAdultContent?: boolean) => Promise<unknown>;
       getDiscoverShelfAnime: (
         shelfId: string,
         page?: number,
-        hideAdultContent?: boolean
+        hideAdultContent?: boolean,
+        mediaType?: "ANIME" | "MANGA"
       ) => Promise<DiscoverShelfResult>;
       previewAniListImport: (username: string) => Promise<{
         ok: boolean;
@@ -229,7 +232,7 @@ declare global {
           }>;
         };
       }>;
-      previewTextImport: (text: string, hideAdultContent?: boolean, options?: { signal?: AbortSignal }) => Promise<{
+      previewTextImport: (text: string, hideAdultContent?: boolean, mediaType?: "ANIME" | "MANGA", options?: { signal?: AbortSignal }) => Promise<{
         ok: boolean;
         message?: string;
         preview?: {
@@ -239,6 +242,9 @@ declare global {
             status: string;
             items: Array<{
               animeId: number;
+              mangaId?: number;
+              mediaId?: number;
+              mediaType?: "ANIME" | "MANGA";
               status: string;
               progress: number;
               score: number | null;
@@ -253,6 +259,9 @@ declare global {
                 large?: string | null;
               };
               episodes?: number | null;
+              chapters?: number | null;
+              volumes?: number | null;
+              volumeProgress?: number;
               format?: string | null;
               season?: string | null;
               seasonYear?: number | null;
@@ -265,7 +274,7 @@ declare global {
           }>;
         };
       }>;
-      previewPdfImport: (pdfBase64: string, hideAdultContent?: boolean, options?: { signal?: AbortSignal }) => Promise<{
+      previewPdfImport: (pdfBase64: string, hideAdultContent?: boolean, mediaType?: "ANIME" | "MANGA", options?: { signal?: AbortSignal }) => Promise<{
         ok: boolean;
         message?: string;
         preview?: {
@@ -275,6 +284,9 @@ declare global {
             status: string;
             items: Array<{
               animeId: number;
+              mangaId?: number;
+              mediaId?: number;
+              mediaType?: "ANIME" | "MANGA";
               status: string;
               progress: number;
               score: number | null;
@@ -289,6 +301,9 @@ declare global {
                 large?: string | null;
               };
               episodes?: number | null;
+              chapters?: number | null;
+              volumes?: number | null;
+              volumeProgress?: number;
               format?: string | null;
               season?: string | null;
               seasonYear?: number | null;
@@ -303,7 +318,7 @@ declare global {
       }>;
       importTextList: (
         entries: ImportPreviewItem[],
-        selectedAnimeIds?: number[],
+        selectedMediaKeys?: string[],
         options?: { signal?: AbortSignal }
       ) => Promise<{
         ok: boolean;
@@ -519,6 +534,7 @@ declare global {
         } | null;
       }>;
       logout: () => Promise<{ ok: boolean; message: string }>;
+      deleteAccount: (usernameConfirmation: string) => Promise<{ ok: boolean; message: string }>;
       getSession: () => Promise<SessionResponse>;
 
       setTutorialDismissed: (dismissed: boolean) => Promise<{
@@ -604,6 +620,24 @@ declare global {
         ok: boolean;
         message: string;
         removedCount?: number;
+        animeRemovedCount?: number;
+        mangaRemovedCount?: number;
+      }>;
+
+      clearMyMangaList: () => Promise<{
+        ok: boolean;
+        message: string;
+        removedCount?: number;
+        animeRemovedCount?: number;
+        mangaRemovedCount?: number;
+      }>;
+
+      clearAllMediaLists: () => Promise<{
+        ok: boolean;
+        message: string;
+        removedCount?: number;
+        animeRemovedCount?: number;
+        mangaRemovedCount?: number;
       }>;
 
       exportLocalBackup: () => Promise<SeenaryBackup>;
@@ -612,6 +646,9 @@ declare global {
         ok: boolean;
         message: string;
         imported?: number;
+        animeImported?: number;
+        mangaImported?: number;
+        skipped?: number;
       }>;
     };
     desktopUpdater?: {
@@ -762,6 +799,7 @@ declare global {
         ok: boolean;
         message?: string;
         personalLayoutOrder?: string[];
+        mangaPersonalLayoutOrder?: string[];
         discoverLayoutOrder?: string[];
         myListSectionOrder?: string[];
         mangaMyListSectionOrder?: string[];
@@ -770,6 +808,7 @@ declare global {
         userId: number,
         layouts: {
           personalLayoutOrder?: string[];
+          mangaPersonalLayoutOrder?: string[];
           discoverLayoutOrder?: string[];
           myListSectionOrder?: string[];
           mangaMyListSectionOrder?: string[];
@@ -778,10 +817,12 @@ declare global {
         ok: boolean;
         message?: string;
         personalLayoutOrder?: string[];
+        mangaPersonalLayoutOrder?: string[];
         discoverLayoutOrder?: string[];
         myListSectionOrder?: string[];
         mangaMyListSectionOrder?: string[];
       };
+      deleteLayoutOrders: (userId: number) => Promise<{ ok: boolean; message?: string }>;
     };
     systemLocale?: {
       locale: string | null;

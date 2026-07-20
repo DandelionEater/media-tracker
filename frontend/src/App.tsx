@@ -24,6 +24,8 @@ import { SettingsPage, type AppSettings } from "./components/SettingsPage";
 import { getPreferredTitle } from "./utils/titlePreference";
 import { SyncToast, type SyncToastState } from "./components/SyncToast";
 import { UpdateModal } from "./components/UpdateModal";
+import { GlobalScrollToTop } from "./components/GlobalScrollToTop";
+import type { LibraryDestination } from "./components/LibraryLens";
 import type {
   ImportPreviewItem,
   MediaSearchResults,
@@ -98,6 +100,8 @@ type ClearListResult = {
   ok: boolean;
   message: string;
   removedCount?: number;
+  animeRemovedCount?: number;
+  mangaRemovedCount?: number;
 };
 
 type BackupImportResult = {
@@ -111,6 +115,28 @@ type ImportOptions = {
 };
 
 type AppView = "home" | "list" | "details" | "settings";
+type HomeMode = Exclude<LibraryDestination, "list">;
+
+const LIBRARY_MEDIA_STORAGE_KEY = "seenary.library-lens.media";
+const LEGACY_MY_LIST_MEDIA_STORAGE_KEY = "seenary.my-list.media-type";
+const HOME_MODE_STORAGE_KEY = "seenary.home-tab";
+const LEGACY_HOME_MODE_STORAGE_KEY = "media-tracker.home-tab";
+
+function readLibraryMediaType(): MediaType {
+  const value =
+    window.localStorage.getItem(LIBRARY_MEDIA_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_MY_LIST_MEDIA_STORAGE_KEY);
+  return value === "MANGA" ? "MANGA" : "ANIME";
+}
+
+function readHomeMode(): HomeMode {
+  const value =
+    window.localStorage.getItem(HOME_MODE_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_HOME_MODE_STORAGE_KEY);
+  return value === "discover"
+    ? "discover"
+    : "personal";
+}
 
 type AppNotification = {
   id: number;
@@ -221,6 +247,9 @@ function App() {
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [checkingSession, setCheckingSession] = useState(true);
   const [currentView, setCurrentView] = useState<AppView>("home");
+  const [libraryMediaType, setLibraryMediaType] = useState<MediaType>(readLibraryMediaType);
+  const [homeMode, setHomeMode] = useState<HomeMode>(readHomeMode);
+  const [isLibraryLensVisible, setIsLibraryLensVisible] = useState(false);
   const [trackedEntries, setTrackedEntries] = useState<TrackedAnimeEntry[]>([]);
   const [trackedMangaEntries, setTrackedMangaEntries] = useState<TrackedMangaEntry[]>([]);
   const [editingListEntry, setEditingListEntry] = useState<TrackedAnimeEntry | null>(null);
@@ -682,10 +711,10 @@ function App() {
 
   const handleImportTextList = async (
     entries: ImportPreviewItem[],
-    selectedAnimeIds: number[],
+    selectedMediaKeys: string[],
     options?: ImportOptions
   ): Promise<AniListImportResult> => {
-    const result = await window.api.importTextList(entries, selectedAnimeIds, options);
+    const result = await window.api.importTextList(entries, selectedMediaKeys, options);
 
     if (result.cancelled) {
       return result;
@@ -783,8 +812,14 @@ function App() {
     return result;
   };
 
-  const handleClearMyList = async (): Promise<ClearListResult> => {
-    const result = await window.api.clearMyList();
+  const handleClearLists = async (
+    target: "anime" | "manga" | "all"
+  ): Promise<ClearListResult> => {
+    const result = await (target === "anime"
+      ? window.api.clearMyList()
+      : target === "manga"
+        ? window.api.clearMyMangaList()
+        : window.api.clearAllMediaLists());
 
     if (result.ok) {
       await loadTrackedEntries();
@@ -793,6 +828,25 @@ function App() {
       showSyncToast("error", "List clear failed", result.message);
     }
 
+    return result;
+  };
+
+  const handleDeleteAccount = async (usernameConfirmation: string) => {
+    const result = await window.api.deleteAccount(usernameConfirmation);
+    if (!result.ok) return result;
+
+    setAuthUser(null);
+    setShowTutorial(false);
+    setSearchQuery("");
+    setResults(EMPTY_MEDIA_SEARCH_RESULTS);
+    setSelectedAnimeId(null);
+    setCurrentView("home");
+    setTrackedEntries([]);
+    setTrackedMangaEntries([]);
+    setPreviousAnimeId(null);
+    setDetailsReturnView("home");
+    setPreviousView("home");
+    setDetailsHistory([]);
     return result;
   };
 
@@ -1034,6 +1088,10 @@ function App() {
   const handleOpenMediaDetails = (mediaId: number, mediaType: MediaType) => {
     captureHomeScrollTop();
 
+    window.localStorage.setItem(LIBRARY_MEDIA_STORAGE_KEY, mediaType);
+    window.localStorage.setItem(LEGACY_MY_LIST_MEDIA_STORAGE_KEY, mediaType);
+    setLibraryMediaType(mediaType);
+
     if (currentView === "details" && selectedAnimeId !== null) {
       if (selectedAnimeId === mediaId && selectedMediaType === mediaType) {
         return;
@@ -1088,6 +1146,38 @@ function App() {
     setCurrentView("home");
     setPreviousView("home");
     setPreviousAnimeId(null);
+    setDetailsReturnView("home");
+    setDetailsHistory([]);
+  };
+
+  const handleLibraryMediaChange = (mediaType: MediaType) => {
+    window.localStorage.setItem(LIBRARY_MEDIA_STORAGE_KEY, mediaType);
+    window.localStorage.setItem(LEGACY_MY_LIST_MEDIA_STORAGE_KEY, mediaType);
+    setLibraryMediaType(mediaType);
+  };
+
+  const handleLibraryDestinationChange = (destination: LibraryDestination) => {
+    if (destination === "list") {
+      if (currentView === "list") return;
+
+      captureHomeScrollTop();
+      setPreviousView(currentView);
+      setCurrentView("list");
+      setSelectedAnimeId(null);
+      setDetailsHistory([]);
+      return;
+    }
+
+    if (currentView === "home" && homeMode === destination) return;
+
+    window.localStorage.setItem(HOME_MODE_STORAGE_KEY, destination);
+    setHomeMode(destination);
+    setSearchQuery("");
+    setResults(EMPTY_MEDIA_SEARCH_RESULTS);
+    setSearchResultsVisible(false);
+    setSelectedAnimeId(null);
+    setCurrentView("home");
+    setPreviousView("home");
     setDetailsReturnView("home");
     setDetailsHistory([]);
   };
@@ -1213,6 +1303,7 @@ function App() {
                 onOpenSettings={handleOpenSettings}
                 focusSearchOnMount={settings.startView === "search"}
                 navbarStyle={settings.navbarStyle}
+                hideMyListShortcut={isLibraryLensVisible}
               />
 
               <SyncToast toast={syncToast} />
@@ -1240,6 +1331,10 @@ function App() {
                     onNotify={showSyncToast}
                     titleLanguage={settings.titleLanguage}
                     density={settings.myListDensity}
+                    activeMediaType={libraryMediaType}
+                    onMediaTypeChange={handleLibraryMediaChange}
+                    onLibraryDestinationChange={handleLibraryDestinationChange}
+                    onLibraryLensVisibilityChange={setIsLibraryLensVisible}
                   />
                 ) : currentView === "settings" ? (
                   <SettingsPage
@@ -1256,7 +1351,8 @@ function App() {
                     onRunSyncNow={handleRunSyncNow}
                     onPullFromAniList={handlePullFromAniList}
                     onPullFromMal={handlePullFromMal}
-                    onClearMyList={handleClearMyList}
+                    onClearLists={handleClearLists}
+                    onDeleteAccount={handleDeleteAccount}
                     onExportLocalBackup={handleExportLocalBackup}
                     onImportLocalBackup={handleImportLocalBackup}
                   />
@@ -1270,6 +1366,13 @@ function App() {
                     showTutorial={showTutorial}
                     onDismissTutorial={handleDismissTutorial}
                     trackedEntries={privacySafeTrackedEntries}
+                    trackedMangaEntries={privacySafeTrackedMangaEntries}
+                    mediaType={libraryMediaType}
+                    activeHomeTab={homeMode}
+                    onMediaTypeChange={handleLibraryMediaChange}
+                    onLibraryDestinationChange={handleLibraryDestinationChange}
+                    onLibraryLensVisibilityChange={setIsLibraryLensVisible}
+                    onSelectMedia={handleOpenMediaDetails}
                     onSelectAnime={handleOpenAnimeDetails}
                     onQuickAddAnime={handleQuickAddToList}
                     onEditEntry={setEditingListEntry}
@@ -1285,7 +1388,7 @@ function App() {
                     onScrollContainerChange={handleHomeScrollContainerChange}
                     onScrollPositionChange={handleHomeScrollPositionChange}
                   >
-                    <div className="scroll-container h-full overflow-y-auto px-6 pb-6 pt-20">
+                    <div data-global-scroll-root className="scroll-container h-full overflow-y-auto px-6 pb-6 pt-20">
                       {searchError ? (
                         <SearchErrorPanel
                           message={searchError}
@@ -1307,44 +1410,51 @@ function App() {
                           }
                         />
                       ) : (
-                        <div className="space-y-12 px-10 pb-10 pt-10">
-                          <SearchResultSection
-                            title="Anime results"
-                            emptyMessage="No anime matches"
-                            results={privacySafeResults.anime}
-                          >
-                            <ResultsGrid
+                        <div className="flex flex-col gap-12 px-10 pb-10 pt-10">
+                          <div className={libraryMediaType === "MANGA" ? "order-2" : "order-1"}>
+                            <SearchResultSection
+                              title="Anime results"
+                              emptyMessage="No anime matches"
                               results={privacySafeResults.anime}
-                              onSelectAnime={handleOpenAnimeDetails}
-                              trackedEntries={privacySafeTrackedEntries}
-                              onQuickAdd={handleQuickAddToList}
-                              onEditEntry={setEditingListEntry}
-                              titleLanguage={settings.titleLanguage}
-                            />
-                          </SearchResultSection>
+                            >
+                              <ResultsGrid
+                                results={privacySafeResults.anime}
+                                onSelectAnime={handleOpenAnimeDetails}
+                                trackedEntries={privacySafeTrackedEntries}
+                                onQuickAdd={handleQuickAddToList}
+                                onEditEntry={setEditingListEntry}
+                                titleLanguage={settings.titleLanguage}
+                              />
+                            </SearchResultSection>
+                          </div>
 
-                          <SearchResultSection
-                            title="Manga results"
-                            emptyMessage="No manga matches"
-                            results={privacySafeResults.manga}
-                            description="Manga details and list tracking are being connected next."
-                          >
-                            <ResultsGrid
+                          <div className={libraryMediaType === "MANGA" ? "order-1" : "order-2"}>
+                            <SearchResultSection
+                              title="Manga results"
+                              emptyMessage="No manga matches"
                               results={privacySafeResults.manga}
-                              onSelectAnime={(mediaId) =>
-                                handleOpenMediaDetails(mediaId, "MANGA")
-                              }
-                              trackedEntries={privacySafeTrackedEntries}
-                              onEditEntry={setEditingListEntry}
-                              titleLanguage={settings.titleLanguage}
-                            />
-                          </SearchResultSection>
+                            >
+                              <ResultsGrid
+                                results={privacySafeResults.manga}
+                                onSelectAnime={(mediaId) =>
+                                  handleOpenMediaDetails(mediaId, "MANGA")
+                                }
+                                trackedEntries={privacySafeTrackedEntries}
+                                onEditEntry={setEditingListEntry}
+                                titleLanguage={settings.titleLanguage}
+                              />
+                            </SearchResultSection>
+                          </div>
                         </div>
                       )}
                     </div>
                   </HomePage>
                 )}
               </div>
+
+              <GlobalScrollToTop
+                viewKey={`${currentView}:${selectedMediaType}:${selectedAnimeId ?? "none"}:${homeMode}:${libraryMediaType}`}
+              />
 
               {editingListEntry && (
                 <ListEntryModal

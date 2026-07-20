@@ -25,7 +25,7 @@ const {
 } = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
 const { registerSystemLocaleIpc } = require('./systemLocale');
-const { registerLayoutConfigIpc } = require('./layoutConfig');
+const { registerLayoutConfigIpc, deleteLayoutOrders } = require('./layoutConfig');
 
 const anilist = require('./anilist');
 const anilistOAuth = require('./anilistOAuth');
@@ -58,8 +58,10 @@ const {
   upsertMalAccount,
   updateMalAccountImportTime,
   insertSyncHistory,
+  deleteUser,
 } = require('./db');
 const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
+const { exportBackup, importBackup } = require('./backup');
 const {
   registerUser,
   loginUser,
@@ -82,6 +84,8 @@ const {
   saveMyMangaEntry,
   removeMyMangaEntry,
   clearMyAnimeList,
+  clearMyMangaList,
+  clearAllMediaLists,
   importAniListEntries,
   importAniListMangaEntries,
 } = require('./lists');
@@ -827,11 +831,19 @@ ipcMain.handle('anilist:discover', async (_event, payload) => {
   return await anilist.getDiscoverAnime({ hideAdultContent });
 });
 
+ipcMain.handle('anilist:discover-media', async (_event, payload) => {
+  const hideAdultContent =
+    typeof payload === 'object' && payload !== null ? payload.hideAdultContent : undefined;
+
+  return await anilist.getDiscoverMedia({ hideAdultContent });
+});
+
 ipcMain.handle('anilist:discover-shelf', async (_event, payload) => {
   return await anilist.getDiscoverShelfAnime({
     shelfId: payload?.shelfId,
     page: payload?.page,
     hideAdultContent: payload?.hideAdultContent,
+    mediaType: payload?.mediaType,
   });
 });
 
@@ -1012,6 +1024,7 @@ ipcMain.handle('text-import:preview', async (_event, payload) => {
   try {
     return await previewTextImport(payload?.text, {
       hideAdultContent: payload?.hideAdultContent,
+      mediaType: payload?.mediaType,
     });
   } catch (error) {
     console.error('Text import preview error:', error);
@@ -1023,6 +1036,7 @@ ipcMain.handle('pdf-import:preview', async (_event, payload) => {
   try {
     return await previewPdfImport(payload?.pdfBase64, {
       hideAdultContent: payload?.hideAdultContent,
+      mediaType: payload?.mediaType,
     });
   } catch (error) {
     console.error('PDF import preview error:', error);
@@ -1032,7 +1046,11 @@ ipcMain.handle('pdf-import:preview', async (_event, payload) => {
 
 ipcMain.handle('text-import:import', (_event, payload) => {
   try {
-    return importTextEntries(getCurrentSession(), payload?.entries, payload?.selectedAnimeIds);
+    return importTextEntries(
+      getCurrentSession(),
+      payload?.entries,
+      payload?.selectedMediaKeys ?? payload?.selectedAnimeIds
+    );
   } catch (error) {
     console.error('Text import error:', error);
     return { ok: false, message: error.message || 'Failed to import text list.' };
@@ -2271,6 +2289,28 @@ ipcMain.handle('auth:logout', () => {
   }
 });
 
+ipcMain.handle('auth:delete-account', (_event, usernameConfirmation) => {
+  try {
+    const session = getCurrentSession();
+    if (!session.authenticated || !session.user?.id) {
+      return { ok: false, message: 'You must be logged in.' };
+    }
+    if (String(usernameConfirmation || '').trim() !== session.user.username) {
+      return { ok: false, message: 'The username confirmation does not match.' };
+    }
+
+    const userId = session.user.id;
+    const deleted = deleteUser(userId);
+    if (!deleted) return { ok: false, message: 'The account could not be deleted.' };
+    deleteLayoutOrders(userId);
+    logoutUser();
+    return { ok: true, message: 'Your Seenary account and its stored data were deleted.' };
+  } catch (error) {
+    console.error('Account deletion error:', error);
+    return { ok: false, message: 'Failed to delete the account.' };
+  }
+});
+
 ipcMain.handle('auth:get-session', () => {
   try {
     return getCurrentSession();
@@ -2369,6 +2409,42 @@ ipcMain.handle('list:clear', () => {
   } catch (error) {
     console.error('List clear error:', error);
     return { ok: false, message: 'Failed to clear your list.', removedCount: 0 };
+  }
+});
+
+ipcMain.handle('manga-list:clear', () => {
+  try {
+    return clearMyMangaList(getCurrentSession());
+  } catch (error) {
+    console.error('Manga list clear error:', error);
+    return { ok: false, message: 'Failed to clear your Manga list.', removedCount: 0 };
+  }
+});
+
+ipcMain.handle('media-list:clear-all', () => {
+  try {
+    return clearAllMediaLists(getCurrentSession());
+  } catch (error) {
+    console.error('Media lists clear error:', error);
+    return { ok: false, message: 'Failed to clear your media lists.', removedCount: 0 };
+  }
+});
+
+ipcMain.handle('backup:export', async () => {
+  try {
+    return await exportBackup(getCurrentSession(), getAppPreferences());
+  } catch (error) {
+    console.error('Backup export error:', error);
+    throw new Error(error.message || 'Failed to export backup.');
+  }
+});
+
+ipcMain.handle('backup:import', async (_event, backup) => {
+  try {
+    return await importBackup(getCurrentSession(), backup, updateAppPreferences);
+  } catch (error) {
+    console.error('Backup import error:', error);
+    return { ok: false, message: error.message || 'Failed to import backup.' };
   }
 });
 
