@@ -462,6 +462,7 @@ function normalizeAnime(media: AnimeMedia): StoredAnime | null {
     next_airing_episode: media.nextAiringEpisode?.episode ?? null,
     next_airing_at: media.nextAiringEpisode?.airingAt ?? null,
     genres: media.genres ?? [],
+    tags: media.tags ?? [],
     recommendations: media.recommendations?.nodes ?? [],
     external_ids: {
       anilist: String(media.id),
@@ -501,6 +502,7 @@ function normalizeManga(media: AnimeMedia): StoredManga | null {
     source: typeof media.source === "string" ? media.source : null,
     country_of_origin: media.countryOfOrigin ?? null,
     genres: media.genres ?? [],
+    tags: media.tags ?? [],
     recommendations: media.recommendations?.nodes ?? [],
     external_ids: {
       anilist: String(media.id),
@@ -535,6 +537,7 @@ function normalizePreviewAnime(item: ImportPreviewItem): StoredAnime | null {
     next_airing_episode: item.media?.nextAiringEpisode?.episode ?? null,
     next_airing_at: item.media?.nextAiringEpisode?.airingAt ?? null,
     genres: [],
+    tags: item.media?.tags ?? [],
     recommendations: [],
     external_ids: {
       anilist: String(item.animeId),
@@ -554,7 +557,8 @@ function sanitizeStatus(status: unknown): ListStatus {
 function buildEntry(
   animeId: number,
   payload: SaveListEntryPayload,
-  existing: LocalListEntry | null
+  existing: LocalListEntry | null,
+  markLocalActivity = true
 ): LocalListEntry {
   const now = new Date().toISOString();
   const status = sanitizeStatus(payload?.status ?? existing?.status);
@@ -604,6 +608,7 @@ function buildEntry(
     completed_at: completedAt,
     created_at: existing?.created_at ?? now,
     updated_at: now,
+    local_updated_at: markLocalActivity ? now : existing?.local_updated_at ?? null,
   };
 }
 
@@ -638,7 +643,8 @@ function mergeEntryWithAnime(entry: LocalListEntry, anime: StoredAnime): Tracked
 function buildMangaEntry(
   mangaId: number,
   payload: SaveListEntryPayload,
-  existing: LocalMangaListEntry | null
+  existing: LocalMangaListEntry | null,
+  markLocalActivity = true
 ): LocalMangaListEntry {
   const compatibilityEntry: LocalListEntry | null = existing
     ? {
@@ -647,7 +653,7 @@ function buildMangaEntry(
         is_rewatching: existing.is_rereading,
       }
     : null;
-  const base = buildEntry(mangaId, payload, compatibilityEntry);
+  const base = buildEntry(mangaId, payload, compatibilityEntry, markLocalActivity);
 
   return {
     manga_id: mangaId,
@@ -671,6 +677,7 @@ function buildMangaEntry(
     completed_at: base.completed_at,
     created_at: base.created_at,
     updated_at: base.updated_at,
+    local_updated_at: base.local_updated_at,
   };
 }
 
@@ -749,8 +756,11 @@ export const localStore = {
     if (!manga) return { ok: false, message: "Invalid manga data." };
 
     const state = await readState(userId);
+    if (state.manga[String(manga.manga_id)]) {
+      return { ok: true };
+    }
+
     state.manga[String(manga.manga_id)] = {
-      ...(state.manga[String(manga.manga_id)] ?? {}),
       ...manga,
     };
     await writeState(userId, state);
@@ -814,7 +824,12 @@ export const localStore = {
     return mergeEntryWithManga(entry, manga);
   },
 
-  async saveMangaEntry(userId: number, mangaId: number, payload: SaveListEntryPayload) {
+  async saveMangaEntry(
+    userId: number,
+    mangaId: number,
+    payload: SaveListEntryPayload,
+    options: { markLocalActivity?: boolean } = {}
+  ) {
     const state = await readState(userId);
     const key = String(mangaId);
     const manga = state.manga[key];
@@ -823,7 +838,12 @@ export const localStore = {
     }
 
     const existing = state.mangaEntries[key] ?? null;
-    state.mangaEntries[key] = buildMangaEntry(mangaId, payload, existing);
+    state.mangaEntries[key] = buildMangaEntry(
+      mangaId,
+      payload,
+      existing,
+      options.markLocalActivity !== false
+    );
     state.dirtyMangaEntries[key] = true;
     delete state.deletedMangaEntries[key];
     await writeState(userId, state);
@@ -901,6 +921,7 @@ export const localStore = {
         completed_at: entry.completed_at ?? null,
         created_at: entry.created_at ?? new Date().toISOString(),
         updated_at: entry.updated_at ?? new Date().toISOString(),
+        local_updated_at: entry.local_updated_at ?? null,
       };
       imported += 1;
     }
@@ -923,12 +944,17 @@ export const localStore = {
     userId: number,
     animeId: number,
     payload: SaveListEntryPayload,
-    options: { markDirty?: boolean } = {}
+    options: { markDirty?: boolean; markLocalActivity?: boolean } = {}
   ) {
     const state = await readState(userId);
     const key = String(animeId);
     const existing = state.entries[key] ?? null;
-    const nextEntry = buildEntry(animeId, payload, existing);
+    const nextEntry = buildEntry(
+      animeId,
+      payload,
+      existing,
+      options.markLocalActivity !== false
+    );
 
     if (existing && entriesMatch(existing, nextEntry)) {
       return {
@@ -1268,7 +1294,8 @@ export const localStore = {
           completedAt: toDateValue(item.completedAt),
           repeatCount: item.repeatCount ?? 0,
         },
-        existing
+        existing,
+        false
       );
 
       if (existing && entriesMatch(existing, nextEntry)) {
@@ -1322,7 +1349,8 @@ export const localStore = {
           repeatCount: item.repeatCount ?? 0,
           isRereading: item.isRereading ?? false,
         },
-        existing
+        existing,
+        false
       );
       nextEntry.started_at = toDateValue(item.startedAt);
       nextEntry.completed_at = toDateValue(item.completedAt);

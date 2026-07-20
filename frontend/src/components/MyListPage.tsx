@@ -3,6 +3,7 @@ import type { DragEvent, ReactNode } from "react";
 import {
   BookmarkIcon,
   Bars3BottomLeftIcon,
+  CheckIcon,
   CheckCircleIcon,
   ChevronDownIcon,
   FunnelIcon,
@@ -32,6 +33,7 @@ type MyListEntry = {
   score: number | null;
   notes: string | null;
   updated_at?: string | null;
+  local_updated_at?: string | null;
   title_romaji?: string | null;
   title_english?: string | null;
   title_native?: string | null;
@@ -46,12 +48,27 @@ type MyListEntry = {
   average_score?: number | null;
   season?: string | null;
   season_year?: number | null;
+  start_date?: string | { year?: number | null } | null;
   media_type?: MediaType;
   manga_id?: number;
   chapters?: number | null;
   volumes?: number | null;
   volume_progress?: number;
   is_rereading?: number | boolean;
+  genres?: string[];
+  tags?: Array<{
+    name?: string | null;
+    isMediaSpoiler?: boolean;
+    isGeneralSpoiler?: boolean;
+  }>;
+  details?: {
+    startDate?: { year?: number | null } | null;
+    tags?: Array<{
+      name?: string | null;
+      isMediaSpoiler?: boolean;
+      isGeneralSpoiler?: boolean;
+    }> | null;
+  } | null;
 };
 
 type MyListPageProps = {
@@ -78,8 +95,9 @@ type SortMode = "alphabetical" | "personalScore";
 type ListStatus = MyListEntry["status"];
 type MyListDensity = "comfortable" | "balanced" | "compact";
 type MyListView = "list" | "grid" | "board";
-type ProgressFilter = "all" | "notStarted" | "inProgress" | "finished";
-type RatingFilter = "all" | "rated" | "unrated" | "favorites";
+type RatingFilter = "all" | "rated" | "unrated" | "excellent" | "good" | "mixed" | "low";
+type ActivityFilter = "all" | "today" | "7d" | "30d" | "year";
+type OpenFilter = "rating" | "format" | "genres" | "tags" | "release" | "activity" | "length" | null;
 
 const DEFAULT_STATUS_ORDER: ListStatus[] = [
   "watching",
@@ -350,10 +368,18 @@ export function MyListPage({
   const [draggedSectionStatus, setDraggedSectionStatus] = useState<ListStatus | null>(null);
   const [view, setView] = useState<MyListView>(() => readStoredView(activeMediaType));
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [progressFilter, setProgressFilter] = useState<ProgressFilter>("all");
   const [ratingFilter, setRatingFilter] = useState<RatingFilter>("all");
   const [formatFilter, setFormatFilter] = useState("all");
-  const [statusFilter, setStatusFilter] = useState<"all" | ListStatus>("all");
+  const [genreFilters, setGenreFilters] = useState<string[]>([]);
+  const [tagFilters, setTagFilters] = useState<string[]>([]);
+  const [releaseFromYear, setReleaseFromYear] = useState("");
+  const [releaseToYear, setReleaseToYear] = useState("");
+  const [releaseSeason, setReleaseSeason] = useState("all");
+  const [activityFilter, setActivityFilter] = useState<ActivityFilter>("all");
+  const [minimumLength, setMinimumLength] = useState("");
+  const [maximumLength, setMaximumLength] = useState("");
+  const [favoriteOnly, setFavoriteOnly] = useState(false);
+  const [openFilter, setOpenFilter] = useState<OpenFilter>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const openSectionsBeforeEdit = useRef<Record<ListStatus, boolean> | null>(null);
 
@@ -370,10 +396,18 @@ export function MyListPage({
     setEditingEntry(null);
     onMediaTypeChange(mediaType);
     setListSearch("");
-    setStatusFilter("all");
-    setProgressFilter("all");
     setRatingFilter("all");
     setFormatFilter("all");
+    setGenreFilters([]);
+    setTagFilters([]);
+    setReleaseFromYear("");
+    setReleaseToYear("");
+    setReleaseSeason("all");
+    setActivityFilter("all");
+    setMinimumLength("");
+    setMaximumLength("");
+    setFavoriteOnly(false);
+    setOpenFilter(null);
   }
 
   useEffect(() => {
@@ -531,21 +565,76 @@ export function MyListPage({
     () => Array.from(new Set(entries.map((entry) => entry.format).filter(Boolean) as string[])).sort(),
     [entries]
   );
+  const availableGenres = useMemo(
+    () => collectFilterValues(entries.flatMap((entry) => entry.genres ?? [])),
+    [entries]
+  );
+  const availableTags = useMemo(
+    () => collectFilterValues(entries.flatMap(getFilterableTagNames)),
+    [entries]
+  );
+  const availableReleaseRange = useMemo(() => {
+    const years = entries
+      .map(getReleaseYear)
+      .filter((year): year is number => year !== null)
+      .sort((left, right) => left - right);
+    return years.length > 0
+      ? { earliest: years[0], latest: years[years.length - 1] }
+      : { earliest: null, latest: null };
+  }, [entries]);
+  const availableLengthRange = useMemo(() => {
+    const lengths = entries
+      .map((entry) => activeMediaType === "MANGA" ? entry.chapters : entry.episodes)
+      .filter((length): length is number => Number.isFinite(length) && Number(length) > 0)
+      .map(Number)
+      .sort((left, right) => left - right);
+    return lengths.length > 0
+      ? { minimum: lengths[0], maximum: lengths[lengths.length - 1] }
+      : { minimum: null, maximum: null };
+  }, [activeMediaType, entries]);
 
-  const activeFilterCount = [statusFilter !== "all", progressFilter !== "all", ratingFilter !== "all", formatFilter !== "all"].filter(Boolean).length;
+  const activeFilterCount =
+    Number(ratingFilter !== "all") +
+    Number(formatFilter !== "all") +
+    genreFilters.length +
+    tagFilters.length +
+    Number(Boolean(releaseFromYear || releaseToYear || releaseSeason !== "all")) +
+    Number(activityFilter !== "all") +
+    Number(Boolean(minimumLength || maximumLength)) +
+    Number(favoriteOnly);
 
   const filteredEntries = useMemo(() => {
     return entries.filter((entry) => {
-      if (statusFilter !== "all" && entry.status !== statusFilter) return false;
       if (formatFilter !== "all" && entry.format !== formatFilter) return false;
       if (ratingFilter === "rated" && entry.score === null) return false;
       if (ratingFilter === "unrated" && entry.score !== null) return false;
-      if (ratingFilter === "favorites" && !entry.is_favorite) return false;
+      if (ratingFilter === "excellent" && (entry.score === null || entry.score < 9)) return false;
+      if (ratingFilter === "good" && (entry.score === null || entry.score < 7 || entry.score >= 9)) return false;
+      if (ratingFilter === "mixed" && (entry.score === null || entry.score < 5 || entry.score >= 7)) return false;
+      if (ratingFilter === "low" && (entry.score === null || entry.score >= 5)) return false;
 
-      const isFinished = Boolean(entry.episodes && entry.progress >= entry.episodes);
-      if (progressFilter === "notStarted" && entry.progress !== 0) return false;
-      if (progressFilter === "inProgress" && (entry.progress === 0 || isFinished)) return false;
-      if (progressFilter === "finished" && !isFinished) return false;
+      const releaseYear = getReleaseYear(entry);
+      const yearBounds = getNumericBounds(releaseFromYear, releaseToYear);
+      if (yearBounds.minimum !== null && (releaseYear === null || releaseYear < yearBounds.minimum)) return false;
+      if (yearBounds.maximum !== null && (releaseYear === null || releaseYear > yearBounds.maximum)) return false;
+      if (releaseSeason !== "all" && entry.season !== releaseSeason) return false;
+
+      if (activityFilter !== "all") {
+        const activityTime = parseActivityTimestamp(entry.local_updated_at || entry.updated_at);
+        if (activityTime === null || !matchesActivityWindow(activityTime, activityFilter, nowMs)) return false;
+      }
+
+      const length = activeMediaType === "MANGA" ? entry.chapters : entry.episodes;
+      const lengthBounds = getNumericBounds(minimumLength, maximumLength);
+      if (lengthBounds.minimum !== null && (length === null || length === undefined || length < lengthBounds.minimum)) return false;
+      if (lengthBounds.maximum !== null && (length === null || length === undefined || length > lengthBounds.maximum)) return false;
+      if (favoriteOnly && !entry.is_favorite) return false;
+
+      const entryGenres = new Set(entry.genres ?? []);
+      if (!genreFilters.every((genre) => entryGenres.has(genre))) return false;
+
+      const entryTags = new Set(getFilterableTagNames(entry));
+      if (!tagFilters.every((tag) => entryTags.has(tag))) return false;
       if (!normalizedSearch) return true;
 
       if (entry.hidden_by_adult_filter) {
@@ -569,11 +658,13 @@ export function MyListPage({
         entry.title_native,
         entry.title_preferred,
         entry.notes,
+        ...(entry.genres ?? []),
+        ...getFilterableTagNames(entry),
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(normalizedSearch));
     });
-  }, [entries, formatFilter, normalizedSearch, progressFilter, ratingFilter, statusFilter, titleLanguage]);
+  }, [activityFilter, activeMediaType, entries, favoriteOnly, formatFilter, genreFilters, maximumLength, minimumLength, normalizedSearch, nowMs, ratingFilter, releaseFromYear, releaseSeason, releaseToYear, tagFilters, titleLanguage]);
 
   const groupedEntries = useMemo(() => {
     return sectionOrder.map((status) => {
@@ -645,7 +736,11 @@ export function MyListPage({
               <div className="flex shrink-0 flex-wrap gap-2 self-start lg:ml-3">
                 <button
                   type="button"
-                  onClick={() => setFiltersOpen((current) => !current)}
+                  onClick={() => setFiltersOpen((current) => {
+                    const next = !current;
+                    if (!next) setOpenFilter(null);
+                    return next;
+                  })}
                   className={`inline-flex items-center gap-2 rounded-2xl border px-3 py-2 text-sm transition ${
                     filtersOpen || activeFilterCount
                       ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
@@ -749,50 +844,129 @@ export function MyListPage({
               className={`grid transition-[grid-template-rows,opacity] duration-300 ${filtersOpen ? "" : "!mt-0"}`}
               style={{ gridTemplateRows: filtersOpen ? "1fr" : "0fr", opacity: filtersOpen ? 1 : 0 }}
             >
-              <div className="overflow-hidden">
+              <div className={filtersOpen ? "overflow-visible" : "overflow-hidden"}>
                 <div className="grid gap-4 rounded-3xl border border-white/10 bg-white/[0.035] p-4 md:grid-cols-2 xl:grid-cols-4">
                   <FilterSelect
-                    label="List status"
-                    value={statusFilter}
-                    onChange={(value) => setStatusFilter(value as "all" | ListStatus)}
-                    options={[["all", "Every status"], ...sectionOrder.map((status) => [status, getStatusMeta(status, activeMediaType).label] as [string, string])]}
-                  />
-                  <FilterSelect
-                    label={activeMediaType === "MANGA" ? "Reading progress" : "Watch progress"}
-                    value={progressFilter}
-                    onChange={(value) => setProgressFilter(value as ProgressFilter)}
-                    options={[
-                      ["all", "Any progress"],
-                      ["notStarted", "Not started"],
-                      ["inProgress", "In progress"],
-                      ["finished", "Finished"],
-                    ]}
-                  />
-                  <FilterSelect
-                    label="Personal details"
+                    label="Rating"
                     value={ratingFilter}
                     onChange={(value) => setRatingFilter(value as RatingFilter)}
+                    open={openFilter === "rating"}
+                    onOpenChange={(open) => setOpenFilter(open ? "rating" : null)}
                     options={[
-                      ["all", "Everything"],
-                      ["rated", "Rated"],
+                      ["all", "Any rating"],
+                      ["rated", "Rated titles"],
                       ["unrated", "Not rated"],
-                      ["favorites", "Favorites"],
+                      ["excellent", "9–10"],
+                      ["good", "7–8.9"],
+                      ["mixed", "5–6.9"],
+                      ["low", "Below 5"],
                     ]}
                   />
                   <FilterSelect
                     label="Format"
                     value={formatFilter}
                     onChange={setFormatFilter}
-                    options={[["all", "Any format"], ...availableFormats.map((format) => [format, format] as [string, string])]}
+                    open={openFilter === "format"}
+                    onOpenChange={(open) => setOpenFilter(open ? "format" : null)}
+                    options={[
+                      ["all", `Any ${activeMediaType === "MANGA" ? "Manga" : "Anime"} format`],
+                      ...availableFormats.map((format) => [format, formatMediaFormat(format, activeMediaType)] as [string, string]),
+                    ]}
                   />
+                  <MultiSelectFilter
+                    label="Genres"
+                    singularLabel="genre"
+                    options={availableGenres}
+                    selected={genreFilters}
+                    onChange={setGenreFilters}
+                    open={openFilter === "genres"}
+                    onOpenChange={(open) => setOpenFilter(open ? "genres" : null)}
+                  />
+                  <MultiSelectFilter
+                    label="Tags"
+                    singularLabel="tag"
+                    options={availableTags}
+                    selected={tagFilters}
+                    onChange={setTagFilters}
+                    open={openFilter === "tags"}
+                    onOpenChange={(open) => setOpenFilter(open ? "tags" : null)}
+                  />
+                  <ReleasePeriodFilter
+                    mediaType={activeMediaType}
+                    earliestYear={availableReleaseRange.earliest}
+                    latestYear={availableReleaseRange.latest}
+                    fromYear={releaseFromYear}
+                    toYear={releaseToYear}
+                    season={releaseSeason}
+                    onFromYearChange={setReleaseFromYear}
+                    onToYearChange={setReleaseToYear}
+                    onSeasonChange={setReleaseSeason}
+                    open={openFilter === "release"}
+                    onOpenChange={(open) => setOpenFilter(open ? "release" : null)}
+                  />
+                  <FilterSelect
+                    label="Last activity"
+                    value={activityFilter}
+                    onChange={(value) => setActivityFilter(value as ActivityFilter)}
+                    open={openFilter === "activity"}
+                    onOpenChange={(open) => setOpenFilter(open ? "activity" : null)}
+                    options={[
+                      ["all", "Any time"],
+                      ["today", "Today"],
+                      ["7d", "Past 7 days"],
+                      ["30d", "Past 30 days"],
+                      ["year", "Past year"],
+                    ]}
+                  />
+                  <NumericRangeFilter
+                    label="Length"
+                    unit={activeMediaType === "MANGA" ? "chapters" : "episodes"}
+                    availableMinimum={availableLengthRange.minimum}
+                    availableMaximum={availableLengthRange.maximum}
+                    minimum={minimumLength}
+                    maximum={maximumLength}
+                    onMinimumChange={setMinimumLength}
+                    onMaximumChange={setMaximumLength}
+                    open={openFilter === "length"}
+                    onOpenChange={(open) => setOpenFilter(open ? "length" : null)}
+                  />
+                  <div>
+                    <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">
+                      Personal
+                    </span>
+                    <button
+                      type="button"
+                      aria-pressed={favoriteOnly}
+                      onClick={() => setFavoriteOnly((current) => !current)}
+                      className={`flex w-full items-center justify-between gap-3 rounded-2xl border px-3 py-2.5 text-left text-sm outline-none transition ${
+                        favoriteOnly
+                          ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white shadow-[0_0_0_3px_var(--app-accent-soft)]"
+                          : "border-white/10 bg-[#1b1b1b] text-white/75 hover:border-white/20 hover:bg-white/[0.055]"
+                      }`}
+                    >
+                      <span className="inline-flex items-center gap-2">
+                        <StarIcon className="h-4 w-4" /> Favourite only
+                      </span>
+                      <span className={`relative h-5 w-9 rounded-full transition ${favoriteOnly ? "bg-[var(--app-accent)]" : "bg-white/12"}`}>
+                        <span className={`absolute top-0.5 h-4 w-4 rounded-full bg-white shadow transition ${favoriteOnly ? "left-[18px]" : "left-0.5"}`} />
+                      </span>
+                    </button>
+                  </div>
                   {activeFilterCount > 0 && (
                     <button
                       type="button"
                       onClick={() => {
-                        setProgressFilter("all");
                         setRatingFilter("all");
                         setFormatFilter("all");
-                        setStatusFilter("all");
+                        setGenreFilters([]);
+                        setTagFilters([]);
+                        setReleaseFromYear("");
+                        setReleaseToYear("");
+                        setReleaseSeason("all");
+                        setActivityFilter("all");
+                        setMinimumLength("");
+                        setMaximumLength("");
+                        setFavoriteOnly(false);
                       }}
                       className="inline-flex w-fit items-center gap-2 text-sm text-white/45 transition hover:text-white md:col-span-2 xl:col-span-4"
                     >
@@ -995,28 +1169,674 @@ function FilterSelect({
   value,
   options,
   onChange,
+  open,
+  onOpenChange,
 }: {
   label: string;
   value: string;
   options: [string, string][];
   onChange: (value: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const selectedLabel = options.find(([optionValue]) => optionValue === value)?.[1] ?? options[0]?.[1] ?? "Select";
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredOptions = normalizedQuery
+    ? options.filter(([, optionLabel]) => optionLabel.toLocaleLowerCase().includes(normalizedQuery))
+    : options;
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) onOpenChange(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onOpenChange]);
+
   return (
-    <label className="block">
+    <div ref={containerRef} className="relative">
       <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">
         {label}
       </span>
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        className="no-drag w-full rounded-2xl border border-white/10 bg-[#1b1b1b] px-3 py-2.5 text-sm text-white/75 outline-none transition focus:border-[var(--app-accent)]"
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className={`flex w-full items-center justify-between gap-3 rounded-2xl border bg-[#1b1b1b] px-3 py-2.5 text-left text-sm outline-none transition ${
+          open
+            ? "border-[var(--app-accent)] text-white shadow-[0_0_0_3px_var(--app-accent-soft)]"
+            : "border-white/10 text-white/75 hover:border-white/20 hover:bg-white/[0.055]"
+        }`}
       >
-        {options.map(([optionValue, optionLabel]) => (
-          <option key={optionValue} value={optionValue}>{optionLabel}</option>
-        ))}
-      </select>
-    </label>
+        <span className="truncate">{selectedLabel}</span>
+        <ChevronDownIcon className={`h-4 w-4 shrink-0 text-white/40 transition ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+          <div className="border-b border-white/8 p-2.5">
+            <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 transition focus-within:border-[var(--app-accent)]/70 focus-within:bg-black/35">
+              <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-white/35" />
+              <input
+                autoFocus
+                type="text"
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                onFocus={(event) => event.currentTarget.select()}
+                onClick={(event) => event.currentTarget.select()}
+                placeholder={`Find ${label.toLowerCase()}...`}
+                className="min-w-0 flex-1 bg-transparent py-2.5 text-sm text-white outline-none placeholder:text-white/30"
+              />
+              {query && (
+                <button
+                  type="button"
+                  onClick={() => setQuery("")}
+                  className="rounded-lg p-1 text-white/35 transition hover:bg-white/10 hover:text-white"
+                  aria-label={`Clear ${label.toLowerCase()} search`}
+                >
+                  <XMarkIcon className="h-3.5 w-3.5" />
+                </button>
+              )}
+            </div>
+          </div>
+          <div role="listbox" aria-label={label} className="scroll-container max-h-56 space-y-1 overflow-y-auto p-2">
+            {filteredOptions.map(([optionValue, optionLabel]) => {
+              const isSelected = optionValue === value;
+              return (
+                <button
+                  key={optionValue}
+                  type="button"
+                  role="option"
+                  aria-selected={isSelected}
+                  onClick={() => {
+                    onChange(optionValue);
+                    onOpenChange(false);
+                    setQuery("");
+                  }}
+                  className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition ${
+                    isSelected ? "bg-[var(--app-accent-soft)] text-white" : "hover:bg-white/[0.06]"
+                  }`}
+                >
+                  <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border transition ${
+                    isSelected
+                      ? "border-[var(--app-accent)] bg-[var(--app-accent)] text-black"
+                      : "border-white/15 bg-white/[0.025]"
+                  }`}>
+                    {isSelected && <CheckIcon className="h-3.5 w-3.5 stroke-[2.5]" />}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{optionLabel}</span>
+                </button>
+              );
+            })}
+            {filteredOptions.length === 0 && (
+              <p className="px-2 py-5 text-center text-xs text-white/35">
+                No options match “{query.trim()}”.
+              </p>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
   );
+}
+
+function ReleasePeriodFilter({
+  mediaType,
+  earliestYear,
+  latestYear,
+  fromYear,
+  toYear,
+  season,
+  onFromYearChange,
+  onToYearChange,
+  onSeasonChange,
+  open,
+  onOpenChange,
+}: {
+  mediaType: MediaType;
+  earliestYear: number | null;
+  latestYear: number | null;
+  fromYear: string;
+  toYear: string;
+  season: string;
+  onFromYearChange: (value: string) => void;
+  onToYearChange: (value: string) => void;
+  onSeasonChange: (value: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const bounds = getNumericBounds(fromYear, toYear);
+  const lowerYear = bounds.minimum ?? earliestYear;
+  const upperYear = bounds.maximum ?? latestYear;
+  const summaryParts: string[] = [];
+  if (bounds.minimum !== null && bounds.maximum !== null) summaryParts.push(`${bounds.minimum}–${bounds.maximum}`);
+  else if (bounds.minimum !== null) summaryParts.push(`From ${bounds.minimum}`);
+  else if (bounds.maximum !== null) summaryParts.push(`Until ${bounds.maximum}`);
+  if (mediaType === "ANIME" && season !== "all") summaryParts.push(formatSeason(season));
+  const summary = summaryParts.join(" · ") || "Any release period";
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) onOpenChange(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onOpenChange]);
+
+  function clear() {
+    onFromYearChange("");
+    onToYearChange("");
+    onSeasonChange("all");
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">Release period</span>
+      <FilterTrigger summary={summary} open={open} onClick={() => onOpenChange(!open)} />
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+          {earliestYear !== null && latestYear !== null && lowerYear !== null && upperYear !== null ? (
+            <DualRangeSlider
+              availableMinimum={earliestYear}
+              availableMaximum={latestYear}
+              lowerValue={lowerYear}
+              upperValue={upperYear}
+              lowerLabel="From"
+              upperLabel="To"
+              singleValueMessage={`Every title with a known release date is from ${earliestYear}.`}
+              onLowerValueChange={(year) => onFromYearChange(year === earliestYear ? "" : String(year))}
+              onUpperValueChange={(year) => onToYearChange(year === latestYear ? "" : String(year))}
+            />
+          ) : (
+            <p className="px-3 py-4 text-xs text-white/35">No known release dates are cached for this list yet.</p>
+          )}
+          {mediaType === "ANIME" && (
+            <div className="border-t border-white/8 px-3 py-3">
+              <span className="mb-2 block text-[11px] uppercase tracking-[0.16em] text-white/35">Season (optional)</span>
+              <div className="flex flex-wrap gap-1.5">
+                {[["all", "Any"], ["WINTER", "Winter"], ["SPRING", "Spring"], ["SUMMER", "Summer"], ["FALL", "Fall"]].map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => onSeasonChange(value)}
+                    className={`rounded-xl border px-2.5 py-1.5 text-xs transition ${season === value ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white" : "border-white/10 text-white/50 hover:border-white/20 hover:text-white"}`}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+          {(fromYear || toYear || season !== "all") && <FilterClearButton label="Clear release period" onClick={clear} />}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DualRangeSlider({
+  availableMinimum,
+  availableMaximum,
+  lowerValue,
+  upperValue,
+  lowerLabel,
+  upperLabel,
+  singleValueMessage,
+  onLowerValueChange,
+  onUpperValueChange,
+}: {
+  availableMinimum: number;
+  availableMaximum: number;
+  lowerValue: number;
+  upperValue: number;
+  lowerLabel: string;
+  upperLabel: string;
+  singleValueMessage: string;
+  onLowerValueChange: (value: number) => void;
+  onUpperValueChange: (value: number) => void;
+}) {
+  const rangeSpan = availableMaximum - availableMinimum;
+  const lowerPosition = rangeSpan > 0 ? ((lowerValue - availableMinimum) / rangeSpan) * 100 : 0;
+  const upperPosition = rangeSpan > 0 ? ((upperValue - availableMinimum) / rangeSpan) * 100 : 100;
+
+  if (rangeSpan === 0) {
+    return (
+      <div className="p-3">
+        <p className="rounded-xl border border-white/8 bg-black/20 px-3 py-3 text-center text-xs text-white/50">
+          {singleValueMessage}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="p-3">
+      <div className="grid grid-cols-2 gap-2.5">
+        <div className="rounded-xl border border-white/8 bg-black/20 px-3 py-2">
+          <span className="block text-[10px] uppercase tracking-[0.14em] text-white/30">{lowerLabel}</span>
+          <span className="mt-0.5 block font-medium text-white">{lowerValue}</span>
+        </div>
+        <div className="rounded-xl border border-white/8 bg-black/20 px-3 py-2 text-right">
+          <span className="block text-[10px] uppercase tracking-[0.14em] text-white/30">{upperLabel}</span>
+          <span className="mt-0.5 block font-medium text-white">{upperValue}</span>
+        </div>
+      </div>
+      <div className="relative mt-4 h-6">
+        <div className="absolute left-1 right-1 top-1/2 h-1 -translate-y-1/2 rounded-full bg-white/10" />
+        <div
+          className="absolute top-1/2 h-1 -translate-y-1/2 rounded-full bg-[var(--app-accent)]"
+          style={{ left: `${lowerPosition}%`, right: `${100 - upperPosition}%` }}
+        />
+        <input
+          type="range"
+          min={availableMinimum}
+          max={availableMaximum}
+          value={lowerValue}
+          onChange={(event) => onLowerValueChange(Math.min(Number(event.target.value), upperValue))}
+          aria-label={lowerLabel}
+          className={`dual-range-input absolute inset-0 w-full ${lowerValue === upperValue && upperValue === availableMaximum ? "z-30" : "z-20"}`}
+        />
+        <input
+          type="range"
+          min={availableMinimum}
+          max={availableMaximum}
+          value={upperValue}
+          onChange={(event) => onUpperValueChange(Math.max(Number(event.target.value), lowerValue))}
+          aria-label={upperLabel}
+          className={`dual-range-input absolute inset-0 w-full ${lowerValue === upperValue && upperValue === availableMaximum ? "z-20" : "z-30"}`}
+        />
+      </div>
+      <div className="flex justify-between px-0.5 text-[10px] text-white/30">
+        <span>{availableMinimum}</span>
+        <span>{availableMaximum}</span>
+      </div>
+    </div>
+  );
+}
+
+function NumericRangeFilter({
+  label,
+  unit,
+  availableMinimum,
+  availableMaximum,
+  minimum,
+  maximum,
+  onMinimumChange,
+  onMaximumChange,
+  open,
+  onOpenChange,
+}: {
+  label: string;
+  unit: string;
+  availableMinimum: number | null;
+  availableMaximum: number | null;
+  minimum: string;
+  maximum: string;
+  onMinimumChange: (value: string) => void;
+  onMaximumChange: (value: string) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const bounds = getNumericBounds(minimum, maximum);
+  const lowerValue = bounds.minimum ?? availableMinimum;
+  const upperValue = bounds.maximum ?? availableMaximum;
+  const summary = bounds.minimum !== null && bounds.maximum !== null
+    ? `${bounds.minimum}–${bounds.maximum} ${unit}`
+    : bounds.minimum !== null
+      ? `${bounds.minimum}+ ${unit}`
+      : bounds.maximum !== null
+        ? `Up to ${bounds.maximum} ${unit}`
+        : `Any number of ${unit}`;
+
+  useEffect(() => {
+    if (!open) return;
+    function handlePointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) onOpenChange(false);
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onOpenChange]);
+
+  return (
+    <div ref={containerRef} className="relative">
+      <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">{label}</span>
+      <FilterTrigger summary={summary} open={open} onClick={() => onOpenChange(!open)} />
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+          {availableMinimum !== null && availableMaximum !== null && lowerValue !== null && upperValue !== null ? (
+            <DualRangeSlider
+              availableMinimum={availableMinimum}
+              availableMaximum={availableMaximum}
+              lowerValue={lowerValue}
+              upperValue={upperValue}
+              lowerLabel={`Minimum ${unit}`}
+              upperLabel={`Maximum ${unit}`}
+              singleValueMessage={`Every title with a known length has ${availableMinimum} ${unit}.`}
+              onLowerValueChange={(value) => onMinimumChange(value === availableMinimum ? "" : String(value))}
+              onUpperValueChange={(value) => onMaximumChange(value === availableMaximum ? "" : String(value))}
+            />
+          ) : (
+            <p className="px-3 py-4 text-xs text-white/35">No known {unit} totals are cached for this list yet.</p>
+          )}
+          {(minimum || maximum) && (
+            <FilterClearButton
+              label="Clear length"
+              onClick={() => {
+                onMinimumChange("");
+                onMaximumChange("");
+              }}
+            />
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FilterTrigger({ summary, open, onClick }: { summary: string; open: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-expanded={open}
+      aria-haspopup="dialog"
+      className={`flex w-full items-center justify-between gap-3 rounded-2xl border bg-[#1b1b1b] px-3 py-2.5 text-left text-sm outline-none transition ${open ? "border-[var(--app-accent)] text-white shadow-[0_0_0_3px_var(--app-accent-soft)]" : "border-white/10 text-white/75 hover:border-white/20 hover:bg-white/[0.055]"}`}
+    >
+      <span className="truncate">{summary}</span>
+      <ChevronDownIcon className={`h-4 w-4 shrink-0 text-white/40 transition ${open ? "rotate-180" : ""}`} />
+    </button>
+  );
+}
+
+function FilterClearButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="w-full border-t border-white/8 px-3 py-2.5 text-left text-xs text-white/45 transition hover:bg-white/[0.06] hover:text-white">
+      {label}
+    </button>
+  );
+}
+
+function MultiSelectFilter({
+  label,
+  singularLabel,
+  options,
+  selected,
+  onChange,
+  open,
+  onOpenChange,
+}: {
+  label: string;
+  singularLabel: string;
+  options: string[];
+  selected: string[];
+  onChange: (values: string[]) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const [query, setQuery] = useState("");
+  const containerRef = useRef<HTMLDivElement>(null);
+  const summary = selected.length === 0
+    ? `Any ${singularLabel}`
+    : selected.length === 1
+      ? selected[0]
+      : `${selected.length} selected`;
+  const normalizedQuery = query.trim().toLocaleLowerCase();
+  const filteredOptions = normalizedQuery
+    ? options.filter((option) => option.toLocaleLowerCase().includes(normalizedQuery))
+    : options;
+
+  useEffect(() => {
+    if (!open) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!containerRef.current?.contains(event.target as Node)) onOpenChange(false);
+    }
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") onOpenChange(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open, onOpenChange]);
+
+  function toggle(value: string) {
+    onChange(
+      selected.includes(value)
+        ? selected.filter((item) => item !== value)
+        : [...selected, value]
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative">
+      <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">
+        {label}
+      </span>
+      <button
+        type="button"
+        onClick={() => onOpenChange(!open)}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        className={`flex w-full items-center justify-between gap-3 rounded-2xl border bg-[#1b1b1b] px-3 py-2.5 text-left text-sm outline-none transition ${
+          open
+            ? "border-[var(--app-accent)] text-white shadow-[0_0_0_3px_var(--app-accent-soft)]"
+            : "border-white/10 text-white/75 hover:border-white/20 hover:bg-white/[0.055]"
+        }`}
+      >
+          <span className="truncate">{summary}</span>
+          <ChevronDownIcon className={`h-4 w-4 shrink-0 text-white/40 transition ${open ? "rotate-180" : ""}`} />
+      </button>
+      {open && (
+        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+          {options.length > 0 ? (
+            <>
+              <div className="border-b border-white/8 p-2.5">
+                <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 transition focus-within:border-[var(--app-accent)]/70 focus-within:bg-black/35">
+                  <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-white/35" />
+                  <input
+                    autoFocus
+                    type="text"
+                    value={query}
+                    onChange={(event) => setQuery(event.target.value)}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onClick={(event) => event.currentTarget.select()}
+                    placeholder={`Find a ${singularLabel}...`}
+                    className="min-w-0 flex-1 bg-transparent py-2.5 text-sm text-white outline-none placeholder:text-white/30"
+                  />
+                  {query && (
+                    <button
+                      type="button"
+                      onClick={() => setQuery("")}
+                      className="rounded-lg p-1 text-white/35 transition hover:bg-white/10 hover:text-white"
+                      aria-label={`Clear ${label.toLowerCase()} search`}
+                    >
+                      <XMarkIcon className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              </div>
+              <p className="px-3 pb-1 pt-2.5 text-[11px] text-white/35">
+                Titles must include every selected {singularLabel}.
+              </p>
+              <div role="listbox" aria-label={label} aria-multiselectable="true" className="scroll-container max-h-56 space-y-1 overflow-y-auto px-2 pb-2">
+                {filteredOptions.map((option) => {
+                  const isSelected = selected.includes(option);
+                  return (
+                  <button
+                    key={option}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    onClick={() => toggle(option)}
+                    className={`flex w-full items-center gap-3 rounded-xl px-2.5 py-2 text-left transition ${
+                      isSelected ? "bg-[var(--app-accent-soft)] text-white" : "hover:bg-white/[0.06]"
+                    }`}
+                  >
+                    <span className={`grid h-5 w-5 shrink-0 place-items-center rounded-full border transition ${
+                      isSelected
+                        ? "border-[var(--app-accent)] bg-[var(--app-accent)] text-black"
+                        : "border-white/15 bg-white/[0.025]"
+                    }`}>
+                      {isSelected && <CheckIcon className="h-3.5 w-3.5 stroke-[2.5]" />}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate">{option}</span>
+                  </button>
+                  );
+                })}
+                {filteredOptions.length === 0 && (
+                  <p className="px-2 py-5 text-center text-xs text-white/35">
+                    No {label.toLowerCase()} match “{query.trim()}”.
+                  </p>
+                )}
+              </div>
+              {selected.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChange([]);
+                    setQuery("");
+                  }}
+                  className="w-full border-t border-white/8 px-3 py-2.5 text-left text-xs text-white/45 transition hover:bg-white/[0.06] hover:text-white"
+                >
+                  Clear {label.toLowerCase()} ({selected.length})
+                </button>
+              )}
+            </>
+          ) : (
+            <p className="px-3 py-4 text-xs text-white/35">
+              No cached {label.toLowerCase()} are available yet.
+            </p>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function collectFilterValues(values: string[]) {
+  return Array.from(
+    new Set(values.map((value) => String(value).trim()).filter(Boolean))
+  ).sort((left, right) => left.localeCompare(right));
+}
+
+function getNumericBounds(firstValue: string, secondValue: string) {
+  const first = firstValue ? Number(firstValue) : null;
+  const second = secondValue ? Number(secondValue) : null;
+  if (first !== null && second !== null) {
+    return { minimum: Math.min(first, second), maximum: Math.max(first, second) };
+  }
+  return { minimum: first, maximum: second };
+}
+
+function getReleaseYear(entry: MyListEntry) {
+  if (Number.isInteger(entry.season_year)) return Number(entry.season_year);
+  if (typeof entry.start_date === "object" && Number.isInteger(entry.start_date?.year)) {
+    return Number(entry.start_date?.year);
+  }
+  if (typeof entry.start_date === "string" && entry.start_date.trim()) {
+    try {
+      const parsed = JSON.parse(entry.start_date) as { year?: unknown };
+      if (Number.isInteger(parsed?.year)) return Number(parsed.year);
+    } catch {
+      const match = entry.start_date.match(/^\s*(\d{4})/);
+      if (match) return Number(match[1]);
+    }
+  }
+  const detailsYear = entry.details?.startDate?.year;
+  return Number.isInteger(detailsYear) ? Number(detailsYear) : null;
+}
+
+function parseActivityTimestamp(value?: string | null) {
+  if (!value) return null;
+  const normalized = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(value)
+    ? `${value.replace(" ", "T")}Z`
+    : value;
+  const timestamp = Date.parse(normalized);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function matchesActivityWindow(timestamp: number, filter: ActivityFilter, now: number) {
+  if (filter === "all") return true;
+  if (filter === "today") {
+    const today = new Date(now);
+    today.setHours(0, 0, 0, 0);
+    return timestamp >= today.getTime() && timestamp <= now;
+  }
+  const windowDays = filter === "7d" ? 7 : filter === "30d" ? 30 : 365;
+  return timestamp >= now - windowDays * 24 * 60 * 60 * 1000 && timestamp <= now;
+}
+
+function formatSeason(season: string) {
+  return season.charAt(0).toUpperCase() + season.slice(1).toLowerCase();
+}
+
+function getFilterableTagNames(entry: MyListEntry) {
+  const tags = entry.tags ?? entry.details?.tags ?? [];
+  return collectFilterValues(
+    tags.flatMap((tag) =>
+      tag.name && !tag.isMediaSpoiler && !tag.isGeneralSpoiler ? [tag.name] : []
+    )
+  );
+}
+
+function formatMediaFormat(format: string, mediaType: MediaType) {
+  const normalized = String(format || "").trim().toUpperCase();
+  const labels = mediaType === "MANGA"
+    ? {
+        MANGA: "Manga",
+        NOVEL: "Novel",
+        ONE_SHOT: "One-shot",
+      }
+    : {
+        TV: "TV",
+        TV_SHORT: "TV Short",
+        MOVIE: "Movie",
+        SPECIAL: "Special",
+        OVA: "OVA",
+        ONA: "ONA",
+        MUSIC: "Music",
+      };
+
+  return labels[normalized as keyof typeof labels] ?? normalized
+    .toLowerCase()
+    .replace(/(^|_)([a-z])/g, (_match, prefix: string, letter: string) =>
+      `${prefix ? " " : ""}${letter.toUpperCase()}`
+    );
 }
 
 function getBoardGridClass(columnCount: number) {

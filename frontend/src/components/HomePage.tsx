@@ -63,7 +63,7 @@ const PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = 
   continue: "Continue Watching",
   planned: "Planned Picks",
   sinceLiked: "Since You Liked",
-  recent: "Recently Updated",
+  recent: "Recently Updated in Seenary",
 };
 
 const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
@@ -72,7 +72,7 @@ const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, stri
   continue: "Continue Reading",
   planned: "Plan to Read",
   sinceLiked: "Since You Liked",
-  recent: "Recently Updated",
+  recent: "Recently Updated in Seenary",
 };
 
 const DISCOVER_DENSITY_STYLES: Record<
@@ -204,6 +204,7 @@ type TrackedAnimeEntry = {
   season?: string | null;
   season_year?: number | null;
   updated_at?: string | null;
+  local_updated_at?: string | null;
   recommendations?: RecommendationEntry[];
 };
 
@@ -1427,7 +1428,10 @@ export function HomePage({
     const total = scoredEntries.reduce((sum, entry) => sum + (entry.score ?? 0), 0);
     return total / scoredEntries.length;
   }, [trackedEntries]);
-  const recentlyUpdated = useMemo(() => trackedEntries.slice(0, 6), [trackedEntries]);
+  const recentlyUpdated = useMemo(
+    () => getRecentlyUpdatedLocally(trackedEntries),
+    [trackedEntries]
+  );
   const recommendationReadyEntries = useMemo(
     () =>
       trackedEntries.map((entry) => {
@@ -1608,10 +1612,10 @@ export function HomePage({
     recent: (
       <section>
         <HomeShelf
-          title="Recently Updated"
+          title="Recently Updated in Seenary"
           icon={CalendarDaysIcon}
           entries={recentlyUpdated}
-          emptyText="Your latest list activity will collect here."
+          emptyText="Titles you update directly in Seenary will collect here."
           onSelectAnime={handleSelectAnimeFromHome}
           variant="gridCompact"
           density={homeDensity}
@@ -1955,7 +1959,7 @@ function MangaHomePreview({
     planned.find((entry) => entry.banner_image || entry.cover_image_large) ||
     entries.find((entry) => entry.banner_image || entry.cover_image_large) ||
     null;
-  const recentlyUpdated = entries.slice(0, 6);
+  const recentlyUpdated = getRecentlyUpdatedLocally(entries);
 
   const sections: Record<PersonalLayoutSectionId, ReactNode> = {
     overview: (
@@ -2025,10 +2029,10 @@ function MangaHomePreview({
     ),
     recent: (
       <MangaHomeShelf
-        title="Recently Updated"
+        title="Recently Updated in Seenary"
         icon={CalendarDaysIcon}
         entries={recentlyUpdated}
-        emptyText="Your latest Manga list activity will collect here."
+        emptyText="Manga you update directly in Seenary will collect here."
         onSelectManga={onSelectManga}
         density={density}
         titleLanguage={titleLanguage}
@@ -4549,6 +4553,19 @@ function readSavedDiscoverState(): SavedDiscoverState | null {
   } catch {
     return null;
   }
+}
+
+function getRecentlyUpdatedLocally<T extends { local_updated_at?: string | null }>(
+  entries: T[]
+) {
+  return entries
+    .filter((entry) => Boolean(entry.local_updated_at))
+    .sort(
+      (left, right) =>
+        (Date.parse(right.local_updated_at ?? "") || 0) -
+        (Date.parse(left.local_updated_at ?? "") || 0)
+    )
+    .slice(0, 6);
 }
 
 function mergeAnimeItems(currentItems: TrendingAnime[], nextItems: TrendingAnime[]) {

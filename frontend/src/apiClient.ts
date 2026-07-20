@@ -359,17 +359,22 @@ async function importLocalEntries(
       await localStore.cacheManga(userId, item.media);
       throwIfAborted(signal);
       const existing = await localStore.getMangaEntry(userId, mangaId);
-      const saved = await localStore.saveMangaEntry(userId, mangaId, {
-        status: item.status,
-        progress: item.progress ?? 0,
-        volumeProgress: item.volumeProgress ?? 0,
-        score: item.score ?? null,
-        notes: item.notes ?? null,
-        startedAt: item.startedAt ?? null,
-        completedAt: item.completedAt ?? null,
-        repeatCount: item.repeatCount ?? 0,
-        isFavorite: Boolean(existing?.is_favorite),
-      });
+      const saved = await localStore.saveMangaEntry(
+        userId,
+        mangaId,
+        {
+          status: item.status,
+          progress: item.progress ?? 0,
+          volumeProgress: item.volumeProgress ?? 0,
+          score: item.score ?? null,
+          notes: item.notes ?? null,
+          startedAt: item.startedAt ?? null,
+          completedAt: item.completedAt ?? null,
+          repeatCount: item.repeatCount ?? 0,
+          isFavorite: Boolean(existing?.is_favorite),
+        },
+        { markLocalActivity: false }
+      );
       if (saved.ok) {
         imported += 1;
         if (existing) updated += 1;
@@ -395,7 +400,10 @@ async function importLocalEntries(
         repeatCount: item.repeatCount ?? 0,
         isFavorite: Boolean(existing?.is_favorite),
       },
-      { markDirty: !isThirdPartyImport(fallbackSource) }
+      {
+        markDirty: !isThirdPartyImport(fallbackSource),
+        markLocalActivity: false,
+      }
     );
     throwIfAborted(signal);
 
@@ -647,6 +655,10 @@ export function installApiClient() {
     cacheMinimalAnime: async (media) => {
       const userId = await requireActiveUserId();
       return await localStore.cacheAnime(userId, media);
+    },
+    cacheMinimalManga: async (media) => {
+      const userId = await requireActiveUserId();
+      return await localStore.cacheManga(userId, media);
     },
     register,
     login,

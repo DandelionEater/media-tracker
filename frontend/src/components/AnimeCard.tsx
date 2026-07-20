@@ -3,18 +3,18 @@ import {
   PlusIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
-import type { SearchMedia, TrackedAnimeEntry } from "../types/domain";
+import type { SearchMedia, TrackedMediaEntry } from "../types/domain";
 
-type AnimeCardProps = {
-  anime: SearchMedia;
+type MediaCardProps = {
+  media: SearchMedia;
   onSelect?: (id: number) => void;
-  trackedEntry?: TrackedAnimeEntry;
-  onQuickAdd?: (anime: SearchMedia) => void;
-  onEditEntry: (entry: TrackedAnimeEntry) => void;
+  trackedEntry?: TrackedMediaEntry;
+  onQuickAdd?: (media: SearchMedia) => void;
+  onEditEntry: (entry: TrackedMediaEntry) => void;
   titleLanguage: TitleLanguage;
 };
 
-const STATUS_LABELS: Record<TrackedAnimeEntry["status"], string> = {
+const STATUS_LABELS: Record<TrackedMediaEntry["status"], string> = {
   planned: "Planned",
   watching: "Watching",
   completed: "Completed",
@@ -22,37 +22,40 @@ const STATUS_LABELS: Record<TrackedAnimeEntry["status"], string> = {
   dropped: "Dropped",
 };
 
-export function AnimeCard({
-  anime,
+export function MediaCard({
+  media,
   onSelect,
   trackedEntry,
   onQuickAdd,
   onEditEntry,
   titleLanguage,
-}: AnimeCardProps) {
-  const title = getPreferredTitle(anime.title, titleLanguage);
+}: MediaCardProps) {
+  const title = getPreferredTitle(media.title, titleLanguage);
+  const isManga = media.type === "MANGA";
 
   const subtitleParts = [
-    anime.format,
-    anime.type === "MANGA" && anime.chapters ? `${anime.chapters} ch` : null,
-    anime.type === "MANGA" && anime.volumes ? `${anime.volumes} vols` : null,
-    anime.type === "ANIME" && anime.episodes ? `${anime.episodes} eps` : null,
-    anime.averageScore ? `${anime.averageScore}%` : null,
+    media.format,
+    isManga && media.chapters ? `${media.chapters} ch` : null,
+    isManga && media.volumes ? `${media.volumes} vols` : null,
+    !isManga && media.episodes ? `${media.episodes} eps` : null,
+    media.averageScore ? `${media.averageScore}%` : null,
   ].filter(Boolean);
 
   const seasonText =
-    anime.season && anime.seasonYear
-      ? `${capitalize(anime.season)} ${anime.seasonYear}`
-      : anime.seasonYear
-      ? String(anime.seasonYear)
+    media.season && media.seasonYear
+      ? `${capitalize(media.season)} ${media.seasonYear}`
+      : media.seasonYear
+      ? String(media.seasonYear)
       : null;
 
   const trackedStatusLabel = trackedEntry
-    ? STATUS_LABELS[trackedEntry.status]
+    ? trackedEntry.status === "watching" && isManga
+      ? "Reading"
+      : STATUS_LABELS[trackedEntry.status]
     : null;
 
   const trackedProgressLabel = trackedEntry
-    ? buildTrackedProgressLabel(trackedEntry, anime.episodes)
+    ? buildTrackedProgressLabel(trackedEntry, isManga ? media.chapters : media.episodes)
     : null;
 
   return (
@@ -62,17 +65,17 @@ export function AnimeCard({
       }`}
       role={onSelect ? "button" : undefined}
       tabIndex={onSelect ? 0 : undefined}
-      onClick={() => onSelect?.(anime.id)}
+      onClick={() => onSelect?.(media.id)}
       onKeyDown={(e) => {
         if (onSelect && (e.key === "Enter" || e.key === " ")) {
           e.preventDefault();
-          onSelect(anime.id);
+          onSelect(media.id);
         }
       }}
     >
       <div className="browse-search-poster relative aspect-2/3 overflow-hidden rounded-2xl">
       <img
-        src={anime.coverImage.large}
+        src={media.coverImage.large}
         alt={title}
         className="
           w-full h-full object-cover
@@ -92,7 +95,7 @@ export function AnimeCard({
             return;
           }
 
-          onQuickAdd(anime);
+          onQuickAdd(media);
         }}
         className="
           absolute right-2 top-2 z-20
@@ -116,7 +119,7 @@ export function AnimeCard({
         </div>
       )}
 
-      {anime.isAdult && (
+      {media.isAdult && (
         <div className="absolute left-2 top-2 z-20 rounded-xl border border-rose-300/20 bg-rose-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-100 backdrop-blur-sm">
           18+
         </div>
@@ -219,18 +222,20 @@ export function AnimeCard({
 }
 
 function buildTrackedProgressLabel(
-  entry: TrackedAnimeEntry,
-  animeEpisodes?: number | null
+  entry: TrackedMediaEntry,
+  totalFromSearch?: number | null
 ) {
-  const totalEpisodes = entry.episodes ?? animeEpisodes ?? null;
+  const total = entry.media_type === "MANGA"
+    ? entry.chapters ?? entry.episodes ?? totalFromSearch ?? null
+    : entry.episodes ?? totalFromSearch ?? null;
 
   if (
     entry.status === "watching" ||
     entry.status === "paused" ||
     entry.status === "completed"
   ) {
-    if (totalEpisodes) {
-      return `${entry.progress}/${totalEpisodes}`;
+    if (total) {
+      return `${entry.progress}/${total}`;
     }
 
     return `${entry.progress}`;
@@ -243,3 +248,6 @@ function capitalize(value: string) {
   if (!value) return value;
   return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
 }
+
+// Compatibility export for callers that still use the original Anime-only name.
+export const AnimeCard = MediaCard;

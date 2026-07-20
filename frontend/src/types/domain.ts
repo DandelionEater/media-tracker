@@ -238,6 +238,7 @@ export type LocalListEntry = {
   completed_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  local_updated_at?: string | null;
 };
 
 export type EditableListEntry = Omit<LocalListEntry, "anime_id"> & {
@@ -267,6 +268,7 @@ export type TrackedAnimeEntry = LocalListEntry & {
   next_airing_episode?: number | null;
   next_airing_at?: number | null;
   genres?: string[];
+  tags?: AnimeTag[];
   recommendations?: RecommendationNode[];
   details?: AnimeMedia | null;
 };
@@ -285,6 +287,7 @@ export type LocalMangaListEntry = {
   completed_at?: string | null;
   created_at?: string | null;
   updated_at?: string | null;
+  local_updated_at?: string | null;
 };
 
 export type TrackedMangaEntry = LocalMangaListEntry & {
@@ -311,9 +314,12 @@ export type TrackedMangaEntry = LocalMangaListEntry & {
   source?: string | null;
   country_of_origin?: string | null;
   genres?: string[];
+  tags?: AnimeTag[];
   recommendations?: RecommendationNode[];
   details?: AnimeMedia | null;
 };
+
+export type TrackedMediaEntry = TrackedAnimeEntry | TrackedMangaEntry;
 
 export type StoredManga = Omit<TrackedMangaEntry, keyof LocalMangaListEntry> & {
   manga_id: number;

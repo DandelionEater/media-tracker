@@ -365,7 +365,7 @@ export function TopNavbar({
             ref={searchInputRef}
             type="text"
             value={query}
-            placeholder="Search anime..."
+            placeholder="Search Anime and Manga..."
             onChange={(e) => onSearch(e.target.value)}
             onKeyDown={(event) => {
               if (event.key === "Enter") {

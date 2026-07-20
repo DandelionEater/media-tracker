@@ -5455,7 +5455,7 @@ function formatSyncActivityMessage(value: string | null | undefined) {
   const message = String(value || "").trim();
 
   if (message.toLowerCase() === "invalid q") {
-    return "MyAnimeList rejected the title search query while matching this anime.";
+    return "MyAnimeList rejected the title search query while matching this title.";
   }
 
   return message;

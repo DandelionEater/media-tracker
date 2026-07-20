@@ -65,6 +65,7 @@ contextBridge.exposeInMainWorld('api', {
   getCharacterDetails: (id) => ipcRenderer.invoke('anime:get-character-details', id),
   getStaffDetails: (id) => ipcRenderer.invoke('anime:get-staff-details', id),
   cacheMinimalAnime: (media) => ipcRenderer.invoke('anime:cache-minimal', media),
+  cacheMinimalManga: (media) => ipcRenderer.invoke('manga:cache-minimal', media),
 
   register: (username, password) => ipcRenderer.invoke('auth:register', { username, password }),
 

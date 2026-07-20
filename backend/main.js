@@ -40,6 +40,7 @@ const {
   saveManga,
   saveAnimeSummary,
   getAnimeById,
+  getMangaById,
   getPersonDetails,
   savePersonDetails,
   getAppSetting,
@@ -1780,6 +1781,22 @@ ipcMain.handle('anime:cache-minimal', async (_event, media) => {
   }
 });
 
+ipcMain.handle('manga:cache-minimal', async (_event, media) => {
+  try {
+    if (!media?.id) {
+      return { ok: false, message: 'Invalid manga data.' };
+    }
+
+    if (!getMangaById(media.id)) {
+      saveManga(media);
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error('Failed to cache minimal manga:', error);
+    return { ok: false, message: 'Failed to cache manga.' };
+  }
+});
+
 ipcMain.handle('auth:anilist-start', async () => {
   try {
     const accessToken = await anilistOAuth.authorizeWithBrowser();
@@ -2351,7 +2368,9 @@ ipcMain.handle('list:save-entry', (_event, payload) => {
   try {
     const animeId = payload?.animeId;
     const data = payload?.data ?? {};
-    return saveMyAnimeEntry(getCurrentSession(), animeId, data);
+    return saveMyAnimeEntry(getCurrentSession(), animeId, data, {
+      localActivityAt: new Date().toISOString(),
+    });
   } catch (error) {
     console.error('List save entry error:', error);
     return { ok: false, message: 'Failed to save list entry.' };
@@ -2387,7 +2406,9 @@ ipcMain.handle('manga-list:get-entry', (_event, mangaId) => {
 
 ipcMain.handle('manga-list:save-entry', (_event, payload) => {
   try {
-    return saveMyMangaEntry(getCurrentSession(), payload?.mangaId, payload?.data ?? {});
+    return saveMyMangaEntry(getCurrentSession(), payload?.mangaId, payload?.data ?? {}, {
+      localActivityAt: new Date().toISOString(),
+    });
   } catch (error) {
     console.error('Manga list entry save error:', error);
     return { ok: false, message: 'Failed to save manga list entry.' };

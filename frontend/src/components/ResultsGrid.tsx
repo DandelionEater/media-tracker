@@ -1,19 +1,19 @@
-import { AnimeCard } from "./AnimeCard";
+import { MediaCard } from "./AnimeCard";
 import type { TitleLanguage } from "../utils/titlePreference";
-import type { SearchMedia, TrackedAnimeEntry } from "../types/domain";
+import type { SearchMedia, TrackedMediaEntry } from "../types/domain";
 
 type ResultsGridProps = {
   results: SearchMedia[];
-  onSelectAnime?: (id: number) => void;
-  trackedEntries: TrackedAnimeEntry[];
-  onQuickAdd?: (anime: SearchMedia) => void;
-  onEditEntry: (entry: TrackedAnimeEntry) => void;
+  onSelectMedia?: (id: number) => void;
+  trackedEntries: TrackedMediaEntry[];
+  onQuickAdd?: (media: SearchMedia) => void;
+  onEditEntry: (entry: TrackedMediaEntry) => void;
   titleLanguage: TitleLanguage;
 };
 
 export function ResultsGrid({
   results,
-  onSelectAnime,
+  onSelectMedia,
   trackedEntries,
   onQuickAdd,
   onEditEntry,
@@ -27,16 +27,18 @@ export function ResultsGrid({
         gap-4
       "
     >
-      {results.map((anime) => {
-        const trackedEntry = anime.type === "ANIME" ? trackedEntries.find(
-          (entry) => entry.anime_id === anime.id
-        ) : undefined;
+      {results.map((media) => {
+        const trackedEntry = trackedEntries.find((entry) => {
+          const entryType = entry.media_type === "MANGA" ? "MANGA" : "ANIME";
+          const entryId = "manga_id" in entry ? entry.manga_id : entry.anime_id;
+          return entryType === media.type && entryId === media.id;
+        });
 
         return (
-          <AnimeCard
-            key={`${anime.type}:${anime.id}`}
-            anime={anime}
-            onSelect={onSelectAnime}
+          <MediaCard
+            key={`${media.type}:${media.id}`}
+            media={media}
+            onSelect={onSelectMedia}
             trackedEntry={trackedEntry}
             onQuickAdd={onQuickAdd}
             onEditEntry={onEditEntry}

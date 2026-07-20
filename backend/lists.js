@@ -239,7 +239,7 @@ function getMyMangaEntry(currentSession, mangaId) {
   };
 }
 
-function saveMyMangaEntry(currentSession, mangaId, payload = {}) {
+function saveMyMangaEntry(currentSession, mangaId, payload = {}, options = {}) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) return { ok: false, message: auth.message };
 
@@ -269,6 +269,7 @@ function saveMyMangaEntry(currentSession, mangaId, payload = {}) {
     score: sanitizeScore(payload.score),
     notes: sanitizeNotes(payload.notes),
     ...buildDates(status, payload, existingEntry),
+    localUpdatedAt: options.localActivityAt ?? null,
   };
 
   if (existingEntry) updateUserMangaEntry(entry);
@@ -301,7 +302,7 @@ function removeMyMangaEntry(currentSession, mangaId) {
   return { ok: true, message: 'Manga removed from your list.' };
 }
 
-function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
+function saveMyAnimeEntry(currentSession, animeId, payload = {}, options = {}) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) {
     return { ok: false, message: auth.message };
@@ -348,6 +349,7 @@ function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
       notes,
       startedAt,
       completedAt,
+      localUpdatedAt: options.localActivityAt ?? null,
     });
   } else {
     updateUserAnimeEntry({
@@ -362,6 +364,7 @@ function saveMyAnimeEntry(currentSession, animeId, payload = {}) {
       notes,
       startedAt,
       completedAt,
+      localUpdatedAt: options.localActivityAt ?? null,
     });
   }
 

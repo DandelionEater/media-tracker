@@ -18,6 +18,42 @@
   background: rgba(255, 255, 255, 0.24);
 }
 
+.dual-range-input {
+  appearance: none;
+  pointer-events: none;
+  background: transparent;
+  outline: none;
+}
+
+.dual-range-input::-webkit-slider-runnable-track {
+  height: 4px;
+  background: transparent;
+}
+
+.dual-range-input::-webkit-slider-thumb {
+  width: 18px;
+  height: 18px;
+  margin-top: -7px;
+  appearance: none;
+  pointer-events: auto;
+  cursor: grab;
+  border: 3px solid #181818;
+  border-radius: 999px;
+  background: var(--app-accent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--app-accent) 70%, white 30%), 0 3px 12px rgba(0, 0, 0, 0.45);
+  transition: box-shadow 150ms ease, transform 150ms ease;
+}
+
+.dual-range-input::-webkit-slider-thumb:hover,
+.dual-range-input:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 4px var(--app-accent-soft), 0 3px 12px rgba(0, 0, 0, 0.45);
+  transform: scale(1.08);
+}
+
+.dual-range-input::-webkit-slider-thumb:active {
+  cursor: grabbing;
+}
+
 .drag-region {
   -webkit-app-region: drag;
 }

@@ -16,6 +16,7 @@ type MyListEntry = {
   score: number | null;
   notes: string | null;
   updated_at?: string | null;
+  local_updated_at?: string | null;
   title_romaji?: string | null;
   title_english?: string | null;
   title_native?: string | null;
@@ -156,7 +157,7 @@ export function MyListCard({
     ? Math.max(0, entry.episodes - entry.progress)
     : null;
   const airingStatus = getAiringStatusLabel(entry.anime_status, isManga);
-  const updatedLabel = formatUpdatedLabel(entry.updated_at, nowMs);
+  const updatedLabel = formatUpdatedLabel(entry.local_updated_at || entry.updated_at, nowMs);
   const nextEpisodeLabel = String(entry.anime_status || "").toUpperCase() === "RELEASING"
     ? formatNextEpisodeLabel(entry.next_airing_episode, entry.next_airing_at, nowMs)
     : null;

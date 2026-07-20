@@ -1825,6 +1825,9 @@ async function handleRpc(method, args, req, res) {
     case 'cacheMinimalAnime':
       if (!args[0]?.id) return { ok: false, message: 'Invalid anime data.' };
       return { ok: true };
+    case 'cacheMinimalManga':
+      if (!args[0]?.id) return { ok: false, message: 'Invalid manga data.' };
+      return { ok: true };
     case 'register': {
       const result = await registerUser(args[0], args[1]);
       if (result.ok && result.user?.id) createWebSession(res, result.user.id);

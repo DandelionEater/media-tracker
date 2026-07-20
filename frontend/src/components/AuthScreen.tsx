@@ -215,8 +215,8 @@ export function AuthScreen({ onAuthenticated }: AuthScreenProps) {
           {oauthProfile
             ? `Connected to ${oauthProfile.provider} as ${oauthProfile.username}.`
             : mode === "login"
-              ? "Log in to access your personal anime list."
-              : "Create your account to start building your anime list."}
+              ? "Log in to access your personal Anime and Manga library."
+              : "Create your account to start building your Anime and Manga library."}
         </p>
 
         {oauthProfile ? (

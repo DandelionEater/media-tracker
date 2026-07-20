@@ -33,6 +33,7 @@ import type {
   SearchAnime,
   SearchMedia,
   TrackedAnimeEntry,
+  TrackedMediaEntry,
   TrackedMangaEntry,
 } from "./types/domain";
 
@@ -233,6 +234,7 @@ function redactAdultListEntry(entry: TrackedAnimeEntry): TrackedAnimeEntry {
     banner_image: null,
     format: null,
     genres: [],
+    tags: [],
     recommendations: [],
     details: null,
   };
@@ -252,7 +254,7 @@ function App() {
   const [isLibraryLensVisible, setIsLibraryLensVisible] = useState(false);
   const [trackedEntries, setTrackedEntries] = useState<TrackedAnimeEntry[]>([]);
   const [trackedMangaEntries, setTrackedMangaEntries] = useState<TrackedMangaEntry[]>([]);
-  const [editingListEntry, setEditingListEntry] = useState<TrackedAnimeEntry | null>(null);
+  const [editingListEntry, setEditingListEntry] = useState<TrackedMediaEntry | null>(null);
   const [previousView, setPreviousView] = useState<AppView>("home");
   const [previousAnimeId, setPreviousAnimeId] = useState<number | null>(null);
   const [previousMediaType, setPreviousMediaType] = useState<MediaType>("ANIME");
@@ -301,6 +303,7 @@ function App() {
                   banner_image: null,
                   notes: null,
                   genres: [],
+                  tags: [],
                   recommendations: [],
                   details: null,
                 }
@@ -1013,34 +1016,41 @@ function App() {
     void handleSearch(searchQuery);
   };
 
-  const handleQuickAddToList = async (anime: SearchAnime) => {
-    const title = getPreferredTitle(anime.title, settings.titleLanguage);
+  const handleQuickAddToList = async (media: SearchMedia | SearchAnime) => {
+    const title = getPreferredTitle(media.title, settings.titleLanguage);
+    const isManga = media.type === "MANGA";
+    const mediaLabel = isManga ? "manga" : "anime";
 
     try {
-      const cacheResult = await window.api.cacheMinimalAnime(anime);
+      const cacheResult = isManga
+        ? await window.api.cacheMinimalManga(media)
+        : await window.api.cacheMinimalAnime(media);
 
       if (!cacheResult.ok) {
-        console.error("Failed to cache anime before quick add:", cacheResult.message);
+        console.error(`Failed to cache ${mediaLabel} before quick add:`, cacheResult.message);
+        showSyncToast("error", "List update failed", cacheResult.message || `Failed to prepare ${title}.`);
         return;
       }
 
-      const result = await window.api.saveMyListEntry(anime.id, {
-        status: "planned",
-        progress: 0,
-        score: null,
-        notes: "",
-      });
+      const entryData = { status: "planned", progress: 0, score: null, notes: "" };
+      const result = isManga
+        ? await window.api.saveMyMangaListEntry(media.id, { ...entryData, volumeProgress: 0 })
+        : await window.api.saveMyListEntry(media.id, entryData);
 
       if (!result.ok) {
-        console.error("Failed to quick add anime to list:", result.message);
+        console.error(`Failed to quick add ${mediaLabel} to list:`, result.message);
         showSyncToast("error", "List update failed", result.message);
         return;
       }
 
       await loadTrackedEntries();
-      showSyncToast("success", "List updated", `${title} was added to your list as Planned.`);
+      showSyncToast(
+        "success",
+        "List updated",
+        `${title} was added to your list as ${isManga ? "Plan to Read" : "Planned"}.`
+      );
     } catch (error) {
-      console.error("Failed to quick add anime to list:", error);
+      console.error(`Failed to quick add ${mediaLabel} to list:`, error);
       showSyncToast("error", "List update failed", `Failed to add ${title} to your list.`);
     }
   };
@@ -1419,7 +1429,7 @@ function App() {
                             >
                               <ResultsGrid
                                 results={privacySafeResults.anime}
-                                onSelectAnime={handleOpenAnimeDetails}
+                                onSelectMedia={handleOpenAnimeDetails}
                                 trackedEntries={privacySafeTrackedEntries}
                                 onQuickAdd={handleQuickAddToList}
                                 onEditEntry={setEditingListEntry}
@@ -1436,10 +1446,11 @@ function App() {
                             >
                               <ResultsGrid
                                 results={privacySafeResults.manga}
-                                onSelectAnime={(mediaId) =>
+                                onSelectMedia={(mediaId) =>
                                   handleOpenMediaDetails(mediaId, "MANGA")
                                 }
-                                trackedEntries={privacySafeTrackedEntries}
+                                trackedEntries={privacySafeTrackedMangaEntries}
+                                onQuickAdd={handleQuickAddToList}
                                 onEditEntry={setEditingListEntry}
                                 titleLanguage={settings.titleLanguage}
                               />
@@ -1459,6 +1470,7 @@ function App() {
               {editingListEntry && (
                 <ListEntryModal
                   animeId={editingListEntry.anime_id}
+                  mediaType={editingListEntry.media_type === "MANGA" ? "MANGA" : "ANIME"}
                   isOpen={true}
                   entry={editingListEntry}
                   title={getPreferredTitle(
@@ -1471,6 +1483,11 @@ function App() {
                     settings.titleLanguage
                   )}
                   totalEpisodes={editingListEntry.episodes ?? null}
+                  totalVolumes={
+                    editingListEntry.media_type === "MANGA"
+                      ? editingListEntry.volumes ?? null
+                      : null
+                  }
                   onClose={() => setEditingListEntry(null)}
                   onSaved={async () => {
                     setEditingListEntry(null);

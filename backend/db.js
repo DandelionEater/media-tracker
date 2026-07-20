@@ -161,6 +161,7 @@ db.prepare(
     completed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    local_updated_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (anime_id) REFERENCES anime(id) ON DELETE CASCADE,
     UNIQUE(user_id, anime_id)
@@ -219,6 +220,7 @@ db.prepare(
     completed_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    local_updated_at TEXT,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
     FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE,
     UNIQUE(user_id, manga_id)
@@ -247,6 +249,8 @@ db.prepare(
 addColumnIfMissing('user_anime_lists', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'repeat_count', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'is_rewatching', 'INTEGER NOT NULL DEFAULT 0');
+addColumnIfMissing('user_anime_lists', 'local_updated_at', 'TEXT');
+addColumnIfMissing('user_manga_lists', 'local_updated_at', 'TEXT');
 addColumnIfMissing('anime_external_ids', 'first_submitted_by_user_id', 'INTEGER');
 addColumnIfMissing('anime_external_ids', 'first_submitted_at', 'TEXT');
 
@@ -931,7 +935,8 @@ const mergeMissingUserAnimeEntriesStmt = db.prepare(`
     started_at,
     completed_at,
     created_at,
-    updated_at
+    updated_at,
+    local_updated_at
   )
   SELECT
     ?,
@@ -946,7 +951,8 @@ const mergeMissingUserAnimeEntriesStmt = db.prepare(`
     source.started_at,
     source.completed_at,
     source.created_at,
-    CURRENT_TIMESTAMP
+    CURRENT_TIMESTAMP,
+    source.local_updated_at
   FROM user_anime_lists source
   WHERE source.user_id = ?
     AND NOT EXISTS (
@@ -961,13 +967,13 @@ const mergeMissingUserMangaEntriesStmt = db.prepare(`
   INSERT INTO user_manga_lists (
     user_id, manga_id, status, is_favorite, repeat_count, is_rereading,
     progress, volume_progress, score, notes, started_at, completed_at,
-    created_at, updated_at
+    created_at, updated_at, local_updated_at
   )
   SELECT
     ?, source.manga_id, source.status, source.is_favorite, source.repeat_count,
     source.is_rereading, source.progress, source.volume_progress, source.score,
     source.notes, source.started_at, source.completed_at, source.created_at,
-    CURRENT_TIMESTAMP
+    CURRENT_TIMESTAMP, source.local_updated_at
   FROM user_manga_lists source
   WHERE source.user_id = ?
     AND NOT EXISTS (
@@ -1258,8 +1264,9 @@ const addUserAnimeEntryStmt = db.prepare(`
     score,
     notes,
     started_at,
-    completed_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    completed_at,
+    local_updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const updateUserAnimeEntryStmt = db.prepare(`
@@ -1274,7 +1281,8 @@ const updateUserAnimeEntryStmt = db.prepare(`
     notes = ?,
     started_at = ?,
     completed_at = ?,
-    updated_at = CURRENT_TIMESTAMP
+    updated_at = CURRENT_TIMESTAMP,
+    local_updated_at = COALESCE(?, local_updated_at)
   WHERE user_id = ? AND anime_id = ?
 `);
 
@@ -1361,14 +1369,16 @@ const getUserMangaListStmt = db.prepare(`
 const addUserMangaEntryStmt = db.prepare(`
   INSERT INTO user_manga_lists (
     user_id, manga_id, status, is_favorite, repeat_count, is_rereading,
-    progress, volume_progress, score, notes, started_at, completed_at
-  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    progress, volume_progress, score, notes, started_at, completed_at,
+    local_updated_at
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 const updateUserMangaEntryStmt = db.prepare(`
   UPDATE user_manga_lists SET
     status = ?, is_favorite = ?, repeat_count = ?, is_rereading = ?,
     progress = ?, volume_progress = ?, score = ?, notes = ?,
-    started_at = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP
+    started_at = ?, completed_at = ?, updated_at = CURRENT_TIMESTAMP,
+    local_updated_at = COALESCE(?, local_updated_at)
   WHERE user_id = ? AND manga_id = ?
 `);
 const removeUserMangaEntryStmt = db.prepare(`
@@ -1703,11 +1713,13 @@ function saveManga(media) {
 
 function mapMangaRow(row) {
   if (!row) return null;
+  const details = safeJsonParse(row.details_json, null);
   return {
     ...row,
     genres: safeJsonParse(row.genres, []),
+    tags: Array.isArray(details?.tags) ? details.tags : [],
     recommendations: safeJsonParse(row.recommendations, []),
-    details: safeJsonParse(row.details_json, null),
+    details,
   };
 }
 
@@ -1736,6 +1748,7 @@ function addUserMangaEntry({
   notes,
   startedAt,
   completedAt,
+  localUpdatedAt = null,
 }) {
   return addUserMangaEntryStmt.run(
     userId,
@@ -1749,7 +1762,8 @@ function addUserMangaEntry({
     score,
     notes,
     startedAt,
-    completedAt
+    completedAt,
+    localUpdatedAt
   ).lastInsertRowid;
 }
 
@@ -1766,6 +1780,7 @@ function updateUserMangaEntry({
   notes,
   startedAt,
   completedAt,
+  localUpdatedAt = null,
 }) {
   updateUserMangaEntryStmt.run(
     status,
@@ -1778,6 +1793,7 @@ function updateUserMangaEntry({
     notes,
     startedAt,
     completedAt,
+    localUpdatedAt,
     userId,
     mangaId
   );
@@ -1792,11 +1808,20 @@ function clearUserMangaList(userId) {
 }
 
 function getUserAnimeEntry(userId, animeId) {
-  return getUserAnimeEntryStmt.get(userId, animeId);
+  const entry = getUserAnimeEntryStmt.get(userId, animeId);
+  return entry
+    ? {
+        ...entry,
+        tags: getAnimeTagsStmt.all(animeId),
+      }
+    : null;
 }
 
 function getUserAnimeList(userId) {
-  return getUserAnimeListStmt.all(userId);
+  return getUserAnimeListStmt.all(userId).map((entry) => ({
+    ...entry,
+    tags: getAnimeTagsStmt.all(entry.anime_id),
+  }));
 }
 
 function upsertAnimeExternalId({ provider, externalId, animeId, submittedByUserId = null }) {
@@ -1847,6 +1872,7 @@ function addUserAnimeEntry({
   notes,
   startedAt,
   completedAt,
+  localUpdatedAt = null,
 }) {
   const result = addUserAnimeEntryStmt.run(
     userId,
@@ -1859,7 +1885,8 @@ function addUserAnimeEntry({
     score,
     notes,
     startedAt,
-    completedAt
+    completedAt,
+    localUpdatedAt
   );
 
   return result.lastInsertRowid;
@@ -1877,6 +1904,7 @@ function updateUserAnimeEntry({
   notes,
   startedAt,
   completedAt,
+  localUpdatedAt = null,
 }) {
   updateUserAnimeEntryStmt.run(
     status,
@@ -1888,6 +1916,7 @@ function updateUserAnimeEntry({
     notes,
     startedAt,
     completedAt,
+    localUpdatedAt,
     userId,
     animeId
   );

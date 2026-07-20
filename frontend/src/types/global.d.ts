@@ -412,6 +412,7 @@ declare global {
       getCharacterDetails: (id: number) => Promise<PersonDetails>;
       getStaffDetails: (id: number) => Promise<PersonDetails>;
       cacheMinimalAnime: (media: AnimeMedia) => Promise<{ ok: boolean; message?: string }>;
+      cacheMinimalManga: (media: AnimeMedia) => Promise<{ ok: boolean; message?: string }>;
 
       register: (username: string, password: string) => Promise<AuthResponse>;
       login: (username: string, password: string) => Promise<AuthResponse>;

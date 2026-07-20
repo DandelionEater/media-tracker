@@ -54,6 +54,7 @@ function pickEntry(row, mediaType) {
     completed_at: row.completed_at ?? null,
     created_at: row.created_at ?? null,
     updated_at: row.updated_at ?? null,
+    local_updated_at: row.local_updated_at ?? null,
   };
 }
 
@@ -317,7 +318,9 @@ async function importBackup(currentSession, backup, updateSettings) {
           submittedByUserId: currentSession.user.id,
         });
       }
-      const result = saveMyAnimeEntry(currentSession, mediaId, entryPayload(entry, false));
+      const result = saveMyAnimeEntry(currentSession, mediaId, entryPayload(entry, false), {
+        localActivityAt: entry.local_updated_at ?? null,
+      });
       if (result.ok) animeImported += 1;
       else skipped += 1;
     }
@@ -335,7 +338,9 @@ async function importBackup(currentSession, backup, updateSettings) {
         continue;
       }
       saveManga(toMangaMedia(mediaId, stored));
-      const result = saveMyMangaEntry(currentSession, mediaId, entryPayload(entry, true));
+      const result = saveMyMangaEntry(currentSession, mediaId, entryPayload(entry, true), {
+        localActivityAt: entry.local_updated_at ?? null,
+      });
       if (result.ok) mangaImported += 1;
       else skipped += 1;
     }
