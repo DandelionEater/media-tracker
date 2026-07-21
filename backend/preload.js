@@ -11,14 +11,8 @@ function getSystemLocaleInfo() {
 contextBridge.exposeInMainWorld('api', {
   searchMedia: (query, hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:search-media', { query, hideAdultContent }),
-  searchAnime: (query, hideAdultContent = true) =>
-    ipcRenderer.invoke('anilist:search', { query, hideAdultContent }),
-  getTrendingAnime: (hideAdultContent = true) =>
-    ipcRenderer.invoke('anilist:trending', { hideAdultContent }),
   getDiscoverMedia: (hideAdultContent = true) =>
     ipcRenderer.invoke('anilist:discover-media', { hideAdultContent }),
-  getDiscoverAnime: (hideAdultContent = true) =>
-    ipcRenderer.invoke('anilist:discover', { hideAdultContent }),
   getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = 'ANIME') =>
     ipcRenderer.invoke('anilist:discover-shelf', { shelfId, page, hideAdultContent, mediaType }),
   previewAniListImport: (username) => ipcRenderer.invoke('anilist:preview-import', { username }),
@@ -59,6 +53,8 @@ contextBridge.exposeInMainWorld('api', {
     return () => ipcRenderer.removeListener('sync:auto-complete', handler);
   },
   getSyncActivity: () => ipcRenderer.invoke('sync:get-activity'),
+  restoreSyncExclusion: (payload) => ipcRenderer.invoke('sync:restore-exclusion', payload),
+  excludeSyncEntry: (payload) => ipcRenderer.invoke('sync:exclude-entry', payload),
   getAnimeDetails: (id) => ipcRenderer.invoke('anime:get-details', id),
   getMediaDetails: (mediaType, id) =>
     ipcRenderer.invoke('media:get-details', { mediaType, id }),
@@ -87,12 +83,20 @@ contextBridge.exposeInMainWorld('api', {
   resolveAniListLinkConflict: (action) =>
     ipcRenderer.invoke('auth:anilist-resolve-link-conflict', { action }),
 
+  unlinkAniListAccount: (password) =>
+    ipcRenderer.invoke('auth:anilist-unlink', { password }),
+
   getMalLinkStatus: () => ipcRenderer.invoke('auth:mal-link-status'),
 
   linkMalAccount: () => ipcRenderer.invoke('auth:mal-link'),
 
   resolveMalLinkConflict: (action) =>
     ipcRenderer.invoke('auth:mal-resolve-link-conflict', { action }),
+
+  unlinkMalAccount: (password) => ipcRenderer.invoke('auth:mal-unlink', { password }),
+
+  setLocalPassword: (password) =>
+    ipcRenderer.invoke('auth:set-local-password', { password }),
 
   logout: () => ipcRenderer.invoke('auth:logout'),
   deleteAccount: (usernameConfirmation) =>
@@ -101,10 +105,6 @@ contextBridge.exposeInMainWorld('api', {
   getSession: () => ipcRenderer.invoke('auth:get-session'),
 
   setTutorialDismissed: (dismissed) => ipcRenderer.invoke('auth:set-tutorial-dismissed', dismissed),
-
-  onFocusSearch: (callback) => {
-    ipcRenderer.on('focus-search', callback);
-  },
 
   getMyList: () => ipcRenderer.invoke('list:get'),
 
@@ -139,6 +139,12 @@ contextBridge.exposeInMainWorld('desktopStartup', {
 });
 
 contextBridge.exposeInMainWorld('desktopWindow', {
+  closeApp: () => ipcRenderer.send('app:quit'),
+  onFocusSearch: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('focus-search', handler);
+    return () => ipcRenderer.removeListener('focus-search', handler);
+  },
   getWindowState: () => ipcRenderer.invoke('window-state:get'),
   setWindowPreset: (preset) => ipcRenderer.invoke('window-state:set-preset', preset),
   setCustomBounds: (bounds) => ipcRenderer.invoke('window-state:set-custom-bounds', bounds),

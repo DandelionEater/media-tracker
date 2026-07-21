@@ -23,6 +23,8 @@ const {
   getSyncHistoryItems,
   hasCompletedSyncHistory,
   markSyncQueueJobFailed,
+  restoreSyncQueueJob,
+  excludeSyncQueueJob,
   deleteSyncQueueJob,
   insertSyncHistory,
 } = require('./db');
@@ -30,6 +32,7 @@ const {
 const AUTO_SYNC_KEY_PREFIX = 'sync.autoEnabled.user.';
 const MAL_MANGA_CLEAR_FIELDS_FIX_KEY_PREFIX = 'sync.malMangaClearFieldsFix.user.';
 const AUTO_SYNC_DELAY_MS = 15 * 1000;
+const SYNC_FAILURE_LIMIT = 5;
 
 let autoSyncTimer = null;
 const runningUsers = new Set();
@@ -47,6 +50,23 @@ function getAutoSyncEnabled(userId) {
 
 function setAutoSyncEnabled(userId, enabled) {
   setAppSetting(getAutoSyncKey(userId), enabled ? 'true' : 'false');
+}
+
+function getExclusiveProviderConflict(userId) {
+  return Boolean(getAniListAccountByUserId(userId) && getMalAccountByUserId(userId));
+}
+
+function buildExclusiveProviderConflict(pendingCount, autoSyncEnabled) {
+  return {
+    ok: false,
+    linked: false,
+    provider: null,
+    providerLabel: null,
+    syncTargetsLabel: 'Choose one provider',
+    autoSyncEnabled,
+    pendingCount,
+    message: 'Both AniList and MyAnimeList are linked. Unlink one before syncing.',
+  };
 }
 
 function mapStatus(status) {
@@ -542,6 +562,17 @@ async function runSyncForUser(userId, options = {}) {
     };
   }
 
+
+  if (getExclusiveProviderConflict(userId)) {
+    return {
+      ok: false,
+      message: 'Both AniList and MyAnimeList are linked. Unlink one before syncing.',
+      synced: 0,
+      failed: 0,
+      pending: getSyncQueueCount(userId),
+    };
+  }
+
   runningUsers.add(userId);
 
   try {
@@ -570,6 +601,7 @@ async function runSyncForUser(userId, options = {}) {
 
     let synced = 0;
     let failed = 0;
+    let excluded = 0;
     const syncedItems = [];
     const emitProgress =
       typeof options.onProgress === 'function' ? options.onProgress : () => {};
@@ -880,7 +912,8 @@ async function runSyncForUser(userId, options = {}) {
         throw new Error(`Unsupported sync operation: ${job.operation}`);
       } catch (error) {
         const message = error.message || 'Failed to sync entry.';
-        markSyncQueueJobFailed(job.id, message, getBackoffDate(job.attempts));
+        const blocked = Number(job.attempts || 0) + 1 >= SYNC_FAILURE_LIMIT;
+        markSyncQueueJobFailed(job.id, message, getBackoffDate(job.attempts), blocked);
         insertSyncHistory({
           userId,
           animeId: job.anime_id,
@@ -889,10 +922,13 @@ async function runSyncForUser(userId, options = {}) {
           animeTitle: job.animeTitle,
           operation: job.operation,
           changedFields: job.changedFields,
-          status: 'failed',
-          message,
+          status: blocked ? 'excluded' : 'failed',
+          message: blocked
+            ? `${message} Excluded from automatic sync after ${SYNC_FAILURE_LIMIT} failed attempts.`
+            : message,
         });
         failed += 1;
+        if (blocked) excluded += 1;
       } finally {
         emitProgress({
           operation: 'manual-sync',
@@ -912,6 +948,7 @@ async function runSyncForUser(userId, options = {}) {
       ok,
       synced,
       failed,
+      excluded,
       pending,
       syncedItems,
       message:
@@ -919,6 +956,8 @@ async function runSyncForUser(userId, options = {}) {
           ? `${pending} queued sync change${pending === 1 ? '' : 's'} waiting for retry.`
           : synced === 0 && failed === 0
           ? 'No sync changes are waiting.'
+          : excluded > 0
+            ? `Synced ${synced}; excluded ${excluded} after ${SYNC_FAILURE_LIMIT} failed attempts.`
           : failed > 0
             ? `Synced ${synced}, ${failed} waiting to retry.`
             : `Synced ${synced} change${synced === 1 ? '' : 's'}.`,
@@ -941,6 +980,12 @@ async function runSyncForUser(userId, options = {}) {
 function getSyncStatus(userId) {
   const linkedAniListAccount = getAniListAccountByUserId(userId);
   const linkedMalAccount = getMalAccountByUserId(userId);
+  if (linkedAniListAccount && linkedMalAccount) {
+    return buildExclusiveProviderConflict(
+      getSyncQueueCount(userId),
+      getAutoSyncEnabled(userId)
+    );
+  }
   const linkedProviders = [
     ...(linkedAniListAccount ? ['AniList'] : []),
     ...(linkedMalAccount ? ['MyAnimeList'] : []),
@@ -973,18 +1018,46 @@ function getSyncActivity(userId) {
     })
     .slice(0, 100);
 
+  const queueItems = getSyncQueueItems(userId, 100);
   return {
     ok: true,
-    pending: getSyncQueueItems(userId, 50),
+    pending: queueItems.filter((item) => item.status !== 'blocked').slice(0, 50),
+    excluded: queueItems.filter((item) => item.status === 'blocked').map((item) => ({
+      ...item,
+      status: 'excluded',
+      excluded_by: Number(item.attempts || 0) >= SYNC_FAILURE_LIMIT ? 'system' : 'user',
+      provider: String(item.operation || '').includes('mal') ? 'mal' : 'anilist',
+      message: item.last_error,
+    })).slice(0, 50),
     completed: completedHistory.filter((item) => !isPullActivity(item)).slice(0, 50),
     failed: failedHistory.filter((item) => !isPullActivity(item)).slice(0, 50),
     pulled,
   };
 }
 
+function restoreSyncExclusion(userId, id) {
+  const restored = restoreSyncQueueJob(userId, Number(id));
+  return restored
+    ? { ok: true, message: 'The entry was restored to the sync queue.' }
+    : { ok: false, message: 'This excluded sync entry could not be found.' };
+}
+
+function excludeSyncEntry(userId, id) {
+  const excluded = excludeSyncQueueJob(userId, Number(id));
+  return excluded
+    ? { ok: true, message: 'The entry was excluded by the user from automatic sync.' }
+    : { ok: false, message: 'Only queued entries with a failed attempt can be excluded.' };
+}
+
 function getStatelessSyncStatus(userId, localPendingCount = 0, autoSyncEnabled = true) {
   const linkedAniListAccount = getAniListAccountByUserId(userId);
   const linkedMalAccount = getMalAccountByUserId(userId);
+  if (linkedAniListAccount && linkedMalAccount) {
+    return buildExclusiveProviderConflict(
+      Number(localPendingCount) || 0,
+      Boolean(autoSyncEnabled)
+    );
+  }
   const provider = linkedAniListAccount ? 'anilist' : linkedMalAccount ? 'mal' : null;
   const providerLabel =
     provider === 'anilist' ? 'AniList' : provider === 'mal' ? 'MyAnimeList' : null;
@@ -1016,6 +1089,7 @@ async function runStatelessSyncForUser(userId, payload = {}) {
     };
   }
 
+
   const entries = Array.isArray(payload.entries) ? payload.entries : [];
   const deletedEntries = Array.isArray(payload.deletedEntries) ? payload.deletedEntries : [];
   const mangaEntries = Array.isArray(payload.mangaEntries) ? payload.mangaEntries : [];
@@ -1023,10 +1097,25 @@ async function runStatelessSyncForUser(userId, payload = {}) {
     ? payload.deletedMangaEntries
     : [];
   const linkedAniListAccount = getAniListAccountByUserId(userId);
-  const linkedMalAccount = await getFreshMalAccountByUserId(userId);
+  const linkedMalAccountRecord = getMalAccountByUserId(userId);
   const activity = [];
   const localChangeCount =
     entries.length + deletedEntries.length + mangaEntries.length + deletedMangaEntries.length;
+
+  if (linkedAniListAccount && linkedMalAccountRecord) {
+    return {
+      ok: false,
+      message: 'Both AniList and MyAnimeList are linked. Unlink one before syncing.',
+      synced: 0,
+      failed: 0,
+      pending: localChangeCount,
+      activity,
+    };
+  }
+
+  const linkedMalAccount = linkedMalAccountRecord
+    ? await getFreshMalAccountByUserId(userId)
+    : null;
 
   if (!linkedAniListAccount?.access_token && !linkedMalAccount?.access_token) {
     return {
@@ -1368,8 +1457,9 @@ module.exports = {
   runSyncForUser,
   getSyncStatus,
   getSyncActivity,
+  restoreSyncExclusion,
+  excludeSyncEntry,
   autoSyncEvents,
-  getAutoSyncEnabled,
   setAutoSyncEnabled,
   getStatelessSyncStatus,
   runStatelessSyncForUser,

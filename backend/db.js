@@ -123,6 +123,7 @@ db.prepare(
     username TEXT NOT NULL,
     username_normalized TEXT NOT NULL UNIQUE,
     password_hash TEXT NOT NULL,
+    local_credentials_confirmed INTEGER,
     tutorial_dismissed INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -145,6 +146,8 @@ if (!hasTutorialDismissedColumn) {
   `
   ).run();
 }
+
+addColumnIfMissing('users', 'local_credentials_confirmed', 'INTEGER');
 
 db.prepare(
   `
@@ -748,15 +751,24 @@ const createUserStmt = db.prepare(`
   INSERT INTO users (
     username,
     username_normalized,
-    password_hash
-  ) VALUES (?, ?, ?)
+    password_hash,
+    local_credentials_confirmed
+  ) VALUES (?, ?, ?, ?)
 `);
 
-const updateUsernameStmt = db.prepare(`
+const updateUserPasswordStmt = db.prepare(`
   UPDATE users
   SET
-    username = ?,
-    username_normalized = ?,
+    password_hash = ?,
+    local_credentials_confirmed = 1,
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
+
+const confirmLocalCredentialsStmt = db.prepare(`
+  UPDATE users
+  SET
+    local_credentials_confirmed = 1,
     updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
@@ -771,6 +783,7 @@ const getUserByIdStmt = db.prepare(`
     id,
     username,
     username_normalized,
+    local_credentials_confirmed,
     tutorial_dismissed,
     created_at,
     updated_at,
@@ -898,6 +911,12 @@ const deleteUserMangaListByUserIdStmt = db.prepare(`
 const deleteUserSyncQueueByUserIdStmt = db.prepare(`
   DELETE FROM sync_queue
   WHERE user_id = ?
+`);
+
+const deleteProviderSyncQueueByUserIdStmt = db.prepare(`
+  DELETE FROM sync_queue
+  WHERE user_id = ?
+    AND operation IN (?, ?, ?, ?)
 `);
 
 const deleteUserSyncHistoryByUserIdStmt = db.prepare(`
@@ -1059,8 +1078,8 @@ const upsertSyncQueueJobStmt = db.prepare(`
   ON CONFLICT(user_id, media_type, media_id, operation) DO UPDATE SET
     payload_json = excluded.payload_json,
     changed_fields_json = excluded.changed_fields_json,
-    status = 'pending',
-    last_error = NULL,
+    status = CASE WHEN sync_queue.status = 'blocked' THEN 'blocked' ELSE 'pending' END,
+    last_error = CASE WHEN sync_queue.status = 'blocked' THEN sync_queue.last_error ELSE NULL END,
     next_attempt_at = NULL,
     updated_at = CURRENT_TIMESTAMP
 `);
@@ -1113,18 +1132,34 @@ const getSyncQueueItemsStmt = db.prepare(`
 const countSyncQueueItemsStmt = db.prepare(`
   SELECT COUNT(*) AS count
   FROM sync_queue
-  WHERE user_id = ?
+  WHERE user_id = ? AND (status = 'pending' OR status = 'failed')
 `);
 
 const markSyncQueueJobFailedStmt = db.prepare(`
   UPDATE sync_queue
   SET
-    status = 'failed',
+    status = ?,
     attempts = attempts + 1,
     last_error = ?,
     next_attempt_at = ?,
     updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
+`);
+
+const restoreSyncQueueJobStmt = db.prepare(`
+  UPDATE sync_queue
+  SET status = 'pending', attempts = 0, last_error = NULL, next_attempt_at = NULL,
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = ? AND user_id = ? AND status = 'blocked'
+`);
+
+const excludeSyncQueueJobStmt = db.prepare(`
+  UPDATE sync_queue
+  SET status = 'blocked', next_attempt_at = NULL,
+      last_error = COALESCE(last_error, 'Manually excluded by user.'),
+      updated_at = CURRENT_TIMESTAMP
+  WHERE id = ? AND user_id = ? AND attempts > 0
+    AND (status = 'pending' OR status = 'failed')
 `);
 
 const deleteSyncQueueJobStmt = db.prepare(`
@@ -1656,13 +1691,29 @@ function normalizePersonKind(kind) {
   return kind === 'character' || kind === 'staff' ? kind : null;
 }
 
-function createUser({ username, usernameNormalized, passwordHash }) {
-  const result = createUserStmt.run(username, usernameNormalized, passwordHash);
+function createUser({ username, usernameNormalized, passwordHash, localCredentialsConfirmed = null }) {
+  const result = createUserStmt.run(
+    username,
+    usernameNormalized,
+    passwordHash,
+    localCredentialsConfirmed === null ? null : localCredentialsConfirmed ? 1 : 0
+  );
   return result.lastInsertRowid;
 }
 
-function updateUsername(id, username, usernameNormalized) {
-  updateUsernameStmt.run(username, usernameNormalized, id);
+function updateUserPassword(userId, passwordHash) {
+  updateUserPasswordStmt.run(passwordHash, userId);
+}
+
+function confirmLocalCredentials(userId) {
+  confirmLocalCredentialsStmt.run(userId);
+}
+
+function clearProviderSyncQueue(userId, provider) {
+  const operations = provider === 'mal'
+    ? ['upsert_mal_entry', 'delete_mal_entry', 'upsert_mal_manga_entry', 'delete_mal_manga_entry']
+    : ['upsert_anilist_entry', 'delete_anilist_entry', 'upsert_anilist_manga_entry', 'delete_anilist_manga_entry'];
+  return deleteProviderSyncQueueByUserIdStmt.run(userId, ...operations).changes;
 }
 
 function getUserByNormalizedUsername(usernameNormalized) {
@@ -2158,8 +2209,16 @@ function getSyncQueueCount(userId) {
   return Number(countSyncQueueItemsStmt.get(userId)?.count ?? 0);
 }
 
-function markSyncQueueJobFailed(id, error, nextAttemptAt) {
-  markSyncQueueJobFailedStmt.run(error, nextAttemptAt, id);
+function markSyncQueueJobFailed(id, error, nextAttemptAt, blocked = false) {
+  markSyncQueueJobFailedStmt.run(blocked ? 'blocked' : 'failed', error, blocked ? null : nextAttemptAt, id);
+}
+
+function restoreSyncQueueJob(userId, id) {
+  return restoreSyncQueueJobStmt.run(id, userId).changes > 0;
+}
+
+function excludeSyncQueueJob(userId, id) {
+  return excludeSyncQueueJobStmt.run(id, userId).changes > 0;
 }
 
 function deleteSyncQueueJob(id) {
@@ -2229,7 +2288,8 @@ module.exports = {
   getPersonDetails,
   savePersonDetails,
   createUser,
-  updateUsername,
+  updateUserPassword,
+  confirmLocalCredentials,
   getUserByNormalizedUsername,
   getSafeUserById,
   updateLastLogin,
@@ -2263,6 +2323,7 @@ module.exports = {
   getMalAccountByMalUserId,
   getMalAccountByUserId,
   deleteMalAccountByUserId,
+  clearProviderSyncQueue,
   deleteUser,
   mergeUserIntoUser,
   upsertAniListAccount,
@@ -2275,6 +2336,8 @@ module.exports = {
   getSyncQueueItems,
   getSyncQueueCount,
   markSyncQueueJobFailed,
+  restoreSyncQueueJob,
+  excludeSyncQueueJob,
   deleteSyncQueueJob,
   deleteSyncQueueJobByEntry,
   insertSyncHistory,

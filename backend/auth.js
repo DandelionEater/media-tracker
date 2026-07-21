@@ -2,6 +2,8 @@ const argon2 = require('argon2');
 const crypto = require('crypto');
 const {
   createUser,
+  updateUserPassword,
+  confirmLocalCredentials,
   getUserByNormalizedUsername,
   getSafeUserById,
   updateLastLogin,
@@ -181,6 +183,7 @@ async function registerUser(username, password) {
     username: cleanedUsername,
     usernameNormalized,
     passwordHash,
+    localCredentialsConfirmed: true,
   });
 
   currentUserId = Number(userId);
@@ -216,6 +219,7 @@ async function createLinkedUser(username) {
     username: cleanedUsername,
     usernameNormalized,
     passwordHash,
+    localCredentialsConfirmed: false,
   });
 
   return {
@@ -270,6 +274,7 @@ async function loginUser(username, password) {
   }
 
   clearFailedAttempts(usernameNormalized);
+  confirmLocalCredentials(user.id);
 
   currentUserId = user.id;
   persistCurrentUserId(currentUserId);
@@ -279,6 +284,43 @@ async function loginUser(username, password) {
     ok: true,
     message: 'Logged in successfully.',
     user: getSafeUserById(currentUserId),
+  };
+}
+
+async function verifyLocalPassword(userId, password) {
+  const safeUser = getSafeUserById(Number(userId));
+  const user = safeUser
+    ? getUserByNormalizedUsername(safeUser.username_normalized)
+    : null;
+
+  if (!user?.password_hash || !String(password || '')) {
+    return false;
+  }
+
+  const valid = await argon2.verify(user.password_hash, String(password));
+  if (valid) confirmLocalCredentials(user.id);
+  return valid;
+}
+
+async function setLocalPassword(userId, password) {
+  const passwordError = validatePassword(password);
+  if (passwordError) {
+    return { ok: false, message: passwordError };
+  }
+
+  const user = getSafeUserById(Number(userId));
+  if (!user) {
+    return { ok: false, message: 'User not found.' };
+  }
+
+  const passwordHash = await argon2.hash(String(password), {
+    type: argon2.argon2id,
+  });
+  updateUserPassword(user.id, passwordHash);
+  return {
+    ok: true,
+    message: 'Local password is ready.',
+    user: getSafeUserById(user.id),
   };
 }
 
@@ -320,4 +362,6 @@ module.exports = {
   setTutorialDismissedForCurrentUser,
   normalizeUsername,
   validateUsername,
+  verifyLocalPassword,
+  setLocalPassword,
 };

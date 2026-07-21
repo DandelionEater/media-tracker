@@ -48,6 +48,12 @@ contextBridge.exposeInMainWorld('desktopStartup', {
 });
 
 contextBridge.exposeInMainWorld('desktopWindow', {
+  closeApp: () => ipcRenderer.send('app:quit'),
+  onFocusSearch: (callback) => {
+    const handler = () => callback();
+    ipcRenderer.on('focus-search', handler);
+    return () => ipcRenderer.removeListener('focus-search', handler);
+  },
   getWindowState: () => ipcRenderer.invoke('window-state:get'),
   setWindowPreset: (preset) => ipcRenderer.invoke('window-state:set-preset', preset),
   setCustomBounds: (bounds) => ipcRenderer.invoke('window-state:set-custom-bounds', bounds),

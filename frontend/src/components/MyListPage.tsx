@@ -7,10 +7,8 @@ import {
   CheckCircleIcon,
   ChevronDownIcon,
   FunnelIcon,
-  EllipsisVerticalIcon,
   MagnifyingGlassIcon,
   PauseCircleIcon,
-  RectangleGroupIcon,
   Squares2X2Icon,
   ViewColumnsIcon,
   StarIcon,
@@ -24,6 +22,8 @@ import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference"
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 import type { MediaType, TrackedMangaEntry } from "../types/domain";
 import { LibraryLens, type LibraryDestination } from "./LibraryLens";
+import { LayoutEditorToolbar, ReorderableSection } from "./ui/LayoutEditor";
+import { getListStatusLabel } from "../utils/mediaFormatting";
 
 type MyListEntry = {
   anime_id: number;
@@ -144,7 +144,7 @@ const STATUS_META: Record<
 
 function getStatusMeta(status: ListStatus, mediaType: MediaType) {
   const meta = STATUS_META[status];
-  if (mediaType !== "MANGA") return meta;
+  if (mediaType !== "MANGA") return { ...meta, label: getListStatusLabel(status, mediaType) };
 
   if (status === "watching") {
     return {
@@ -160,7 +160,7 @@ function getStatusMeta(status: ListStatus, mediaType: MediaType) {
       description: "Manga waiting on your reading list.",
     };
   }
-  return meta;
+  return { ...meta, label: getListStatusLabel(status, mediaType) };
 }
 
 const DEFAULT_OPEN_SECTIONS: Record<MyListEntry["status"], boolean> = {
@@ -1856,51 +1856,7 @@ function MyListLayoutToolbar({
   onToggleEdit: () => void;
   onReset: () => void;
 }) {
-  return (
-    <section
-      className={`mb-4 flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-white/10 px-4 py-3 ${
-        isEditing
-          ? "sticky top-3 z-30 border-white/15 bg-[#1b1b1b]/96 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
-          : "bg-white/[0.03]"
-      }`}
-    >
-      <div className="flex items-center gap-3">
-        <div className="rounded-2xl border border-[var(--app-accent)]/20 bg-[var(--app-accent-soft)] p-2 text-white/80">
-          <RectangleGroupIcon className="h-5 w-5" />
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-white">"My List" layout</p>
-          <p className="text-xs text-white/40">
-            {isEditing ? "Drag shelves into your preferred order." : "Customize shelf order."}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {isEditing && (
-          <button
-            type="button"
-            onClick={onReset}
-            className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white/65 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55"
-          >
-            Reset
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onToggleEdit}
-          className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55 ${
-            isEditing
-              ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
-              : "border-[var(--app-accent)]/25 bg-[var(--app-accent)] text-black shadow-lg shadow-[var(--app-accent)]/15 hover:opacity-90"
-          }`}
-        >
-          <RectangleGroupIcon className="h-4 w-4" />
-          {isEditing ? "Save" : "Edit"}
-        </button>
-      </div>
-    </section>
-  );
+  return <LayoutEditorToolbar className="mb-4" title={'"My List" layout'} idleDescription="Customize shelf order." editingDescription="Drag shelves into your preferred order." doneLabel="Save" isEditing={isEditing} onToggleEdit={onToggleEdit} onReset={onReset} />;
 }
 
 function MyListSectionEditBlock({
@@ -1922,34 +1878,7 @@ function MyListSectionEditBlock({
   onDragEnd: () => void;
   children: ReactNode;
 }) {
-  return (
-    <div
-      draggable={isEditing}
-      onDragStart={(event) => onDragStart(status, event)}
-      onDragOver={(event) => onDragOver(status, event)}
-      onDragEnd={onDragEnd}
-      className={`relative rounded-[1.75rem] transition ${
-        isEditing
-          ? "border border-dashed border-white/15 bg-white/[0.025] p-2"
-          : "border border-transparent"
-      } ${isDragging ? "opacity-45" : "opacity-100"}`}
-    >
-      {isEditing && (
-        <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2">
-          <div className="flex items-center gap-2 text-sm font-semibold text-white/70">
-            <span className="flex cursor-grab items-center text-white/45 active:cursor-grabbing">
-              <EllipsisVerticalIcon className="h-5 w-3" />
-              <EllipsisVerticalIcon className="-ml-1 h-5 w-3" />
-            </span>
-            {label}
-          </div>
-          <span className="text-xs uppercase tracking-[0.2em] text-white/30">Drag</span>
-        </div>
-      )}
-
-      {children}
-    </div>
-  );
+  return <ReorderableSection id={status} label={label} isEditing={isEditing} isDragging={isDragging} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd}>{children}</ReorderableSection>;
 }
 
 function compareEntries(

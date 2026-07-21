@@ -16,6 +16,7 @@ const API_BASE_URL =
 let pendingAniListLoginFlowId: string | null = null;
 let pendingMalLoginFlowId: string | null = null;
 let activeUserId: number | null = null;
+let activeSyncProvider: "anilist" | "mal" | null | undefined;
 let localAutoSyncTimer: number | null = null;
 const localAutoSyncListeners = new Set<(result: AutoSyncCompleteEvent) => void>();
 const LOCAL_AUTO_SYNC_DELAY_MS = 15_000;
@@ -69,16 +70,34 @@ async function runLocalAutoSync(userId: number) {
     return;
   }
 
-  if ((await localStore.getPendingSyncCount(userId)) <= 0) {
+  const provider = await getActiveSyncProvider(userId);
+  if ((await localStore.getPendingSyncCount(userId, provider)) <= 0) {
     return;
   }
 
-  const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId)]);
-  await localStore.markSynced(userId, result);
+  const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId, provider)]);
+  const syncState = await localStore.markSynced(userId, result);
+  result.pending = await localStore.getPendingSyncCount(userId, provider);
+  if (syncState.newlyExcluded > 0) {
+    result.excluded = syncState.newlyExcluded;
+    result.message = `Excluded ${syncState.newlyExcluded} sync entr${syncState.newlyExcluded === 1 ? "y" : "ies"} after five failed attempts.`;
+  }
 
   if ((result.synced ?? 0) > 0 || (result.failed ?? 0) > 0 || (!result.ok && result.pending > 0)) {
     localAutoSyncListeners.forEach((listener) => listener(result));
   }
+}
+
+async function getActiveSyncProvider(userId: number, refresh = false) {
+  if (!refresh && activeSyncProvider !== undefined) return activeSyncProvider;
+  const status = await rpc("getSyncStatus", [
+    await localStore.getPendingSyncCount(userId),
+    await localStore.getAutoSyncEnabled(userId),
+  ]);
+  activeSyncProvider = status?.provider === "anilist" || status?.provider === "mal"
+    ? status.provider
+    : null;
+  return activeSyncProvider;
 }
 
 function scheduleLocalAutoSync(userId: number) {
@@ -208,6 +227,7 @@ async function startMalLogin() {
   const start = await rpc("startMalLogin");
 
   if (!start.pendingOAuth) {
+    await saveAuthImportLocally(start);
     return start;
   }
 
@@ -221,6 +241,8 @@ async function startMalLogin() {
   if (result.user?.id) {
     activeUserId = result.user.id;
   }
+
+  await saveAuthImportLocally(result);
 
   return result;
 }
@@ -236,6 +258,8 @@ async function completeMalLogin(username: string) {
     activeUserId = result.user.id;
   }
 
+  await saveAuthImportLocally(result);
+
   return result;
 }
 
@@ -243,11 +267,14 @@ async function linkMalAccount() {
   const start = await rpc("linkMalAccount");
 
   if (!start.pendingOAuth) {
+    await saveAuthImportLocally(start);
     return start;
   }
 
   const popup = openPopup(start.authUrl, "seenary-mal-oauth");
-  return await waitForMalFlow("pollMalLink", start.flowId, popup);
+  const result = await waitForMalFlow("pollMalLink", start.flowId, popup);
+  await saveAuthImportLocally(result);
+  return result;
 }
 
 async function saveAuthImportLocally(result: AuthImportResult) {
@@ -265,7 +292,7 @@ async function saveAuthImportLocally(result: AuthImportResult) {
   try {
     await localStore.replaceEntriesFromImport(userId, result.import);
   } catch (error) {
-    console.error("Failed to save imported AniList entries locally:", error);
+    console.error("Failed to save OAuth-imported entries locally:", error);
   }
 }
 
@@ -318,6 +345,7 @@ async function register(username: string, password: string) {
 async function logout() {
   const result = await rpc("logout");
   activeUserId = null;
+  activeSyncProvider = undefined;
   return result;
 }
 
@@ -450,11 +478,7 @@ export function installApiClient() {
   const api: ApiClient = {
     searchMedia: (query, hideAdultContent = true) =>
       rpc("searchMedia", [query, hideAdultContent]),
-    searchAnime: (query, hideAdultContent = true) =>
-      rpc("searchAnime", [query, hideAdultContent]),
-    getTrendingAnime: (hideAdultContent = true) => rpc("getTrendingAnime", [hideAdultContent]),
     getDiscoverMedia: (hideAdultContent = true) => rpc("getDiscoverMedia", [hideAdultContent]),
-    getDiscoverAnime: (hideAdultContent = true) => rpc("getDiscoverAnime", [hideAdultContent]),
     getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = "ANIME") =>
       rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent, mediaType]),
     previewAniListImport: (username) => rpc("previewAniListImport", [username]),
@@ -554,24 +578,45 @@ export function installApiClient() {
     },
     getSyncStatus: async () => {
       const userId = await requireActiveUserId();
-      return rpc("getSyncStatus", [
+      const result = await rpc("getSyncStatus", [
         await localStore.getPendingSyncCount(userId),
         await localStore.getAutoSyncEnabled(userId),
       ]);
+      activeSyncProvider = result?.provider === "anilist" || result?.provider === "mal"
+        ? result.provider
+        : null;
+      return {
+        ...result,
+        pendingCount: await localStore.getPendingSyncCount(userId, activeSyncProvider),
+      };
     },
     setAutoSync: async (enabled) => {
       const userId = await requireActiveUserId();
+      const provider = await getActiveSyncProvider(userId);
       await localStore.setAutoSyncEnabled(userId, Boolean(enabled));
-      if (enabled && (await localStore.getPendingSyncCount(userId)) > 0) {
+      if (enabled && (await localStore.getPendingSyncCount(userId, provider)) > 0) {
         scheduleLocalAutoSync(userId);
       }
-      return rpc("setAutoSync", [Boolean(enabled), await localStore.getPendingSyncCount(userId)]);
+      return rpc("setAutoSync", [
+        Boolean(enabled),
+        await localStore.getPendingSyncCount(userId, provider),
+      ]);
     },
     runSyncNow: async () => {
       const userId = await requireActiveUserId();
-      const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId)]);
-      await localStore.markSynced(userId, result);
-      return result;
+      const provider = await getActiveSyncProvider(userId, true);
+      const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId, provider)]);
+      const syncState = await localStore.markSynced(userId, result);
+      return {
+        ...result,
+        pending: await localStore.getPendingSyncCount(userId, provider),
+        ...(syncState.newlyExcluded > 0
+          ? {
+              excluded: syncState.newlyExcluded,
+              message: `Excluded ${syncState.newlyExcluded} sync entr${syncState.newlyExcluded === 1 ? "y" : "ies"} after five failed attempts.`,
+            }
+          : {}),
+      };
     },
     pullFromAniList: async () => {
       const userId = await requireActiveUserId();
@@ -623,7 +668,28 @@ export function installApiClient() {
     },
     getSyncActivity: async () => {
       const userId = await requireActiveUserId();
-      return { ok: true, ...(await localStore.getSyncActivity(userId)) };
+      const provider = await getActiveSyncProvider(userId);
+      return { ok: true, ...(await localStore.getSyncActivity(userId, provider)) };
+    },
+    restoreSyncExclusion: async (payload) => {
+      const userId = await requireActiveUserId();
+      const provider = payload?.provider;
+      const mediaType = payload?.mediaType === "MANGA" ? "MANGA" : "ANIME";
+      const mediaId = Number(payload?.mediaId);
+      if ((provider !== "anilist" && provider !== "mal") || !Number.isInteger(mediaId) || mediaId <= 0) {
+        return { ok: false, message: "This excluded sync entry is invalid." };
+      }
+      return localStore.restoreSyncExclusion(userId, provider, mediaType, mediaId);
+    },
+    excludeSyncEntry: async (payload) => {
+      const userId = await requireActiveUserId();
+      const provider = payload?.provider;
+      const mediaType = payload?.mediaType === "MANGA" ? "MANGA" : "ANIME";
+      const mediaId = Number(payload?.mediaId);
+      if ((provider !== "anilist" && provider !== "mal") || !Number.isInteger(mediaId) || mediaId <= 0) {
+        return { ok: false, message: "This queued sync entry is invalid." };
+      }
+      return localStore.excludeSyncEntry(userId, provider, mediaType, mediaId);
     },
     getAnimeDetails: async (id) => {
       const userId = await getActiveUserId();
@@ -673,9 +739,16 @@ export function installApiClient() {
       await saveAuthImportLocally(result);
       return result;
     },
+    unlinkAniListAccount: (password) => rpc("unlinkAniListAccount", [password]),
     getMalLinkStatus: () => rpc("getMalLinkStatus"),
     linkMalAccount,
-    resolveMalLinkConflict: (action) => rpc("resolveMalLinkConflict", [action]),
+    resolveMalLinkConflict: async (action) => {
+      const result = await rpc("resolveMalLinkConflict", [action]);
+      await saveAuthImportLocally(result);
+      return result;
+    },
+    unlinkMalAccount: (password) => rpc("unlinkMalAccount", [password]),
+    setLocalPassword: (password) => rpc("setLocalPassword", [password]),
     logout,
     deleteAccount: async (usernameConfirmation) => {
       const userId = await requireActiveUserId();
@@ -806,7 +879,6 @@ export function installApiClient() {
       }
       return result;
     },
-    onFocusSearch: () => undefined,
     onSyncProgress: () => () => undefined,
     onAutoSyncComplete: (callback) => {
       localAutoSyncListeners.add(callback);

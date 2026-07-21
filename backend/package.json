@@ -1,6 +1,6 @@
 {
   "name": "seenary",
-  "version": "0.1.6-beta",
+  "version": "0.1.7-dev",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "rebuild:node": "npm rebuild better-sqlite3 argon2",
     "rebuild:electron": "electron-rebuild -f",
     "build:frontend": "npm --prefix ../frontend run build",
+    "release:check": "node scripts/release-readiness.js",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "node scripts/build-release.js",
     "generate:icons": "node scripts/generate-icons.js"
@@ -40,6 +41,7 @@
     "files": [
       "desktop-main.js",
       "desktop-preload.js",
+      "appLifecycle.js",
       "layoutConfig.js",
       "windowState.js",
       "systemLocale.js",

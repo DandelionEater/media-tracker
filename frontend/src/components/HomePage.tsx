@@ -11,13 +11,11 @@ import {
   ChartBarIcon,
   CheckCircleIcon,
   ClockIcon,
-  EllipsisVerticalIcon,
   ExclamationTriangleIcon,
   FireIcon,
   HeartIcon,
   PlayCircleIcon,
   PlusIcon,
-  RectangleGroupIcon,
   SparklesIcon,
   StarIcon,
   TvIcon,
@@ -25,6 +23,10 @@ import {
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 import { LibraryLens, type LibraryDestination } from "./LibraryLens";
+import { LayoutEditorToolbar, ReorderableSection } from "./ui/LayoutEditor";
+import { MediaShelf } from "./ui/MediaShelf";
+import { AsyncStatePanel } from "./ui/AsyncStatePanel";
+import { formatEnum, formatCompactNumber as formatNumber, formatScore10 } from "../utils/mediaFormatting";
 import type { MediaType, TrackedMangaEntry } from "../types/domain";
 
 const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
@@ -1857,6 +1859,10 @@ function DiscoverLoadError({
   onRetry: () => void;
   compact?: boolean;
 }) {
+  if (!compact) {
+    return <AsyncStatePanel icon={ExclamationTriangleIcon} title="There was a problem loading content." message={message} busy={isRetrying} actionLabel={isRetrying ? "Retrying..." : "Retry"} onAction={onRetry} />;
+  }
+
   return (
     <section
       className={`rounded-3xl border border-white/10 bg-white/4 shadow-xl ${
@@ -2194,127 +2200,10 @@ function MangaHomeShelf({
   carousel?: boolean;
   autoScroll?: boolean;
 }) {
-  const railRef = useRef<HTMLDivElement | null>(null);
   const densityStyles = HOME_DENSITY_STYLES[density];
-  const manualPauseUntil = useRef(0);
-  const [isInteracting, setIsInteracting] = useState(false);
   const shouldUseCarousel = carousel && variant === "medium" && entries.length > 0;
-
-  const scrollRail = useCallback((direction: "left" | "right", automatic = false) => {
-    const rail = railRef.current;
-    if (!rail) return;
-    if (!automatic) manualPauseUntil.current = Date.now() + 12000;
-
-    const firstCard = rail.querySelector<HTMLElement>("[data-manga-home-card]");
-    const cardWidth = firstCard?.offsetWidth ?? Math.max(220, rail.clientWidth * 0.35);
-    const distance = cardWidth + densityStyles.railGapPixels;
-    const maxScrollLeft = rail.scrollWidth - rail.clientWidth;
-
-    if (direction === "right" && rail.scrollLeft >= maxScrollLeft - distance * 0.5) {
-      rail.scrollTo({ left: 0, behavior: "smooth" });
-      return;
-    }
-    rail.scrollBy({
-      left: direction === "right" ? distance : -distance,
-      behavior: "smooth",
-    });
-  }, [densityStyles.railGapPixels]);
-
-  useEffect(() => {
-    if (!shouldUseCarousel || !autoScroll || entries.length <= 5) return;
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
-
-    const timer = window.setInterval(() => {
-      if (!isInteracting && Date.now() >= manualPauseUntil.current) {
-        scrollRail("right", true);
-      }
-    }, 8500);
-    return () => window.clearInterval(timer);
-  }, [autoScroll, entries.length, isInteracting, scrollRail, shouldUseCarousel]);
-
   return (
-    <section>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2.5 text-white/80">
-            <Icon className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-white">{title}</h2>
-            <p className="text-sm text-white/40">{entries.length || emptyText}</p>
-          </div>
-        </div>
-
-        {shouldUseCarousel && entries.length > 5 && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => scrollRail("left")}
-              className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80 transition hover:border-(--app-accent)/35 focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-              title={`Scroll ${title} left`}
-            >
-              <ArrowLeftIcon className="h-5 w-5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => scrollRail("right")}
-              className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80 transition hover:border-(--app-accent)/35 focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-              title={`Scroll ${title} right`}
-            >
-              <ArrowRightIcon className="h-5 w-5" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {entries.length ? (
-        <div
-          ref={shouldUseCarousel ? railRef : undefined}
-          onMouseEnter={() => setIsInteracting(true)}
-          onMouseLeave={() => setIsInteracting(false)}
-          onFocusCapture={() => setIsInteracting(true)}
-          onBlurCapture={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setIsInteracting(false);
-            }
-          }}
-          className={
-            shouldUseCarousel
-              ? `scroll-container flex snap-x overflow-x-auto overflow-y-hidden pb-2 scroll-smooth ${densityStyles.railGapClass}`
-              : densityStyles.compactGridClass
-          }
-        >
-          {entries.map((entry) => (
-            <div
-              key={`${title}-${entry.manga_id}`}
-              data-manga-home-card={shouldUseCarousel ? true : undefined}
-              className={shouldUseCarousel ? "min-w-0 shrink-0 snap-start" : ""}
-              style={
-                shouldUseCarousel
-                  ? {
-                      flexBasis: `calc((100% - ${
-                        densityStyles.railGapPixels * (densityStyles.railVisibleCards - 1)
-                      }px) / ${densityStyles.railVisibleCards})`,
-                    }
-                  : undefined
-              }
-            >
-              <MangaHomeCard
-                entry={entry}
-                onSelectManga={onSelectManga}
-                density={density}
-                titleLanguage={titleLanguage}
-                variant={variant}
-              />
-            </div>
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-3xl border border-dashed border-white/10 bg-white/3 px-5 py-8 text-sm text-white/45">
-          {emptyText}
-        </div>
-      )}
-    </section>
+    <MediaShelf title={title} icon={Icon} items={entries} emptyText={emptyText} gridClassName={densityStyles.compactGridClass} carousel={shouldUseCarousel} autoScroll={autoScroll} gapClassName={densityStyles.railGapClass} gapPixels={densityStyles.railGapPixels} visibleCards={densityStyles.railVisibleCards} getKey={(entry) => entry.manga_id} renderItem={(entry) => <MangaHomeCard entry={entry} onSelectManga={onSelectManga} density={density} titleLanguage={titleLanguage} variant={variant} />} />
   );
 }
 
@@ -2414,51 +2303,7 @@ function HomeLayoutToolbar({
   onToggleEdit: () => void;
   onReset: () => void;
 }) {
-  return (
-    <section
-      className={`flex flex-wrap items-center justify-between gap-3 rounded-3xl border border-white/10 px-4 py-3 ${
-        isEditing
-          ? "sticky top-3 z-30 border-white/15 bg-[#1b1b1b]/96 shadow-[0_18px_48px_rgba(0,0,0,0.55)] backdrop-blur-xl"
-          : "bg-white/3"
-      }`}
-    >
-      <div className="flex items-center gap-3">
-        <div className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80">
-          <RectangleGroupIcon className="h-5 w-5" />
-        </div>
-        <div>
-          <p className="text-sm font-semibold text-white">{title}</p>
-          <p className="text-xs text-white/40">
-            {isEditing ? "Drag into your preferred order." : "Customize order."}
-          </p>
-        </div>
-      </div>
-
-      <div className="flex flex-wrap gap-2">
-        {isEditing && (
-          <button
-            type="button"
-            onClick={onReset}
-            className="rounded-2xl border border-white/10 bg-white/4 px-4 py-2 text-sm font-semibold text-white/65 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-          >
-            Reset
-          </button>
-        )}
-        <button
-          type="button"
-          onClick={onToggleEdit}
-          className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55 ${
-            isEditing
-              ? "border-(--app-accent) bg-(--app-accent-soft) text-white"
-              : "border-(--app-accent)/25 bg-(--app-accent) text-black shadow-lg shadow-(--app-accent)/15 hover:opacity-90"
-          }`}
-        >
-          <RectangleGroupIcon className="h-4 w-4" />
-          {isEditing ? "Done" : "Edit"}
-        </button>
-      </div>
-    </section>
-  );
+  return <LayoutEditorToolbar title={title} isEditing={isEditing} onToggleEdit={onToggleEdit} onReset={onReset} />;
 }
 
 function LayoutEditBlock({
@@ -2480,34 +2325,7 @@ function LayoutEditBlock({
   onDragEnd: () => void;
   children: ReactNode;
 }) {
-  return (
-    <div
-      draggable={isEditing}
-      onDragStart={(event) => onDragStart(sectionId, event)}
-      onDragOver={(event) => onDragOver(sectionId, event)}
-      onDragEnd={onDragEnd}
-      className={`relative rounded-[1.75rem] transition ${
-        isEditing
-          ? "border border-dashed border-white/15 bg-white/2.5 p-2"
-          : "border border-transparent"
-      } ${isDragging ? "opacity-45" : "opacity-100"}`}
-    >
-      {isEditing && (
-        <div className="mb-2 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-black/20 px-3 py-2">
-          <div className="flex items-center gap-2 text-sm font-semibold text-white/70">
-            <span className="flex cursor-grab items-center text-white/45 active:cursor-grabbing">
-              <EllipsisVerticalIcon className="h-5 w-3" />
-              <EllipsisVerticalIcon className="-ml-1 h-5 w-3" />
-            </span>
-            {label}
-          </div>
-          <span className="text-xs uppercase tracking-[0.2em] text-white/30">Drag</span>
-        </div>
-      )}
-
-      {children}
-    </div>
-  );
+  return <ReorderableSection id={sectionId} label={label} isEditing={isEditing} isDragging={isDragging} onDragStart={onDragStart} onDragOver={onDragOver} onDragEnd={onDragEnd}>{children}</ReorderableSection>;
 }
 
 function AccountOverviewPanel({
@@ -3403,155 +3221,11 @@ function HomeShelf({
   carousel?: boolean;
   autoScroll?: boolean;
 }) {
-  const railRef = useRef<HTMLDivElement | null>(null);
   const densityStyles = HOME_DENSITY_STYLES[density];
-  const manualPauseUntil = useRef(0);
-  const [isInteracting, setIsInteracting] = useState(false);
-
   const shouldUseCarousel =
     carousel && variant === "medium" && mode === "library" && entries.length > 0;
-
-  const scrollRail = useCallback((
-    direction: "left" | "right",
-    source: "manual" | "auto" = "manual"
-  ) => {
-    const rail = railRef.current;
-    if (!rail) return;
-
-    if (source === "manual") {
-      manualPauseUntil.current = Date.now() + 12000;
-    }
-
-    const firstCard = rail.querySelector<HTMLElement>("[data-home-shelf-card]");
-    const cardWidth = firstCard?.offsetWidth ?? Math.max(220, rail.clientWidth * 0.35);
-    const gap = densityStyles.railGapPixels;
-    const distance = cardWidth + gap;
-    const maxScrollLeft = rail.scrollWidth - rail.clientWidth;
-
-    if (direction === "right" && rail.scrollLeft >= maxScrollLeft - distance * 0.5) {
-      rail.scrollTo({ left: 0, behavior: "smooth" });
-      return;
-    }
-
-    rail.scrollBy({
-      left: direction === "right" ? distance : -distance,
-      behavior: "smooth",
-    });
-  }, [densityStyles.railGapPixels, railRef]);
-
-  useEffect(() => {
-    if (!shouldUseCarousel || !autoScroll || entries.length <= 5) return;
-
-    const prefersReducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    if (prefersReducedMotion) return;
-
-    const timer = window.setInterval(() => {
-      if (isInteracting || Date.now() < manualPauseUntil.current) {
-        return;
-      }
-
-      scrollRail("right", "auto");
-    }, 8500);
-
-    return () => window.clearInterval(timer);
-  }, [autoScroll, entries.length, isInteracting, scrollRail, shouldUseCarousel]);
-
   return (
-    <section>
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2.5 text-white/80">
-            <Icon className="h-5 w-5" />
-          </div>
-          <div>
-            <h2 className="text-lg font-semibold text-white">{title}</h2>
-            <p className="text-sm text-white/40">{entries.length || emptyText}</p>
-          </div>
-        </div>
-
-        {shouldUseCarousel && entries.length > 5 && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={() => scrollRail("left")}
-              className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80 transition hover:border-(--app-accent)/35 hover:bg-(--app-accent-soft) hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-              title={`Scroll ${title} left`}
-            >
-              <ArrowLeftIcon className="h-5 w-5" />
-            </button>
-            <button
-              type="button"
-              onClick={() => scrollRail("right")}
-              className="rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80 transition hover:border-(--app-accent)/35 hover:bg-(--app-accent-soft) hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-              title={`Scroll ${title} right`}
-            >
-              <ArrowRightIcon className="h-5 w-5" />
-            </button>
-          </div>
-        )}
-      </div>
-
-      {entries.length ? (
-        <div
-          ref={shouldUseCarousel ? railRef : undefined}
-          onMouseEnter={() => setIsInteracting(true)}
-          onMouseLeave={() => setIsInteracting(false)}
-          onFocusCapture={() => setIsInteracting(true)}
-          onBlurCapture={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-              setIsInteracting(false);
-            }
-          }}
-          className={
-            shouldUseCarousel
-              ? `scroll-container flex snap-x overflow-x-auto overflow-y-hidden pb-2 scroll-smooth ${densityStyles.railGapClass}`
-              : variant === "gridCompact"
-                ? densityStyles.compactGridClass
-              : variant === "compact" || variant === "list"
-                ? "grid grid-cols-1 gap-3"
-                : densityStyles.gridClass
-          }
-        >
-          {entries.map((entry, index) => (
-            mode === "recommendations" ? (
-              <RecommendationLibraryCard
-                key={`${title}-recommendation-${index}`}
-                entry={entry as RecommendationCandidate}
-                onSelectAnime={onSelectAnime}
-                titleLanguage={titleLanguage}
-              />
-            ) : (
-              <div
-                key={`${title}-${(entry as TrackedAnimeEntry).anime_id}`}
-                data-home-shelf-card={shouldUseCarousel ? true : undefined}
-                className={shouldUseCarousel ? "min-w-0 shrink-0 snap-start" : ""}
-                style={
-                  shouldUseCarousel
-                    ? {
-                        flexBasis: `calc((100% - ${
-                          densityStyles.railGapPixels * (densityStyles.railVisibleCards - 1)
-                        }px) / ${densityStyles.railVisibleCards})`,
-                      }
-                    : undefined
-                }
-              >
-                <HomeAnimeCard
-                  entry={entry as TrackedAnimeEntry}
-                  onSelectAnime={onSelectAnime}
-                  variant={variant}
-                  density={density}
-                  titleLanguage={titleLanguage}
-                />
-              </div>
-            )
-          ))}
-        </div>
-      ) : (
-        <div className="rounded-3xl border border-dashed border-white/10 bg-white/3 px-5 py-8 text-sm text-white/45">
-          {emptyText}
-        </div>
-      )}
-    </section>
+    <MediaShelf<TrackedAnimeEntry | RecommendationCandidate> title={title} icon={Icon} items={entries} emptyText={emptyText} gridClassName={variant === "gridCompact" ? densityStyles.compactGridClass : variant === "compact" || variant === "list" ? "grid grid-cols-1 gap-3" : densityStyles.gridClass} carousel={shouldUseCarousel} autoScroll={autoScroll} gapClassName={densityStyles.railGapClass} gapPixels={densityStyles.railGapPixels} visibleCards={densityStyles.railVisibleCards} getKey={(entry, index) => mode === "recommendations" ? `recommendation-${index}` : (entry as TrackedAnimeEntry).anime_id} renderItem={(entry) => mode === "recommendations" ? <RecommendationLibraryCard entry={entry as RecommendationCandidate} onSelectAnime={onSelectAnime} titleLanguage={titleLanguage} /> : <HomeAnimeCard entry={entry as TrackedAnimeEntry} onSelectAnime={onSelectAnime} variant={variant} density={density} titleLanguage={titleLanguage} />} />
   );
 }
 
@@ -4293,19 +3967,6 @@ function buildEntryMeta(entry: TrackedAnimeEntry) {
   ].filter(Boolean) as string[];
 }
 
-function formatEnum(value: string) {
-  return value
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat(undefined, {
-    notation: value >= 10000 ? "compact" : "standard",
-  }).format(value);
-}
-
 function formatWatchedTime(totalMinutes: number) {
   if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) {
     return "0m";
@@ -4379,10 +4040,6 @@ function formatMangaHomeStatus(status: TrackedMangaEntry["status"]) {
   if (status === "watching") return "Reading";
   if (status === "planned") return "Plan to Read";
   return formatStatus(status);
-}
-
-function formatScore10(value: number) {
-  return Number.isInteger(value) ? String(value) : value.toFixed(1);
 }
 
 function readPersonalLayoutOrder() {

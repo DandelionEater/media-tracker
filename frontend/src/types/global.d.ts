@@ -7,7 +7,6 @@ import type {
   MediaSearchResults,
   MediaType,
   PersonDetails,
-  SearchAnime,
   SeenaryBackup,
   TrackedAnimeEntry,
   TrackedMangaEntry,
@@ -137,10 +136,7 @@ declare global {
         query: string,
         hideAdultContent?: boolean
       ) => Promise<MediaSearchResults>;
-      searchAnime: (query: string, hideAdultContent?: boolean) => Promise<SearchAnime[]>;
-      getTrendingAnime: (hideAdultContent?: boolean) => Promise<unknown>;
       getDiscoverMedia: (hideAdultContent?: boolean) => Promise<DiscoverMediaResult>;
-      getDiscoverAnime: (hideAdultContent?: boolean) => Promise<unknown>;
       getDiscoverShelfAnime: (
         shelfId: string,
         page?: number,
@@ -362,6 +358,7 @@ declare global {
         message: string;
         synced?: number;
         failed?: number;
+        excluded?: number;
         pending?: number;
       }>;
       pullFromAniList: () => Promise<ImportPayload & {
@@ -405,8 +402,20 @@ declare global {
         completed?: SyncActivityItem[];
         failed?: SyncActivityItem[];
         pulled?: SyncActivityItem[];
+        excluded?: SyncActivityItem[];
       }>;
-      onFocusSearch: (callback: () => void) => void;
+      restoreSyncExclusion: (payload: {
+        id?: number;
+        provider: "anilist" | "mal";
+        mediaType: MediaType;
+        mediaId: number;
+      }) => Promise<{ ok: boolean; message: string }>;
+      excludeSyncEntry: (payload: {
+        id?: number;
+        provider: "anilist" | "mal";
+        mediaType: MediaType;
+        mediaId: number;
+      }) => Promise<{ ok: boolean; message: string }>;
       getAnimeDetails: (id: number) => Promise<AnimeMedia>;
       getMediaDetails: (mediaType: MediaType, id: number) => Promise<AnimeMedia>;
       getCharacterDetails: (id: number) => Promise<PersonDetails>;
@@ -465,6 +474,7 @@ declare global {
         message?: string;
         linked: boolean;
         account?: AniListLinkedAccount | null;
+        localCredentialsConfirmed?: boolean | null;
       }>;
       linkAniListAccount: () => Promise<{
         ok: boolean;
@@ -499,11 +509,19 @@ declare global {
           movedEntries: number;
         } | null;
       }>;
+      unlinkAniListAccount: (password: string) => Promise<{
+        ok: boolean;
+        message: string;
+        linked: boolean;
+        needsLocalPassword?: boolean;
+        localCredentialsConfirmed?: boolean;
+      }>;
       getMalLinkStatus: () => Promise<{
         ok: boolean;
         message?: string;
         linked: boolean;
         account?: MalLinkedAccount | null;
+        localCredentialsConfirmed?: boolean | null;
       }>;
       linkMalAccount: () => Promise<{
         ok: boolean;
@@ -533,6 +551,18 @@ declare global {
         mergeSummary?: {
           movedEntries: number;
         } | null;
+      }>;
+      unlinkMalAccount: (password: string) => Promise<{
+        ok: boolean;
+        message: string;
+        linked: boolean;
+        needsLocalPassword?: boolean;
+        localCredentialsConfirmed?: boolean;
+      }>;
+      setLocalPassword: (password: string) => Promise<{
+        ok: boolean;
+        message: string;
+        localCredentialsConfirmed?: boolean;
       }>;
       logout: () => Promise<{ ok: boolean; message: string }>;
       deleteAccount: (usernameConfirmation: string) => Promise<{ ok: boolean; message: string }>;
@@ -716,6 +746,8 @@ declare global {
       }>;
     };
     desktopWindow?: {
+      closeApp: () => void;
+      onFocusSearch: (callback: () => void) => () => void;
       getWindowState: () => Promise<{
         ok: boolean;
         preset?: "compact" | "balanced" | "cinematic" | "custom";

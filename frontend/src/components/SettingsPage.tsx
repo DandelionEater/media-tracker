@@ -11,6 +11,7 @@ import {
   ExclamationTriangleIcon,
   EyeSlashIcon,
   HomeIcon,
+  KeyIcon,
   LanguageIcon,
   LinkIcon,
   PaintBrushIcon,
@@ -26,11 +27,11 @@ import { formatLocalDateTime as formatDateTime } from "../utils/dateFormat";
 import type { ImportPreviewItem } from "../types/domain";
 
 export type ThemeAccent = "violet" | "rose" | "amber" | "emerald" | "custom";
-export type OverlayBackground = "solid" | "glass" | "transparent";
+type OverlayBackground = "solid" | "glass" | "transparent";
 export type NavbarStyle = "integrated" | "floating" | "minimal";
-export type BrowseCardStyle = "default" | "immersive" | "gallery";
-export type StartView = "home" | "list" | "search";
-export type AnimationLevel = "full" | "reduced" | "off";
+type BrowseCardStyle = "default" | "immersive" | "gallery";
+type StartView = "home" | "list" | "search";
+type AnimationLevel = "full" | "reduced" | "off";
 export type CardDensity = "comfortable" | "balanced" | "compact";
 export type DiscoverDensity = CardDensity;
 
@@ -266,7 +267,7 @@ type SettingsPageProps = {
 };
 
 type SettingsSectionId = "appearance" | "home" | "content" | "account" | "sync" | "data" | "general";
-type SyncActivityTab = "pending" | "completed" | "failed" | "pulled";
+type SyncActivityTab = "pending" | "completed" | "failed" | "pulled" | "excluded";
 type DesktopShortcutState = {
   available: boolean;
   loading: boolean;
@@ -304,6 +305,8 @@ type SyncActivityItem = {
   title_native?: string | null;
   operation: string;
   status: string;
+  provider?: "anilist" | "mal";
+  excluded_by?: "user" | "system";
   attempts?: number;
   last_error?: string | null;
   next_attempt_at?: string | null;
@@ -722,13 +725,21 @@ export function SettingsPage({
     completed: SyncActivityItem[];
     failed: SyncActivityItem[];
     pulled: SyncActivityItem[];
+    excluded: SyncActivityItem[];
   }>({
     loading: false,
     pending: [],
     completed: [],
     failed: [],
     pulled: [],
+    excluded: [],
   });
+  const [restoringSyncExclusionId, setRestoringSyncExclusionId] = useState<number | null>(null);
+  const [excludingSyncEntryId, setExcludingSyncEntryId] = useState<number | null>(null);
+  const [syncActivityActionFeedback, setSyncActivityActionFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+  } | null>(null);
   const [aniListLink, setAniListLink] = useState<{
     loading: boolean;
     linked: boolean;
@@ -761,6 +772,13 @@ export function SettingsPage({
     feedback: null,
     conflict: null,
   });
+  const [localCredentialsConfirmed, setLocalCredentialsConfirmed] = useState<boolean | null>(null);
+  const [unlinkProvider, setUnlinkProvider] = useState<"anilist" | "mal" | null>(null);
+  const [unlinkPassword, setUnlinkPassword] = useState("");
+  const [unlinkPasswordConfirmation, setUnlinkPasswordConfirmation] = useState("");
+  const [isSettingUnlinkPassword, setIsSettingUnlinkPassword] = useState(false);
+  const [isUnlinking, setIsUnlinking] = useState(false);
+  const [unlinkFeedback, setUnlinkFeedback] = useState<string | null>(null);
 
   const titleLabel = useMemo(() => {
     return (
@@ -781,6 +799,8 @@ export function SettingsPage({
   const manualSyncTargetsLabel = syncStatus.syncTargetsLabel ?? syncProviderLabel;
   const isAniListSync = syncStatus.provider === "anilist";
   const syncTargetLabel = syncStatus.linked ? syncProviderLabel : "No linked account";
+  const aniListLinkBlocked = malLink.linked && !aniListLink.linked;
+  const malLinkBlocked = aniListLink.linked && !malLink.linked;
 
   function toggleSection(section: SettingsSectionId) {
     setOpenSection((current) => {
@@ -1316,6 +1336,10 @@ export function SettingsPage({
         return;
       }
 
+      if (result.localCredentialsConfirmed !== undefined) {
+        setLocalCredentialsConfirmed(result.localCredentialsConfirmed);
+      }
+
       setAniListLink((current) => ({
         ...current,
         loading: false,
@@ -1347,6 +1371,10 @@ export function SettingsPage({
 
       if (isCancelled()) {
         return;
+      }
+
+      if (result.localCredentialsConfirmed !== undefined) {
+        setLocalCredentialsConfirmed(result.localCredentialsConfirmed);
       }
 
       setMalLink((current) => ({
@@ -1494,6 +1522,7 @@ export function SettingsPage({
         completed: result.completed ?? [],
         failed: result.failed ?? [],
         pulled: result.pulled ?? [],
+        excluded: result.excluded ?? [],
       });
       setSyncActivityTab(tab);
     } finally {
@@ -1502,9 +1531,84 @@ export function SettingsPage({
   }
 
   async function openSyncActivity(tab: SyncActivityTab) {
+    setSyncActivityActionFeedback(null);
     setIsSyncActivityOpen(true);
     setSyncActivityTab(tab);
     await loadSyncActivity(tab);
+  }
+
+  async function restoreSyncExclusion(item: SyncActivityItem) {
+    const mediaType = item.media_type === "MANGA" || item.manga_id ? "MANGA" : "ANIME";
+    const mediaId = Number(mediaType === "MANGA" ? item.manga_id : item.anime_id);
+    const provider = item.provider ?? (item.operation.includes("mal") ? "mal" : "anilist");
+    try {
+      setRestoringSyncExclusionId(item.id);
+      setSyncActivityActionFeedback(null);
+      if (typeof window.api.restoreSyncExclusion !== "function") {
+        throw new Error("Restart Seenary to finish loading the sync exclusion controls.");
+      }
+      const result = await window.api.restoreSyncExclusion({
+        id: item.id,
+        provider,
+        mediaType,
+        mediaId,
+      });
+      setSyncStatus((current) => ({
+        ...current,
+        feedback: { kind: result.ok ? "success" : "error", message: result.message },
+      }));
+      setSyncActivityActionFeedback({
+        kind: result.ok ? "success" : "error",
+        message: result.message,
+      });
+      if (result.ok) {
+        await Promise.all([loadSyncActivity("excluded"), loadSyncStatus()]);
+      }
+    } catch (error) {
+      setSyncActivityActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to restore the sync entry.",
+      });
+    } finally {
+      setRestoringSyncExclusionId(null);
+    }
+  }
+
+  async function excludeSyncEntry(item: SyncActivityItem) {
+    const mediaType = item.media_type === "MANGA" || item.manga_id ? "MANGA" : "ANIME";
+    const mediaId = Number(mediaType === "MANGA" ? item.manga_id : item.anime_id);
+    const provider = item.provider ?? (item.operation.includes("mal") ? "mal" : "anilist");
+    try {
+      setExcludingSyncEntryId(item.id);
+      setSyncActivityActionFeedback(null);
+      if (typeof window.api.excludeSyncEntry !== "function") {
+        throw new Error("Restart Seenary to finish loading the sync exclusion controls.");
+      }
+      const result = await window.api.excludeSyncEntry({
+        id: item.id,
+        provider,
+        mediaType,
+        mediaId,
+      });
+      setSyncStatus((current) => ({
+        ...current,
+        feedback: { kind: result.ok ? "success" : "error", message: result.message },
+      }));
+      setSyncActivityActionFeedback({
+        kind: result.ok ? "success" : "error",
+        message: result.message,
+      });
+      if (result.ok) {
+        await Promise.all([loadSyncActivity("pending"), loadSyncStatus()]);
+      }
+    } catch (error) {
+      setSyncActivityActionFeedback({
+        kind: "error",
+        message: error instanceof Error ? error.message : "Failed to exclude the sync entry.",
+      });
+    } finally {
+      setExcludingSyncEntryId(null);
+    }
   }
 
   async function linkAniListAccount() {
@@ -1667,6 +1771,71 @@ export function SettingsPage({
         loading: false,
         feedback: { kind: "error", message: "Failed to resolve MyAnimeList link conflict." },
       }));
+    }
+  }
+
+  function openUnlinkModal(provider: "anilist" | "mal") {
+    setUnlinkProvider(provider);
+    setUnlinkPassword("");
+    setUnlinkPasswordConfirmation("");
+    setIsSettingUnlinkPassword(localCredentialsConfirmed === false);
+    setUnlinkFeedback(null);
+  }
+
+  function closeUnlinkModal() {
+    if (isUnlinking) return;
+    setUnlinkProvider(null);
+    setUnlinkPassword("");
+    setUnlinkPasswordConfirmation("");
+    setUnlinkFeedback(null);
+  }
+
+  async function unlinkExternalAccount() {
+    if (!unlinkProvider || isUnlinking) return;
+    if (isSettingUnlinkPassword && unlinkPassword !== unlinkPasswordConfirmation) {
+      setUnlinkFeedback("The passwords do not match.");
+      return;
+    }
+
+    setIsUnlinking(true);
+    setUnlinkFeedback(null);
+
+    try {
+      if (isSettingUnlinkPassword) {
+        const passwordResult = await window.api.setLocalPassword(unlinkPassword);
+        if (!passwordResult.ok) {
+          setUnlinkFeedback(passwordResult.message);
+          return;
+        }
+        setLocalCredentialsConfirmed(true);
+        setIsSettingUnlinkPassword(false);
+      }
+
+      const result =
+        unlinkProvider === "mal"
+          ? await window.api.unlinkMalAccount(unlinkPassword)
+          : await window.api.unlinkAniListAccount(unlinkPassword);
+
+      if (!result.ok) {
+        setUnlinkFeedback(result.message);
+        return;
+      }
+
+      setLocalCredentialsConfirmed(true);
+      const feedback = { kind: "success" as const, message: result.message };
+      const provider = unlinkProvider;
+      setUnlinkProvider(null);
+      setUnlinkPassword("");
+      setUnlinkPasswordConfirmation("");
+      await Promise.all([
+        loadAniListLinkStatus(provider === "anilist" ? feedback : undefined),
+        loadMalLinkStatus(provider === "mal" ? feedback : undefined),
+        loadSyncStatus(),
+      ]);
+    } catch {
+      setUnlinkFeedback("Failed to unlink the account. Try again.");
+    } finally {
+      setIsUnlinking(false);
     }
   }
 
@@ -2984,8 +3153,8 @@ export function SettingsPage({
           <div ref={rememberSectionRef("account")} className="scroll-mt-24">
             <AccordionSection
               icon={LinkIcon}
-              title="Account Links"
-              description="Connect external accounts for authenticated imports and future sync."
+              title="Sign-in methods"
+              description="Manage your local password and connected external accounts."
               summary={[
                 aniListLink.loading
                   ? "Checking AniList"
@@ -3001,6 +3170,29 @@ export function SettingsPage({
               open={openSection === "account"}
               onToggle={() => toggleSection("account")}
             >
+            <div className="mb-5 rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+              <div className="flex items-start gap-4">
+                <div className="rounded-2xl border border-white/10 bg-white/5 p-2.5 text-white/65">
+                  <KeyIcon className="h-5 w-5" />
+                </div>
+                <div>
+                  <p className="font-semibold text-white">
+                    {localCredentialsConfirmed === true
+                      ? "Local password confirmed"
+                      : localCredentialsConfirmed === false
+                        ? "Local password needed"
+                        : "Local password not yet verified"}
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-white/45">
+                    {localCredentialsConfirmed === true
+                      ? "Your local password can safely authorize account unlinking."
+                      : localCredentialsConfirmed === false
+                        ? "This profile was created through an external sign-in. You will create a local password before unlinking it."
+                        : "Sign in once with your existing local password, or create a replacement during unlinking."}
+                  </p>
+                </div>
+              </div>
+            </div>
             <div>
               <SectionHeading
                 icon={LinkIcon}
@@ -3019,27 +3211,44 @@ export function SettingsPage({
                     <p className="mt-2 text-sm leading-6 text-white/45">
                       {aniListLink.linked
                         ? "This local account is ready for authenticated AniList operations."
+                        : aniListLinkBlocked
+                          ? "Unlink MyAnimeList first. Seenary uses one authenticated sync provider at a time."
                         : "Authorize AniList in your browser and attach it to this local account."}
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={linkAniListAccount}
-                    disabled={aniListLink.loading}
-                    className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                      aniListLink.loading
-                        ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
-                        : "border border-white/10 bg-white text-black hover:opacity-90"
-                    }`}
-                  >
-                    <LinkIcon className="h-4 w-4" />
-                    {aniListLink.loading
-                      ? "Checking..."
-                      : aniListLink.linked
-                        ? "Relink AniList"
-                        : "Link AniList"}
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    {aniListLink.linked && (
+                      <button
+                        type="button"
+                        onClick={() => openUnlinkModal("anilist")}
+                        disabled={aniListLink.loading}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl border border-rose-300/20 bg-rose-300/10 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <XMarkIcon className="h-4 w-4" />
+                        Unlink
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={linkAniListAccount}
+                      disabled={aniListLink.loading || aniListLinkBlocked}
+                      className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                        aniListLink.loading || aniListLinkBlocked
+                          ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                          : "border border-white/10 bg-white text-black hover:opacity-90"
+                      }`}
+                    >
+                      <LinkIcon className="h-4 w-4" />
+                      {aniListLink.loading
+                        ? "Checking..."
+                        : aniListLinkBlocked
+                          ? "MyAnimeList is active"
+                        : aniListLink.linked
+                          ? "Relink AniList"
+                          : "Link AniList"}
+                    </button>
+                  </div>
                 </div>
 
                 {aniListLink.account && (
@@ -3128,27 +3337,44 @@ export function SettingsPage({
                     <p className="mt-2 text-sm leading-6 text-white/45">
                       {malLink.linked
                         ? "This local account can be matched back to your MyAnimeList profile."
+                        : malLinkBlocked
+                          ? "Unlink AniList first. Seenary uses one authenticated sync provider at a time."
                         : "Authorize MyAnimeList in your browser and attach it to this local account."}
                     </p>
                   </div>
 
-                  <button
-                    type="button"
-                    onClick={linkMalAccount}
-                    disabled={malLink.loading}
-                    className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                      malLink.loading
-                        ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
-                        : "border border-white/10 bg-white text-black hover:opacity-90"
-                    }`}
-                  >
-                    <LinkIcon className="h-4 w-4" />
-                    {malLink.loading
-                      ? "Checking..."
-                      : malLink.linked
-                        ? "Relink MyAnimeList"
-                        : "Link MyAnimeList"}
-                  </button>
+                  <div className="flex flex-wrap gap-2">
+                    {malLink.linked && (
+                      <button
+                        type="button"
+                        onClick={() => openUnlinkModal("mal")}
+                        disabled={malLink.loading}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl border border-rose-300/20 bg-rose-300/10 px-4 py-3 text-sm font-semibold text-rose-100 transition hover:bg-rose-300/15 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        <XMarkIcon className="h-4 w-4" />
+                        Unlink
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={linkMalAccount}
+                      disabled={malLink.loading || malLinkBlocked}
+                      className={`inline-flex items-center justify-center gap-2 rounded-2xl px-5 py-3 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                        malLink.loading || malLinkBlocked
+                          ? "cursor-not-allowed border border-white/5 bg-white/[0.03] text-white/35"
+                          : "border border-white/10 bg-white text-black hover:opacity-90"
+                      }`}
+                    >
+                      <LinkIcon className="h-4 w-4" />
+                      {malLink.loading
+                        ? "Checking..."
+                        : malLinkBlocked
+                          ? "AniList is active"
+                        : malLink.linked
+                          ? "Relink MyAnimeList"
+                          : "Link MyAnimeList"}
+                    </button>
+                  </div>
                 </div>
 
                 {malLink.account && (
@@ -4003,6 +4229,26 @@ export function SettingsPage({
       />
       )}
 
+      <ProviderUnlinkModal
+        provider={unlinkProvider}
+        localCredentialsConfirmed={localCredentialsConfirmed}
+        password={unlinkPassword}
+        passwordConfirmation={unlinkPasswordConfirmation}
+        settingPassword={isSettingUnlinkPassword}
+        busy={isUnlinking}
+        feedback={unlinkFeedback}
+        onPasswordChange={setUnlinkPassword}
+        onPasswordConfirmationChange={setUnlinkPasswordConfirmation}
+        onSettingPasswordChange={(value) => {
+          setIsSettingUnlinkPassword(value);
+          setUnlinkPassword("");
+          setUnlinkPasswordConfirmation("");
+          setUnlinkFeedback(null);
+        }}
+        onClose={closeUnlinkModal}
+        onConfirm={unlinkExternalAccount}
+      />
+
       <SyncActivityModal
         isOpen={isSyncActivityOpen}
         activeTab={syncActivityTab}
@@ -4013,6 +4259,11 @@ export function SettingsPage({
           setSyncActivityTab(tab);
           loadSyncActivity(tab);
         }}
+        restoringId={restoringSyncExclusionId}
+        onRestore={restoreSyncExclusion}
+        excludingId={excludingSyncEntryId}
+        onExclude={excludeSyncEntry}
+        actionFeedback={syncActivityActionFeedback}
       />
     </div>
   );
@@ -4273,6 +4524,157 @@ function LinkStat({ label, value }: { label: string; value: string }) {
   );
 }
 
+function ProviderUnlinkModal({
+  provider,
+  localCredentialsConfirmed,
+  password,
+  passwordConfirmation,
+  settingPassword,
+  busy,
+  feedback,
+  onPasswordChange,
+  onPasswordConfirmationChange,
+  onSettingPasswordChange,
+  onClose,
+  onConfirm,
+}: {
+  provider: "anilist" | "mal" | null;
+  localCredentialsConfirmed: boolean | null;
+  password: string;
+  passwordConfirmation: string;
+  settingPassword: boolean;
+  busy: boolean;
+  feedback: string | null;
+  onPasswordChange: (value: string) => void;
+  onPasswordConfirmationChange: (value: string) => void;
+  onSettingPasswordChange: (value: boolean) => void;
+  onClose: () => void;
+  onConfirm: () => void | Promise<void>;
+}) {
+  if (!provider) return null;
+
+  const providerName = provider === "mal" ? "MyAnimeList" : "AniList";
+  const mustCreatePassword = localCredentialsConfirmed === false;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center px-6 py-10">
+      <button
+        type="button"
+        aria-label="Close unlink account dialog"
+        onClick={onClose}
+        className="absolute inset-0 bg-black/82"
+      />
+
+      <form
+        onSubmit={(event) => {
+          event.preventDefault();
+          void onConfirm();
+        }}
+        className="relative z-10 w-full max-w-lg rounded-3xl border border-white/10 bg-[#111111]/95 p-6 shadow-2xl"
+      >
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <p className="text-sm uppercase tracking-[0.3em] text-white/35">Sign-in methods</p>
+            <h2 className="mt-3 text-2xl font-bold tracking-tight text-white">
+              Unlink {providerName}?
+            </h2>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-2xl border border-white/10 bg-white/[0.04] p-2 text-white/60 transition hover:bg-white/8 hover:text-white disabled:opacity-50"
+          >
+            <XMarkIcon className="h-5 w-5" />
+          </button>
+        </div>
+
+        <p className="mt-5 text-sm leading-6 text-white/55">
+          Your Seenary library and activity stay here. Future sync with {providerName} stops, and
+          queued changes for it are removed.
+        </p>
+
+        <label className="mt-5 block">
+          <span className="text-xs font-semibold uppercase tracking-[0.22em] text-white/40">
+            {settingPassword ? "New local password" : "Local password"}
+          </span>
+          <input
+            autoFocus
+            type="password"
+            value={password}
+            onChange={(event) => onPasswordChange(event.target.value)}
+            autoComplete={settingPassword ? "new-password" : "current-password"}
+            placeholder={settingPassword ? "At least 8 characters" : "Confirm it is you"}
+            className="mt-2 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-[var(--app-accent)]/60 focus:ring-2 focus:ring-[var(--app-accent)]/20"
+          />
+        </label>
+
+        {settingPassword && (
+          <label className="mt-4 block">
+            <span className="text-xs font-semibold uppercase tracking-[0.22em] text-white/40">
+              Confirm new password
+            </span>
+            <input
+              type="password"
+              value={passwordConfirmation}
+              onChange={(event) => onPasswordConfirmationChange(event.target.value)}
+              autoComplete="new-password"
+              placeholder="Enter it again"
+              className="mt-2 w-full rounded-2xl border border-white/10 bg-black/25 px-4 py-3 text-sm text-white outline-none transition placeholder:text-white/25 focus:border-[var(--app-accent)]/60 focus:ring-2 focus:ring-[var(--app-accent)]/20"
+            />
+          </label>
+        )}
+
+        {localCredentialsConfirmed === null && (
+          <button
+            type="button"
+            onClick={() => onSettingPasswordChange(!settingPassword)}
+            disabled={busy}
+            className="mt-4 text-left text-sm font-semibold text-[var(--app-accent)] transition hover:opacity-80 disabled:opacity-50"
+          >
+            {settingPassword ? "Use my existing local password" : "I never set one — create or replace it"}
+          </button>
+        )}
+
+        {mustCreatePassword && (
+          <p className="mt-4 rounded-2xl border border-amber-300/15 bg-amber-300/8 p-3 text-sm leading-6 text-amber-100/75">
+            This profile currently relies on external sign-in. Create a local password so you can
+            still access it after unlinking.
+          </p>
+        )}
+
+        {feedback && (
+          <p className="mt-4 rounded-2xl border border-rose-300/20 bg-rose-300/10 p-3 text-sm font-semibold text-rose-100">
+            {feedback}
+          </p>
+        )}
+
+        <div className="mt-6 flex flex-wrap justify-end gap-3">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-semibold text-white/70 transition hover:bg-white/8 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={busy || !password || (settingPassword && !passwordConfirmation)}
+            className="rounded-2xl border border-rose-200/20 bg-rose-300 px-4 py-2.5 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            {busy
+              ? "Unlinking..."
+              : settingPassword
+                ? "Set password and unlink"
+                : `Unlink ${providerName}`}
+          </button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
 function SyncActivityModal({
   isOpen,
   activeTab,
@@ -4280,6 +4682,11 @@ function SyncActivityModal({
   titleLanguage,
   onClose,
   onChangeTab,
+  restoringId,
+  onRestore,
+  excludingId,
+  onExclude,
+  actionFeedback,
 }: {
   isOpen: boolean;
   activeTab: SyncActivityTab;
@@ -4289,10 +4696,16 @@ function SyncActivityModal({
     completed: SyncActivityItem[];
     failed: SyncActivityItem[];
     pulled: SyncActivityItem[];
+    excluded: SyncActivityItem[];
   };
   titleLanguage: TitleLanguage;
   onClose: () => void;
   onChangeTab: (tab: SyncActivityTab) => void;
+  restoringId: number | null;
+  onRestore: (item: SyncActivityItem) => void;
+  excludingId: number | null;
+  onExclude: (item: SyncActivityItem) => void;
+  actionFeedback: { kind: "success" | "error"; message: string } | null;
 }) {
   if (!isOpen) return null;
 
@@ -4317,7 +4730,7 @@ function SyncActivityModal({
               Sync activity
             </h2>
             <p className="mt-2 text-sm leading-6 text-white/50">
-              Review queued changes, successful syncs, failed attempts, and pulled updates.
+              Review queued changes, successful syncs, failed attempts, exclusions, and pulled updates.
             </p>
           </div>
 
@@ -4332,7 +4745,7 @@ function SyncActivityModal({
 
         <div className="border-b border-white/10 px-6 py-3">
           <div className="flex flex-wrap gap-2">
-            {(["pending", "completed", "failed", "pulled"] as SyncActivityTab[]).map((tab) => (
+            {(["pending", "completed", "failed", "excluded", "pulled"] as SyncActivityTab[]).map((tab) => (
               <button
                 key={tab}
                 type="button"
@@ -4347,6 +4760,17 @@ function SyncActivityModal({
               </button>
             ))}
           </div>
+          {actionFeedback && (
+            <p
+              className={`mt-3 rounded-2xl border px-3 py-2 text-sm font-semibold ${
+                actionFeedback.kind === "success"
+                  ? "border-emerald-300/20 bg-emerald-300/10 text-emerald-100"
+                  : "border-rose-300/20 bg-rose-300/10 text-rose-100"
+              }`}
+            >
+              {actionFeedback.message}
+            </p>
+          )}
         </div>
 
         <div className="scroll-container min-h-0 flex-1 overflow-y-auto px-6 py-5">
@@ -4387,6 +4811,23 @@ function SyncActivityModal({
                         <p className="mt-1 text-xs text-amber-200/70">
                           Retry {formatDateTime(item.next_attempt_at)}
                         </p>
+                      )}
+                      {activeTab === "pending" && Number(item.attempts || 0) > 0 && (
+                        <p className="mt-1 text-xs font-semibold text-rose-200/75">
+                          Failed attempts: {item.attempts} / 5
+                        </p>
+                      )}
+                      {activeTab === "excluded" && (
+                        <>
+                          <p className="mt-1 text-xs font-semibold text-amber-100/80">
+                            {item.excluded_by === "user"
+                              ? "Excluded by user"
+                              : "Excluded automatically"}
+                          </p>
+                          <p className="mt-1 text-xs text-amber-200/70">
+                            {item.attempts ?? 5} failed attempt{item.attempts === 1 ? "" : "s"}
+                          </p>
+                        </>
                       )}
                     </div>
                   </div>
@@ -4434,6 +4875,32 @@ function SyncActivityModal({
                     </div>
                     );
                   })()}
+
+                  {activeTab === "excluded" && (
+                    <div className="mt-4 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => onRestore(item)}
+                        disabled={restoringId === item.id}
+                        className="rounded-2xl border border-white/10 bg-white px-4 py-2 text-sm font-semibold text-black transition hover:bg-white/85 disabled:cursor-wait disabled:opacity-50"
+                      >
+                        {restoringId === item.id ? "Restoring..." : "Restore sync"}
+                      </button>
+                    </div>
+                  )}
+
+                  {activeTab === "pending" && Number(item.attempts || 0) > 0 && (
+                    <div className="mt-4 flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => onExclude(item)}
+                        disabled={excludingId === item.id}
+                        className="rounded-2xl border border-amber-200/20 bg-amber-200/10 px-4 py-2 text-sm font-semibold text-amber-100 transition hover:bg-amber-200/20 disabled:cursor-wait disabled:opacity-50"
+                      >
+                        {excludingId === item.id ? "Excluding..." : "Exclude from sync"}
+                      </button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>

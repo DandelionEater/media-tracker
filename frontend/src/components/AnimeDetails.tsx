@@ -30,8 +30,10 @@ import {
 } from "@heroicons/react/24/outline";
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import { ListEntryModal } from "./ListEntryModal";
+import { ModalShell } from "./ui/ModalShell";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { formatLocalDate } from "../utils/dateFormat";
+import { formatEnum, formatNumber, getListStatusLabel } from "../utils/mediaFormatting";
 import type {
   AnimeMedia,
   EditableListEntry,
@@ -109,14 +111,6 @@ type PeopleModalItem = {
     image?: string | null;
     language?: string | null;
   } | null;
-};
-
-const STATUS_LABELS: Record<ListEntry["status"], string> = {
-  planned: "Planned",
-  watching: "Watching",
-  completed: "Completed",
-  paused: "Paused",
-  dropped: "Dropped",
 };
 
 export default function MediaDetails({
@@ -2088,23 +2082,7 @@ function PersonDetailsLoadingModal({
   onClose: () => void;
 }) {
   return (
-    <div className="fixed inset-0 z-60 flex items-center justify-center overflow-hidden rounded-3xl bg-black/82 p-4">
-      <button
-        type="button"
-        className="absolute inset-0 cursor-default"
-        aria-label="Close person details"
-        onClick={onClose}
-      />
-      <section className="relative flex h-72 w-full max-w-lg items-center justify-center overflow-hidden rounded-3xl border border-white/10 bg-[#111111] text-white shadow-2xl">
-        <button
-          type="button"
-          onClick={onClose}
-          className="absolute right-5 top-5 rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-          title="Close"
-        >
-          <XMarkIcon className="h-5 w-5" />
-        </button>
-
+    <ModalShell onClose={onClose} ariaLabel="Person details" zClassName="z-60" panelClassName="flex h-72 max-w-lg items-center justify-center overflow-hidden p-0 text-white" showCloseButton>
         <div className="flex flex-col items-center text-center">
           <div className="h-12 w-12 rounded-full border border-(--app-accent)/25 border-t-(--app-accent) animate-spin" />
           <p className="mt-5 text-xs uppercase tracking-[0.24em] text-white/35">
@@ -2112,8 +2090,7 @@ function PersonDetailsLoadingModal({
           </p>
           <p className="mt-2 text-sm text-white/65">Preparing profile details...</p>
         </div>
-      </section>
-    </div>
+    </ModalShell>
   );
 }
 
@@ -2857,18 +2834,7 @@ function formatProgress(
 }
 
 function getPersonalStatusLabel(status: ListEntry["status"], mediaType: MediaType) {
-  if (mediaType === "MANGA") {
-    if (status === "watching") return "Reading";
-    if (status === "planned") return "Plan to Read";
-  }
-  return STATUS_LABELS[status];
-}
-
-function formatEnum(value: string) {
-  return value
-    .split("_")
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
-    .join(" ");
+  return getListStatusLabel(status, mediaType);
 }
 
 function formatMediaFormat(value: string) {
@@ -3516,10 +3482,6 @@ function areMediaDatesEqual(
   if (!left || !right) return false;
 
   return left.year === right.year && left.month === right.month && left.day === right.day;
-}
-
-function formatNumber(value: number) {
-  return new Intl.NumberFormat().format(value);
 }
 
 function getPersonName(person: Person | null | undefined) {

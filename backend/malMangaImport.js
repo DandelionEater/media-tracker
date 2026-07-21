@@ -215,8 +215,6 @@ async function importMalMangaEntries(currentSession, malList, options = {}) {
 }
 
 module.exports = {
-  buildAniListMangaCollectionFromMalList,
-  buildMalMangaImportPreview,
   previewMalMangaPull,
   importMalMangaEntries,
 };

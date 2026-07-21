@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import {
   BookOpenIcon,
   ChevronDownIcon,
@@ -8,6 +8,7 @@ import {
   PlayCircleIcon,
 } from "@heroicons/react/24/outline";
 import type { MediaType } from "../types/domain";
+import { FloatingMenu } from "./ui/FloatingMenu";
 
 export type LibraryDestination = "personal" | "discover" | "list";
 
@@ -35,6 +36,8 @@ export function LibraryLens({
   const [mediaMenuOpen, setMediaMenuOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
+  const mediaButtonRef = useRef<HTMLButtonElement | null>(null);
+  const mediaMenuCloseTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const MediaIcon = mediaType === "MANGA" ? BookOpenIcon : PlayCircleIcon;
   const mediaLabel = mediaType === "MANGA" ? "Manga" : "Anime";
   const destinationLabel = DESTINATIONS.find((item) => item.value === destination)?.label;
@@ -72,6 +75,7 @@ export function LibraryLens({
       if (event.key === "Escape") {
         setMediaMenuOpen(false);
         setMobileMenuOpen(false);
+        mediaButtonRef.current?.focus();
       }
     }
 
@@ -80,12 +84,38 @@ export function LibraryLens({
     return () => {
       document.removeEventListener("pointerdown", closeMenus);
       document.removeEventListener("keydown", closeOnEscape);
+      if (mediaMenuCloseTimerRef.current) {
+        clearTimeout(mediaMenuCloseTimerRef.current);
+      }
     };
   }, []);
 
+  function cancelMediaMenuClose() {
+    if (!mediaMenuCloseTimerRef.current) return;
+    clearTimeout(mediaMenuCloseTimerRef.current);
+    mediaMenuCloseTimerRef.current = null;
+  }
+
+  function openMediaMenuOnHover(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "touch") return;
+    cancelMediaMenuClose();
+    setMediaMenuOpen(true);
+  }
+
+  function closeMediaMenuAfterHover(event: ReactPointerEvent<HTMLDivElement>) {
+    if (event.pointerType === "touch") return;
+    cancelMediaMenuClose();
+    mediaMenuCloseTimerRef.current = setTimeout(() => {
+      setMediaMenuOpen(false);
+      mediaMenuCloseTimerRef.current = null;
+    }, 140);
+  }
+
   function chooseMedia(nextMediaType: MediaType) {
+    cancelMediaMenuClose();
     onMediaChange(nextMediaType);
     setMediaMenuOpen(false);
+    mediaButtonRef.current?.focus();
   }
 
   function chooseDestination(nextDestination: LibraryDestination) {
@@ -110,8 +140,13 @@ export function LibraryLens({
       </button>
 
       <div className="hidden items-center rounded-2xl border border-white/10 bg-white/4 p-1 shadow-lg md:flex">
-        <div className="relative">
+        <div
+          className="relative"
+          onPointerEnter={openMediaMenuOnHover}
+          onPointerLeave={closeMediaMenuAfterHover}
+        >
           <button
+            ref={mediaButtonRef}
             type="button"
             aria-haspopup="menu"
             aria-expanded={mediaMenuOpen}
@@ -122,33 +157,32 @@ export function LibraryLens({
               <MediaIcon className="h-4.5 w-4.5 text-(--app-accent)" />
               {mediaLabel}
             </span>
-            <ChevronDownIcon className={`h-3.5 w-3.5 text-white/45 transition ${mediaMenuOpen ? "rotate-180" : ""}`} />
+            <ChevronDownIcon className={`h-3.5 w-3.5 text-white/45 transition-transform duration-200 ${mediaMenuOpen ? "rotate-180" : ""}`} />
           </button>
 
-          {mediaMenuOpen && (
-            <div role="menu" className="absolute right-0 top-[calc(100%+0.6rem)] w-44 rounded-2xl border border-white/12 bg-[#181818]/98 p-1.5 shadow-2xl backdrop-blur-xl">
-              {(["ANIME", "MANGA"] as MediaType[]).map((option) => {
-                const OptionIcon = option === "MANGA" ? BookOpenIcon : PlayCircleIcon;
-                return (
-                  <button
-                    key={option}
-                    type="button"
-                    role="menuitemradio"
-                    aria-checked={mediaType === option}
-                    onClick={() => chooseMedia(option)}
-                    className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
-                      mediaType === option
-                        ? "bg-(--app-accent) text-black"
-                        : "text-white/65 hover:bg-white/8 hover:text-white"
-                    }`}
-                  >
-                    <OptionIcon className="h-4.5 w-4.5" />
-                    {option === "MANGA" ? "Manga" : "Anime"}
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <FloatingMenu open={mediaMenuOpen} widthClass="w-full">
+            {(["ANIME", "MANGA"] as MediaType[]).map((option) => {
+              const OptionIcon = option === "MANGA" ? BookOpenIcon : PlayCircleIcon;
+              return (
+                <button
+                  key={option}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={mediaType === option}
+                  tabIndex={mediaMenuOpen ? 0 : -1}
+                  onClick={() => chooseMedia(option)}
+                  className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
+                    mediaType === option
+                      ? "bg-(--app-accent) text-black"
+                      : "text-white/65 hover:bg-white/8 hover:text-white"
+                  }`}
+                >
+                  <OptionIcon className="h-4.5 w-4.5" />
+                  {option === "MANGA" ? "Manga" : "Anime"}
+                </button>
+              );
+            })}
+          </FloatingMenu>
         </div>
 
         <div className="mx-1 h-7 w-px bg-white/10" />

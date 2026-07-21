@@ -32,13 +32,13 @@ export type AnimeTitle = {
   userPreferred?: string | null;
 };
 
-export type AnimeImage = {
+type AnimeImage = {
   extraLarge?: string | null;
   large?: string | null;
   medium?: string | null;
 };
 
-export type AnimeTag = {
+type AnimeTag = {
   id?: number | null;
   name?: string | null;
   description?: string | null;
@@ -47,7 +47,7 @@ export type AnimeTag = {
   isGeneralSpoiler?: boolean;
 };
 
-export type PersonName = {
+type PersonName = {
   full?: string | null;
   native?: string | null;
   userPreferred?: string | null;
@@ -73,7 +73,7 @@ export type PersonEdge = {
   voice_actors?: string | Person[] | null;
 };
 
-export type PersonDate = {
+type PersonDate = {
   year?: number | null;
   month?: number | null;
   day?: number | null;
@@ -94,7 +94,7 @@ export type PersonDetails = Person & {
   languageV2?: string | null;
 };
 
-export type MediaSourceReference = {
+type MediaSourceReference = {
   provider?: string | null;
   animeId?: number | string | null;
 };
@@ -185,7 +185,7 @@ export type RelatedAnimeEdge = {
   node?: AnimeMedia | null;
 };
 
-export type RecommendationNode = {
+type RecommendationNode = {
   rating?: number | null;
   mediaRecommendation?: RecommendationMedia | null;
 };
@@ -473,6 +473,7 @@ export type SeenaryBackup = {
     dirtyMangaEntries?: Record<string, boolean>;
     deletedMangaEntries?: Record<string, DeletedListEntry>;
     syncHistory?: SyncActivityItem[];
+    syncFailures?: Record<string, unknown>;
     autoSyncEnabled?: boolean;
   };
 };

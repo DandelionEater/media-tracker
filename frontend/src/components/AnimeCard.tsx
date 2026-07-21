@@ -4,6 +4,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import type { SearchMedia, TrackedMediaEntry } from "../types/domain";
+import { getListStatusLabel } from "../utils/mediaFormatting";
 
 type MediaCardProps = {
   media: SearchMedia;
@@ -12,14 +13,6 @@ type MediaCardProps = {
   onQuickAdd?: (media: SearchMedia) => void;
   onEditEntry: (entry: TrackedMediaEntry) => void;
   titleLanguage: TitleLanguage;
-};
-
-const STATUS_LABELS: Record<TrackedMediaEntry["status"], string> = {
-  planned: "Planned",
-  watching: "Watching",
-  completed: "Completed",
-  paused: "Paused",
-  dropped: "Dropped",
 };
 
 export function MediaCard({
@@ -49,9 +42,7 @@ export function MediaCard({
       : null;
 
   const trackedStatusLabel = trackedEntry
-    ? trackedEntry.status === "watching" && isManga
-      ? "Reading"
-      : STATUS_LABELS[trackedEntry.status]
+    ? getListStatusLabel(trackedEntry.status, isManga ? "MANGA" : "ANIME")
     : null;
 
   const trackedProgressLabel = trackedEntry
@@ -250,4 +241,3 @@ function capitalize(value: string) {
 }
 
 // Compatibility export for callers that still use the original Anime-only name.
-export const AnimeCard = MediaCard;

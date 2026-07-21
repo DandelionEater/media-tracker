@@ -367,4 +367,4 @@ async function importBackup(currentSession, backup, updateSettings) {
   };
 }
 
-module.exports = { BACKUP_FORMAT, BACKUP_VERSION, exportBackup, importBackup, validBackup };
+module.exports = { exportBackup, importBackup };

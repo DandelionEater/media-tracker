@@ -10,6 +10,7 @@ const {
 const { registerStartupIpc } = require('./startup');
 const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
 const { registerSystemLocaleIpc } = require('./systemLocale');
+const { registerAppLifecycleIpc } = require('./appLifecycle');
 const { registerLayoutConfigIpc } = require('./layoutConfig');
 const {
   attachWindowState,
@@ -92,6 +93,7 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
+  registerAppLifecycleIpc();
   const win = createWindow();
   mainWindow = win;
 

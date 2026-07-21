@@ -264,48 +264,6 @@ async function searchMangaBatch(searches, options = {}) {
   return searchMediaBatch(searches, { ...options, mediaType: 'MANGA' });
 }
 
-async function getTrendingAnime(options = {}) {
-  const hideAdultContent = options.hideAdultContent !== false;
-  const query = `
-    query ($isAdult: Boolean) {
-      Page(page: 1, perPage: 8) {
-        media(type: ANIME, status: RELEASING, sort: TRENDING_DESC, isAdult: $isAdult) {
-          id
-          isAdult
-          title {
-            romaji
-            english
-            native
-            userPreferred
-          }
-          coverImage {
-            large
-          }
-          bannerImage
-          episodes
-          format
-          status
-          season
-          seasonYear
-          averageScore
-          meanScore
-          popularity
-          favourites
-          nextAiringEpisode {
-            episode
-            airingAt
-          }
-        }
-      }
-    }
-  `;
-
-  const data = await anilistRequestWithRetry(query, {
-    isAdult: hideAdultContent ? false : undefined,
-  });
-  return data.data.Page.media;
-}
-
 async function getDiscoverMedia(options = {}) {
   const hideAdultContent = options.hideAdultContent !== false;
   const { currentSeason, currentYear, nextSeason, nextYear } = getSeasonWindows();
@@ -488,11 +446,6 @@ async function getDiscoverMedia(options = {}) {
       ],
     },
   };
-}
-
-async function getDiscoverAnime(options = {}) {
-  const discovery = await getDiscoverMedia(options);
-  return discovery.anime.shelves;
 }
 
 async function getDiscoverShelfAnime(options = {}) {
@@ -1480,9 +1433,7 @@ module.exports = {
   searchAnime,
   searchAnimeBatch,
   searchMangaBatch,
-  getTrendingAnime,
   getDiscoverMedia,
-  getDiscoverAnime,
   getDiscoverShelfAnime,
   getUserAnimeCollection,
   getUserMangaCollection,

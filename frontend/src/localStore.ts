@@ -21,8 +21,22 @@ import type {
 
 type LocalSettings = AppSettings;
 
+type SyncProvider = "anilist" | "mal";
+type SyncFailureRecord = {
+  provider: SyncProvider;
+  mediaType: "ANIME" | "MANGA";
+  mediaId: number;
+  animeTitle: string | null;
+  attempts: number;
+  lastError: string | null;
+  operation: string;
+  updatedAt: string;
+  excludedAt: string | null;
+  excludedBy?: "user" | "system" | null;
+};
+
 type LocalState = {
-  version: 5;
+  version: 6;
   userId: number;
   settings: LocalSettings | null;
   anime: Record<string, StoredAnime>;
@@ -34,8 +48,38 @@ type LocalState = {
   dirtyMangaEntries: Record<string, boolean>;
   deletedMangaEntries: Record<string, DeletedListEntry>;
   syncHistory: SyncActivityItem[];
+  syncFailures: Record<string, SyncFailureRecord>;
   autoSyncEnabled: boolean;
 };
+
+const SYNC_FAILURE_LIMIT = 5;
+
+function getSyncProvider(operation: unknown): SyncProvider | null {
+  const value = String(operation || "").toLowerCase();
+  if (value.includes("anilist")) return "anilist";
+  if (value.includes("mal")) return "mal";
+  return null;
+}
+
+function getSyncMediaIdentity(item: Partial<SyncActivityItem>) {
+  const mediaType = item.media_type === "MANGA" || Boolean(item.manga_id) ? "MANGA" : "ANIME";
+  const mediaId = Number(mediaType === "MANGA" ? item.manga_id ?? item.anime_id : item.anime_id);
+  return { mediaType, mediaId } as const;
+}
+
+function getSyncFailureKey(provider: SyncProvider, mediaType: "ANIME" | "MANGA", mediaId: number) {
+  return `${provider}:${mediaType}:${mediaId}`;
+}
+
+function isExcludedForProvider(
+  state: LocalState,
+  provider: SyncProvider | null | undefined,
+  mediaType: "ANIME" | "MANGA",
+  mediaId: number
+) {
+  if (!provider) return false;
+  return Boolean(state.syncFailures[getSyncFailureKey(provider, mediaType, mediaId)]?.excludedAt);
+}
 
 const DB_NAME = "seenary-local";
 const DB_VERSION = 1;
@@ -44,7 +88,7 @@ const LEGACY_STATE_PREFIX = "seenary.local-user.";
 const LEGACY_MIGRATED_PREFIX = "seenary.indexeddb-migrated.";
 const FALLBACK_STATE_PREFIX = "seenary.local-fallback.";
 const BACKUP_FORMAT = "seenary.local-backup";
-const BACKUP_VERSION = 2;
+const BACKUP_VERSION = 3;
 
 type ValidSeenaryBackup = SeenaryBackup & {
   format: string;
@@ -249,7 +293,7 @@ function runStore<T>(
 
 function createEmptyState(userId: number): LocalState {
   return {
-    version: 5,
+    version: 6,
     userId,
     settings: null,
     anime: {},
@@ -261,6 +305,7 @@ function createEmptyState(userId: number): LocalState {
     dirtyMangaEntries: {},
     deletedMangaEntries: {},
     syncHistory: [],
+    syncFailures: {},
     autoSyncEnabled: true,
   };
 }
@@ -271,7 +316,7 @@ function normalizeState(userId: number, value: Partial<LocalState> | null | unde
   const needsMangaSyncBootstrap = Number(value?.version ?? 0) < 5;
 
   return {
-    version: 5,
+    version: 6,
     userId,
     settings: value?.settings ?? null,
     anime: value?.anime && typeof value.anime === "object" ? value.anime : {},
@@ -293,6 +338,8 @@ function normalizeState(userId: number, value: Partial<LocalState> | null | unde
         ? value.deletedMangaEntries
         : {},
     syncHistory: Array.isArray(value?.syncHistory) ? value.syncHistory : [],
+    syncFailures:
+      value?.syncFailures && typeof value.syncFailures === "object" ? value.syncFailures : {},
     autoSyncEnabled:
       typeof value?.autoSyncEnabled === "boolean" ? value.autoSyncEnabled : true,
   };
@@ -1160,11 +1207,11 @@ export const localStore = {
     }
   },
 
-  async getSyncPayload(userId: number) {
+  async getSyncPayload(userId: number, provider?: SyncProvider | null) {
     const state = await readState(userId);
     const entries = Object.keys(state.dirtyEntries).flatMap((key) => {
       const entry = state.entries[key];
-      if (!entry) return [];
+      if (!entry || isExcludedForProvider(state, provider, "ANIME", entry.anime_id)) return [];
       const anime = state.anime[String(entry.anime_id)] ?? {};
 
       return [
@@ -1183,7 +1230,7 @@ export const localStore = {
 
     const mangaEntries = Object.keys(state.dirtyMangaEntries).flatMap((key) => {
       const entry = state.mangaEntries[key];
-      if (!entry) return [];
+      if (!entry || isExcludedForProvider(state, provider, "MANGA", entry.manga_id)) return [];
       const manga = state.manga[String(entry.manga_id)] ?? {};
 
       return [
@@ -1203,24 +1250,38 @@ export const localStore = {
 
     return {
       entries,
-      deletedEntries: Object.values(state.deletedEntries),
+      deletedEntries: Object.values(state.deletedEntries).filter(
+        (entry) => !isExcludedForProvider(state, provider, "ANIME", Number(entry.anime_id))
+      ),
       mangaEntries,
-      deletedMangaEntries: Object.values(state.deletedMangaEntries),
+      deletedMangaEntries: Object.values(state.deletedMangaEntries).filter(
+        (entry) => !isExcludedForProvider(state, provider, "MANGA", Number(entry.manga_id))
+      ),
     };
   },
 
-  async getPendingSyncCount(userId: number) {
+  async getPendingSyncCount(userId: number, provider?: SyncProvider | null) {
     const state = await readState(userId);
     return (
-      Object.keys(state.dirtyEntries).length +
-      Object.keys(state.deletedEntries).length +
-      Object.keys(state.dirtyMangaEntries).length +
-      Object.keys(state.deletedMangaEntries).length
+      Object.keys(state.dirtyEntries).filter(
+        (key) => !isExcludedForProvider(state, provider, "ANIME", Number(key))
+      ).length +
+      Object.values(state.deletedEntries).filter(
+        (entry) => !isExcludedForProvider(state, provider, "ANIME", Number(entry.anime_id))
+      ).length +
+      Object.keys(state.dirtyMangaEntries).filter(
+        (key) => !isExcludedForProvider(state, provider, "MANGA", Number(key))
+      ).length +
+      Object.values(state.deletedMangaEntries).filter(
+        (entry) => !isExcludedForProvider(state, provider, "MANGA", Number(entry.manga_id))
+      ).length
     );
   },
 
   async markSynced(userId: number, result: ImportPayload) {
     const state = await readState(userId);
+    const now = new Date().toISOString();
+    let newlyExcluded = 0;
     const failedKeys = new Set(
       (result?.activity ?? [])
         .filter((item) => item?.status !== "completed")
@@ -1231,9 +1292,34 @@ export const localStore = {
         )
     );
     for (const item of result?.activity ?? []) {
+      const provider = getSyncProvider(item?.operation);
+      const { mediaType, mediaId } = getSyncMediaIdentity(item ?? {});
+      if (provider && Number.isInteger(mediaId) && mediaId > 0) {
+        const failureKey = getSyncFailureKey(provider, mediaType, mediaId);
+        if (item?.status === "completed") {
+          delete state.syncFailures[failureKey];
+        } else if (item?.status === "failed") {
+          const previous = state.syncFailures[failureKey];
+          const attempts = (previous?.attempts ?? 0) + 1;
+          const excludedAt = attempts >= SYNC_FAILURE_LIMIT ? previous?.excludedAt ?? now : null;
+          if (excludedAt && !previous?.excludedAt) newlyExcluded += 1;
+          state.syncFailures[failureKey] = {
+            provider,
+            mediaType,
+            mediaId,
+            animeTitle: String(item.animeTitle || "") || previous?.animeTitle || null,
+            attempts,
+            lastError: String(item.message || "") || previous?.lastError || null,
+            operation: String(item.operation || previous?.operation || "sync_entry"),
+            updatedAt: now,
+            excludedAt,
+            excludedBy: excludedAt ? previous?.excludedBy ?? "system" : null,
+          };
+        }
+      }
+
       if (item?.status !== "completed") continue;
-      const isManga = item.media_type === "MANGA" || Boolean(item.manga_id);
-      const mediaId = isManga ? item.manga_id ?? item.anime_id : item.anime_id;
+      const isManga = mediaType === "MANGA";
       if (!mediaId || failedKeys.has(`${isManga ? "MANGA" : "ANIME"}:${mediaId}`)) continue;
 
       if (isManga) {
@@ -1256,6 +1342,53 @@ export const localStore = {
       ...state.syncHistory,
     ].slice(0, 100);
     await writeState(userId, state);
+    return { newlyExcluded };
+  },
+
+  async restoreSyncExclusion(
+    userId: number,
+    provider: SyncProvider,
+    mediaType: "ANIME" | "MANGA",
+    mediaId: number
+  ) {
+    const state = await readState(userId);
+    const key = getSyncFailureKey(provider, mediaType, mediaId);
+    if (!state.syncFailures[key]?.excludedAt) {
+      return { ok: false, message: "This sync entry is not excluded." };
+    }
+
+    delete state.syncFailures[key];
+    if (mediaType === "MANGA") {
+      if (state.mangaEntries[String(mediaId)]) state.dirtyMangaEntries[String(mediaId)] = true;
+    } else if (state.entries[String(mediaId)]) {
+      state.dirtyEntries[String(mediaId)] = true;
+    }
+    await writeState(userId, state);
+    return { ok: true, message: "The entry was restored to the sync queue." };
+  },
+
+  async excludeSyncEntry(
+    userId: number,
+    provider: SyncProvider,
+    mediaType: "ANIME" | "MANGA",
+    mediaId: number
+  ) {
+    const state = await readState(userId);
+    const key = getSyncFailureKey(provider, mediaType, mediaId);
+    const failure = state.syncFailures[key];
+    if (!failure || failure.attempts < 1 || failure.excludedAt) {
+      return { ok: false, message: "Only queued entries with a failed attempt can be excluded." };
+    }
+
+    const now = new Date().toISOString();
+    state.syncFailures[key] = {
+      ...failure,
+      excludedAt: now,
+      excludedBy: "user",
+      updatedAt: now,
+    };
+    await writeState(userId, state);
+    return { ok: true, message: "The entry was excluded by the user from automatic sync." };
   },
 
   async replaceEntriesFromImport(userId: number, importResult: ImportPayload) {
@@ -1297,6 +1430,10 @@ export const localStore = {
         existing,
         false
       );
+      // Imports must preserve the provider's dates exactly. buildEntry supplies
+      // convenient default dates for local edits, but a remote null is not "today".
+      nextEntry.started_at = toDateValue(item.startedAt);
+      nextEntry.completed_at = toDateValue(item.completedAt);
 
       if (existing && entriesMatch(existing, nextEntry)) {
         unchanged += 1;
@@ -1456,7 +1593,7 @@ export const localStore = {
     await writeState(userId, state);
   },
 
-  async getSyncActivity(userId: number) {
+  async getSyncActivity(userId: number, provider?: SyncProvider | null) {
     const state = await readState(userId);
     const isPullActivity = (item: SyncActivityItem) =>
       String(item.operation || "").startsWith("pull_");
@@ -1478,11 +1615,23 @@ export const localStore = {
           }
         : item;
     };
+    const enrichPendingFailure = (item: SyncActivityItem): SyncActivityItem => {
+      const { mediaType, mediaId } = getSyncMediaIdentity(item);
+      if (!provider || !Number.isInteger(mediaId) || mediaId <= 0) return item;
+      const failure = state.syncFailures[getSyncFailureKey(provider, mediaType, mediaId)];
+      if (!failure || failure.excludedAt) return item;
+      return {
+        ...item,
+        provider,
+        attempts: failure.attempts,
+        last_error: failure.lastError,
+      };
+    };
     return {
       pending: ([
         ...Object.keys(state.dirtyEntries).flatMap((key) => {
           const entry = state.entries[key];
-          if (!entry) return [];
+          if (!entry || isExcludedForProvider(state, provider, "ANIME", entry.anime_id)) return [];
           return [
             {
               id: -Math.abs(entry.anime_id),
@@ -1498,7 +1647,9 @@ export const localStore = {
             },
           ];
         }),
-        ...Object.values(state.deletedEntries).map((entry) => ({
+        ...Object.values(state.deletedEntries).filter(
+          (entry) => !isExcludedForProvider(state, provider, "ANIME", Number(entry.anime_id))
+        ).map((entry) => ({
           id: -Math.abs(Number(entry.anime_id)) - 1_000_000,
           anime_id: entry.anime_id,
           animeTitle: entry.title,
@@ -1508,7 +1659,7 @@ export const localStore = {
         })),
         ...Object.keys(state.dirtyMangaEntries).flatMap((key) => {
           const entry = state.mangaEntries[key];
-          if (!entry) return [];
+          if (!entry || isExcludedForProvider(state, provider, "MANGA", entry.manga_id)) return [];
           return [
             {
               id: -Math.abs(entry.manga_id) - 2_000_000,
@@ -1525,7 +1676,9 @@ export const localStore = {
             },
           ];
         }),
-        ...Object.values(state.deletedMangaEntries).map((entry) => ({
+        ...Object.values(state.deletedMangaEntries).filter(
+          (entry) => !isExcludedForProvider(state, provider, "MANGA", Number(entry.manga_id))
+        ).map((entry) => ({
           id: -Math.abs(Number(entry.manga_id)) - 3_000_000,
           manga_id: entry.manga_id,
           media_type: "MANGA" as const,
@@ -1534,7 +1687,7 @@ export const localStore = {
           status: "pending",
           created_at: entry.deleted_at ?? new Date().toISOString(),
         })),
-      ] as SyncActivityItem[]).map(enrichTitleFields),
+      ] as SyncActivityItem[]).map(enrichPendingFailure).map(enrichTitleFields),
       completed: state.syncHistory.filter(
         (item) => item.status === "completed" && !isPullActivity(item)
       ).map(enrichTitleFields),
@@ -1542,6 +1695,27 @@ export const localStore = {
         (item) => item.status === "failed" && !isPullActivity(item)
       ).map(enrichTitleFields),
       pulled: state.syncHistory.filter(isPullActivity).map(enrichTitleFields),
+      excluded: Object.values(state.syncFailures)
+        .filter((failure) => Boolean(failure.excludedAt))
+        .sort((left, right) => String(right.excludedAt).localeCompare(String(left.excludedAt)))
+        .map((failure, index) =>
+          enrichTitleFields({
+            id: -4_000_000 - index - failure.mediaId,
+            anime_id: failure.mediaType === "ANIME" ? failure.mediaId : null,
+            manga_id: failure.mediaType === "MANGA" ? failure.mediaId : null,
+            media_type: failure.mediaType,
+            animeTitle: failure.animeTitle,
+            operation: failure.operation,
+            provider: failure.provider,
+            status: "excluded",
+            excluded_by: failure.excludedBy ?? (failure.attempts >= SYNC_FAILURE_LIMIT ? "system" : "user"),
+            attempts: failure.attempts,
+            last_error: failure.lastError,
+            message: failure.lastError,
+            created_at: failure.excludedAt ?? failure.updatedAt,
+            updated_at: failure.updatedAt,
+          })
+        ),
     };
   },
 
@@ -1564,6 +1738,7 @@ export const localStore = {
         dirtyMangaEntries: state.dirtyMangaEntries,
         deletedMangaEntries: state.deletedMangaEntries,
         syncHistory: state.syncHistory,
+        syncFailures: state.syncFailures,
         autoSyncEnabled: state.autoSyncEnabled,
       },
     };
@@ -1637,6 +1812,9 @@ export const localStore = {
       }
 
       state.syncHistory = mergeSyncHistory(state.syncHistory, backup.data.syncHistory);
+      if (backupVersion >= 3 && isPlainRecord(backup.data.syncFailures)) {
+        state.syncFailures = backup.data.syncFailures as Record<string, SyncFailureRecord>;
+      }
       if (typeof backup.data.autoSyncEnabled === "boolean") {
         state.autoSyncEnabled = backup.data.autoSyncEnabled;
       }

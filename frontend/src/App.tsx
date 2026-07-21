@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useMemo,
@@ -14,13 +16,12 @@ import {
 } from "@heroicons/react/24/outline";
 import { ResultsGrid } from "./components/ResultsGrid";
 import { searchMedia } from "./services/anilist";
-import MediaDetails from "./components/AnimeDetails";
 import { TopNavbar } from "./components/TopNavbar";
 import { HomePage } from "./components/HomePage";
 import { AuthScreen } from "./components/AuthScreen";
 import { MyListPage } from "./components/MyListPage";
 import { ListEntryModal } from "./components/ListEntryModal";
-import { SettingsPage, type AppSettings } from "./components/SettingsPage";
+import type { AppSettings } from "./components/SettingsPage";
 import { getPreferredTitle } from "./utils/titlePreference";
 import { SyncToast, type SyncToastState } from "./components/SyncToast";
 import { UpdateModal } from "./components/UpdateModal";
@@ -36,6 +37,12 @@ import type {
   TrackedMediaEntry,
   TrackedMangaEntry,
 } from "./types/domain";
+import { AsyncStatePanel } from "./components/ui/AsyncStatePanel";
+
+const MediaDetails = lazy(() => import("./components/AnimeDetails"));
+const SettingsPage = lazy(() =>
+  import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage }))
+);
 
 const EMPTY_MEDIA_SEARCH_RESULTS: MediaSearchResults = { anime: [], manga: [] };
 
@@ -176,6 +183,10 @@ function joinLabels(labels: string[]) {
   if (labels.length <= 1) return labels[0] ?? "";
   if (labels.length === 2) return `${labels[0]} and ${labels[1]}`;
   return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
+}
+
+function PageLoadingFallback() {
+  return <AsyncStatePanel title="Loading view..." busy compact />;
 }
 
 function formatAutoSyncMessage(result: AutoSyncCompleteEvent) {
@@ -1316,11 +1327,16 @@ function App() {
                 hideMyListShortcut={isLibraryLensVisible}
               />
 
-              <SyncToast toast={syncToast} />
+              <SyncToast
+                key={syncToast?.id ?? "no-sync-toast"}
+                toast={syncToast}
+                onDismiss={() => setSyncToast(null)}
+              />
 
               <div className="min-h-0 flex-1">
-                {currentView === "details" && selectedAnimeId !== null ? (
-                  <MediaDetails
+                <Suspense fallback={<PageLoadingFallback />}>
+                  {currentView === "details" && selectedAnimeId !== null ? (
+                    <MediaDetails
                     mediaId={selectedAnimeId}
                     mediaType={selectedMediaType}
                     onBack={handleBackFromDetails}
@@ -1330,8 +1346,8 @@ function App() {
                     titleLanguage={settings.titleLanguage}
                     hideAdultContent={settings.hideAdultContent}
                   />
-                ) : currentView === "list" ? (
-                  <MyListPage
+                  ) : currentView === "list" ? (
+                    <MyListPage
                     userId={authUser.id}
                     entries={privacySafeTrackedEntries}
                     mangaEntries={privacySafeTrackedMangaEntries}
@@ -1346,8 +1362,8 @@ function App() {
                     onLibraryDestinationChange={handleLibraryDestinationChange}
                     onLibraryLensVisibilityChange={setIsLibraryLensVisible}
                   />
-                ) : currentView === "settings" ? (
-                  <SettingsPage
+                  ) : currentView === "settings" ? (
+                    <SettingsPage
                     username={authUser.username}
                     settings={settings}
                     onUpdateSettings={handleUpdateSettings}
@@ -1366,8 +1382,8 @@ function App() {
                     onExportLocalBackup={handleExportLocalBackup}
                     onImportLocalBackup={handleImportLocalBackup}
                   />
-                ) : (
-                  <HomePage
+                  ) : (
+                    <HomePage
                     userId={authUser.id}
                     hasResults={
                       searchResultsVisible &&
@@ -1459,8 +1475,9 @@ function App() {
                         </div>
                       )}
                     </div>
-                  </HomePage>
-                )}
+                    </HomePage>
+                  )}
+                </Suspense>
               </div>
 
               <GlobalScrollToTop
@@ -1592,26 +1609,7 @@ function SearchErrorPanel({
   isRetrying: boolean;
   onRetry: () => void;
 }) {
-  return (
-    <div className="flex min-h-72 items-center justify-center px-4 text-white">
-      <section className="w-full max-w-xl rounded-3xl border border-white/10 bg-white/[0.04] p-6 text-center shadow-xl">
-        <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-2xl border border-amber-300/20 bg-amber-300/10 text-amber-100">
-          <ExclamationTriangleIcon className="h-7 w-7" />
-        </div>
-        <h2 className="mt-5 text-lg font-semibold">There was a problem searching AniList.</h2>
-        <p className="mt-2 text-sm leading-6 text-white/55">{message}</p>
-        <button
-          type="button"
-          disabled={isRetrying}
-          onClick={onRetry}
-          className="mt-6 inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white px-4 py-2.5 text-sm font-semibold text-black transition hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-white/55 disabled:cursor-not-allowed disabled:opacity-60"
-        >
-          <ArrowPathIcon className={`h-4 w-4 ${isRetrying ? "animate-spin" : ""}`} />
-          {isRetrying ? "Retrying..." : "Retry"}
-        </button>
-      </section>
-    </div>
-  );
+  return <AsyncStatePanel icon={ExclamationTriangleIcon} title="There was a problem searching AniList." message={message} busy={isRetrying} actionLabel={isRetrying ? "Retrying..." : "Retry"} onAction={onRetry} />;
 }
 
 function SearchEmptyPanel({

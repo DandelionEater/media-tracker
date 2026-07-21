@@ -572,7 +572,5 @@ module.exports = {
   deleteAnimeListStatus,
   saveMangaListStatus,
   deleteMangaListStatus,
-  buildListStatusPayload,
-  buildMangaListStatusPayload,
   requireClientId,
 };

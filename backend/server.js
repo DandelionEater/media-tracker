@@ -25,6 +25,7 @@ const {
   getMalAccountByMalUserId,
   getMalAccountByUserId,
   deleteMalAccountByUserId,
+  clearProviderSyncQueue,
   mergeUserIntoUser,
   upsertAniListAccount,
   updateAniListAccountImportTime,
@@ -47,6 +48,8 @@ const {
   logoutUser,
   normalizeUsername,
   validateUsername,
+  verifyLocalPassword,
+  setLocalPassword,
 } = require('./auth');
 const {
   getMyAnimeList,
@@ -368,6 +371,17 @@ function buildMalAccountPayload(account) {
     lastImportAt: account.last_import_at,
     updatedAt: account.updated_at,
   };
+}
+
+function getLocalCredentialsConfirmed(userId) {
+  const value = getSafeUserById(userId)?.local_credentials_confirmed;
+  return value === null || value === undefined ? null : Boolean(value);
+}
+
+function getUnlinkPasswordError(userId) {
+  return getLocalCredentialsConfirmed(userId) === true
+    ? 'Incorrect local password.'
+    : 'Confirm an existing local password or create one before unlinking this account.';
 }
 
 function createWebSession(res, userId) {
@@ -973,6 +987,66 @@ async function importAuthenticatedAniListList(accessToken, viewer) {
   return combinedResult;
 }
 
+async function importAuthenticatedMalList(accessToken, viewer, userId) {
+  const [animeList, mangaList] = await Promise.all([
+    mal.getViewerAnimeList(accessToken),
+    mal.getViewerMangaList(accessToken),
+  ]);
+  const animeResult = await previewMalImport(animeList, {
+    submittedByUserId: userId,
+  });
+  const mangaResult = await previewMalMangaPull(mangaList, {
+    submittedByUserId: userId,
+  });
+  const importResult = buildLocalImportResult(
+    animeResult.preview,
+    IMPORT_STATUS_ORDER,
+    [],
+    animeResult.username || viewer.name
+  );
+  const localMangaEntries = mangaResult.localMangaEntries || [];
+  const mappingFailures = [
+    ...(animeResult.preview?.mappingFailures || []).map((failure) => ({
+      ...failure,
+      mediaType: 'ANIME',
+    })),
+    ...(mangaResult.mappingFailures || []).map((failure) => ({
+      ...failure,
+      mediaType: 'MANGA',
+    })),
+  ];
+  const skipped = Number(animeResult.preview?.skipped || 0) + Number(mangaResult.skipped || 0);
+  const imported = importResult.localEntries.length + localMangaEntries.length;
+  const result = {
+    ...importResult,
+    ok: true,
+    partial: skipped > 0,
+    message: `Imported ${imported} Anime and Manga entr${
+      imported === 1 ? 'y' : 'ies'
+    } from MyAnimeList.${
+      skipped > 0
+        ? ` ${skipped} remote entr${skipped === 1 ? 'y was' : 'ies were'} skipped because no safe AniList match was found.`
+        : ''
+    }`,
+    localMangaEntries,
+    summary: {
+      ...(importResult.summary || {}),
+      sourceUsername: animeResult.username || viewer.name,
+      totalFound: Number(importResult.summary?.totalFound || 0) + localMangaEntries.length,
+      imported,
+      created: imported,
+      mangaFound: localMangaEntries.length,
+      mangaMapped: mangaResult.mapped,
+      mangaUnmapped: mangaResult.skipped,
+      animeUnmapped: Number(animeResult.preview?.skipped || 0),
+      mappingFailures,
+    },
+  };
+
+  updateMalAccountImportTime(viewer.id);
+  return result;
+}
+
 async function finishAniListLogin({ accessToken, viewer, userId, res }) {
   deleteAniListAccountByUserId(userId);
   deleteMalAccountByUserId(userId);
@@ -1018,8 +1092,14 @@ async function finishAniListLogin({ accessToken, viewer, userId, res }) {
 }
 
 async function linkAniListToUser({ accessToken, viewer, userId }) {
+  if (getMalAccountByUserId(userId)) {
+    return {
+      ok: false,
+      linked: false,
+      message: 'Unlink MyAnimeList before linking AniList. Seenary supports one sync provider at a time.',
+    };
+  }
   deleteAniListAccountByUserId(userId);
-  deleteMalAccountByUserId(userId);
   upsertAniListAccount({
     userId,
     anilistUserId: viewer.id,
@@ -1177,19 +1257,40 @@ async function finishMalLogin({ tokenData, viewer, userId, res }) {
     createWebSession(res, userId);
   }
 
+  let importResult;
+
+  try {
+    importResult = await importAuthenticatedMalList(
+      tokenData.access_token,
+      viewer,
+      userId
+    );
+  } catch (error) {
+    console.error('MyAnimeList authenticated import error:', error);
+    importResult = {
+      ok: false,
+      message: error.message || 'Failed to import MyAnimeList lists.',
+    };
+  }
+
   return {
     ok: true,
-    message: 'Logged in with MyAnimeList.',
+    message: importResult.ok
+      ? 'Logged in with MyAnimeList and imported your Anime and Manga lists.'
+      : 'Logged in with MyAnimeList, but list import failed.',
     user: loginResult.user,
-    import: {
-      ok: true,
-      message: 'MyAnimeList import preview will be available in the sync step.',
-    },
+    import: importResult,
   };
 }
 
 async function linkMalToUser({ tokenData, viewer, userId }) {
-  deleteAniListAccountByUserId(userId);
+  if (getAniListAccountByUserId(userId)) {
+    return {
+      ok: false,
+      linked: false,
+      message: 'Unlink AniList before linking MyAnimeList. Seenary supports one sync provider at a time.',
+    };
+  }
   deleteMalAccountByUserId(userId);
 
   upsertMalAccount({
@@ -1202,12 +1303,26 @@ async function linkMalToUser({ tokenData, viewer, userId }) {
     tokenExpiresAt: getMalTokenExpiry(tokenData),
   });
 
+  const importResult = await importAuthenticatedMalList(
+    tokenData.access_token,
+    viewer,
+    userId
+  ).catch((error) => {
+    console.error('MyAnimeList link import error:', error);
+    return {
+      ok: false,
+      message: error.message || 'Failed to import MyAnimeList lists.',
+    };
+  });
+
   const account = getMalAccountByUserId(userId);
 
   return {
     ok: true,
     linked: true,
-    message: `Linked MyAnimeList account ${viewer.name}.`,
+    message: importResult.ok
+      ? `Linked MyAnimeList account ${viewer.name} and imported your Anime and Manga lists.`
+      : `Linked MyAnimeList account ${viewer.name}, but list import failed.`,
     account: account
       ? buildMalAccountPayload(account)
       : {
@@ -1217,6 +1332,7 @@ async function linkMalToUser({ tokenData, viewer, userId }) {
           lastImportAt: null,
           updatedAt: new Date().toISOString(),
         },
+    import: importResult,
   };
 }
 
@@ -1518,12 +1634,6 @@ async function handleRpc(method, args, req, res) {
     }
     case 'searchMedia':
       return await anilist.searchMedia(args[0], { hideAdultContent: args[1] });
-    case 'searchAnime':
-      return await anilist.searchAnime(args[0], { hideAdultContent: args[1] });
-    case 'getTrendingAnime':
-      return await anilist.getTrendingAnime({ hideAdultContent: args[0] });
-    case 'getDiscoverAnime':
-      return await anilist.getDiscoverAnime({ hideAdultContent: args[0] });
     case 'getDiscoverMedia':
       return await anilist.getDiscoverMedia({ hideAdultContent: args[0] });
     case 'getDiscoverShelfAnime':
@@ -1838,6 +1948,43 @@ async function handleRpc(method, args, req, res) {
       if (result.ok && result.user?.id) createWebSession(res, result.user.id);
       return result;
     }
+    case 'setLocalPassword': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+      if (getLocalCredentialsConfirmed(currentSession.user.id) === true) {
+        return { ok: false, message: 'Your local password is already confirmed.' };
+      }
+      const result = await setLocalPassword(currentSession.user.id, args[0]);
+      return result.ok ? { ...result, localCredentialsConfirmed: true } : result;
+    }
+    case 'unlinkAniListAccount':
+    case 'unlinkMalAccount': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+      const userId = currentSession.user.id;
+      const provider = method === 'unlinkMalAccount' ? 'mal' : 'anilist';
+      const validPassword = await verifyLocalPassword(userId, args[0]);
+      if (!validPassword) {
+        return {
+          ok: false,
+          linked: true,
+          needsLocalPassword: getLocalCredentialsConfirmed(userId) !== true,
+          message: getUnlinkPasswordError(userId),
+        };
+      }
+      if (provider === 'mal') deleteMalAccountByUserId(userId);
+      else deleteAniListAccountByUserId(userId);
+      clearProviderSyncQueue(userId, provider);
+      const providerName = provider === 'mal' ? 'MyAnimeList' : 'AniList';
+      return {
+        ok: true,
+        linked: false,
+        localCredentialsConfirmed: true,
+        message: `${providerName} was unlinked. Your Seenary library data was kept.`,
+      };
+    }
     case 'logout':
       clearWebSession(req, res);
       logoutUser();
@@ -2044,6 +2191,14 @@ async function handleRpc(method, args, req, res) {
         return { ok: false, message: 'You must be logged in.', linked: false };
       }
 
+      if (getMalAccountByUserId(currentSession.user.id)) {
+        return {
+          ok: false,
+          message: 'Unlink MyAnimeList before linking AniList. Seenary supports one sync provider at a time.',
+          linked: false,
+        };
+      }
+
       const { flow, authUrl } = createAniListFlow({
         type: 'link',
         userId: currentSession.user.id,
@@ -2062,6 +2217,14 @@ async function handleRpc(method, args, req, res) {
     case 'linkMalAccount': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
         return { ok: false, message: 'You must be logged in.', linked: false };
+      }
+
+      if (getAniListAccountByUserId(currentSession.user.id)) {
+        return {
+          ok: false,
+          message: 'Unlink AniList before linking MyAnimeList. Seenary supports one sync provider at a time.',
+          linked: false,
+        };
       }
 
       const { flow, authUrl } = createMalFlow({
@@ -2227,6 +2390,7 @@ async function handleRpc(method, args, req, res) {
       return {
         ok: true,
         linked: Boolean(linkedAccount),
+        localCredentialsConfirmed: getLocalCredentialsConfirmed(currentSession.user.id),
         account: linkedAccount
           ? {
               anilistUserId: linkedAccount.anilist_user_id,
@@ -2249,6 +2413,7 @@ async function handleRpc(method, args, req, res) {
         ok: true,
         linked: Boolean(linkedAccount),
         account: linkedAccount ? buildMalAccountPayload(linkedAccount) : null,
+        localCredentialsConfirmed: getLocalCredentialsConfirmed(currentSession.user.id),
       };
     }
     default:

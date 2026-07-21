@@ -152,7 +152,7 @@ function formatWindowsTime(date: Date, format: WindowsRegionalFormat) {
   return formatWindowsPattern(date, format.shortTime, WINDOWS_TIME_PATTERN_CHARS, format);
 }
 
-export function parseAppDate(value: DateInput): Date | null {
+function parseAppDate(value: DateInput): Date | null {
   if (value === null || value === undefined || value === "") {
     return null;
   }

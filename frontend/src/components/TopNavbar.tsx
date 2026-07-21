@@ -8,11 +8,13 @@ import {
   Cog6ToothIcon,
   HomeIcon,
   MagnifyingGlassIcon,
+  PowerIcon,
   UserCircleIcon,
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { formatLocalDateTime } from "../utils/dateFormat";
 import type { NavbarStyle } from "./SettingsPage";
+import { FloatingMenu } from "./ui/FloatingMenu";
 
 type NotificationItem = {
   id: number;
@@ -145,7 +147,7 @@ export function TopNavbar({
     scheduleCloseNotifications();
   };
 
-  const focusSearchInput = (selectExistingText = true) => {
+  const focusSearchInput = useCallback((selectExistingText = true) => {
     const input = searchInputRef.current;
     if (!input) return;
 
@@ -158,7 +160,7 @@ export function TopNavbar({
         input.select();
       });
     }
-  };
+  }, []);
 
   const handleClearSearch = () => {
     onClear();
@@ -234,7 +236,17 @@ export function TopNavbar({
     window.requestAnimationFrame(() => {
       focusSearchInput(false);
     });
-  }, [focusSearchOnMount]);
+  }, [focusSearchInput, focusSearchOnMount]);
+
+  useEffect(() => {
+    if (!window.desktopWindow?.onFocusSearch) return;
+
+    return window.desktopWindow.onFocusSearch(() => {
+      window.requestAnimationFrame(() => {
+        focusSearchInput(false);
+      });
+    });
+  }, [focusSearchInput]);
 
   useEffect(() => {
     function handleGlobalSearchFocus(event: KeyboardEvent) {
@@ -247,7 +259,7 @@ export function TopNavbar({
           !input ||
           !query.trim() ||
           (!isSearchInput && isKeyboardInputTarget(target)) ||
-          document.querySelector('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')
+          hasOpenModalSurface()
         ) {
           return;
         }
@@ -279,7 +291,7 @@ export function TopNavbar({
 
     document.addEventListener("keydown", handleGlobalSearchFocus);
     return () => document.removeEventListener("keydown", handleGlobalSearchFocus);
-  }, [onClear, onSearch, query]);
+  }, [focusSearchInput, onClear, onSearch, query]);
 
   return (
     <div
@@ -446,14 +458,8 @@ export function TopNavbar({
               )}
             </button>
 
-            <div
-              onMouseEnter={openNotifications}
-              className={`absolute right-0 top-full mt-2 w-80 rounded-2xl border border-white/10 bg-[#111111]/95 p-2 shadow-2xl backdrop-blur-md transition-all duration-200 ${
-                isNotificationsOpen
-                  ? "pointer-events-auto translate-y-0 opacity-100"
-                  : "pointer-events-none translate-y-[-6px] opacity-0"
-              }`}
-            >
+            <FloatingMenu open={isNotificationsOpen} widthClass="w-80" role="dialog" className="" >
+              <div onMouseEnter={openNotifications}>
               <div className="flex items-center justify-between gap-3 px-2 pb-2 pt-1">
                 <p className="text-sm font-semibold text-white">Notifications</p>
                 {notifications.length > 0 && (
@@ -530,7 +536,8 @@ export function TopNavbar({
                   </div>
                 )}
               </div>
-            </div>
+              </div>
+            </FloatingMenu>
           </div>
 
           <div
@@ -559,14 +566,8 @@ export function TopNavbar({
               />
             </button>
 
-            <div
-              onMouseEnter={openAccountMenu}
-              className={`absolute right-0 top-full mt-2 w-48 rounded-2xl border border-white/10 bg-[#111111]/95 p-2 shadow-2xl backdrop-blur-md transition-all duration-200 ${
-                isAccountMenuOpen
-                  ? "pointer-events-auto translate-y-0 opacity-100"
-                  : "pointer-events-none translate-y-[-6px] opacity-0"
-              }`}
-            >
+            <FloatingMenu open={isAccountMenuOpen} widthClass="w-48">
+              <div onMouseEnter={openAccountMenu}>
               <button
                 type="button"
                 onClick={() => {
@@ -594,7 +595,19 @@ export function TopNavbar({
                 <ArrowRightStartOnRectangleIcon className="h-5 w-5" />
                 Log out
               </button>
-            </div>
+
+              {window.desktopWindow?.closeApp && (
+                <button
+                  type="button"
+                  onClick={() => window.desktopWindow?.closeApp()}
+                  className="mt-2 flex w-full items-center gap-3 border-t border-white/10 px-3 pb-2 pt-3 text-left text-sm text-red-200/75 transition hover:text-red-100"
+                >
+                  <PowerIcon className="h-5 w-5" />
+                  Close Seenary
+                </button>
+              )}
+              </div>
+            </FloatingMenu>
           </div>
         </div>
       </div>
@@ -630,11 +643,19 @@ function shouldFocusSearchFromKey(event: KeyboardEvent) {
     return false;
   }
 
-  if (document.querySelector('[role="dialog"], [role="alertdialog"], [aria-modal="true"]')) {
+  if (hasOpenModalSurface()) {
     return false;
   }
 
   return true;
+}
+
+function hasOpenModalSurface() {
+  return Boolean(
+    document.querySelector(
+      '[role="dialog"]:not([aria-hidden="true"]), [role="alertdialog"]:not([aria-hidden="true"]), [aria-modal="true"]:not([aria-hidden="true"])'
+    )
+  );
 }
 
 function isKeyboardInputTarget(element: HTMLElement | null) {

@@ -11,6 +11,7 @@ import {
 } from "@heroicons/react/24/outline";
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import type { EditableListEntry, MediaType } from "../types/domain";
+import { getListStatusLabel, LIST_STATUS_ORDER } from "../utils/mediaFormatting";
 
 type EditableMediaListEntry = EditableListEntry & {
   manga_id?: number;
@@ -30,25 +31,6 @@ type ListEntryModalProps = {
   onSaved: (entry: EditableMediaListEntry, message?: string) => void;
   onRemoved: (message?: string) => void;
 };
-
-const STATUS_OPTIONS = ["planned", "watching", "completed", "paused", "dropped"];
-
-const STATUS_LABELS: Record<string, string> = {
-  planned: "Planned",
-  watching: "Watching",
-  completed: "Completed",
-  paused: "Paused",
-  dropped: "Dropped",
-};
-
-function getStatusLabel(status: string, mediaType: MediaType) {
-  if (mediaType === "MANGA") {
-    if (status === "watching") return "Reading";
-    if (status === "planned") return "Plan to Read";
-  }
-
-  return STATUS_LABELS[status];
-}
 
 let openListEntryModalCount = 0;
 
@@ -420,7 +402,7 @@ export function ListEntryModal({
           <div>
             <label className="mb-2 block text-sm text-white/65">Status</label>
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
-              {STATUS_OPTIONS.map((option) => (
+              {LIST_STATUS_ORDER.map((option) => (
                 <button
                   key={option}
                   type="button"
@@ -431,7 +413,7 @@ export function ListEntryModal({
                       : "border-white/10 bg-white/5 text-white/65 hover:bg-white/10 hover:text-white"
                   }`}
                 >
-                  {getStatusLabel(option, mediaType)}
+                  {getListStatusLabel(option, mediaType)}
                 </button>
               ))}
             </div>
