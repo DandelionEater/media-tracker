@@ -26,7 +26,13 @@ import { LibraryLens, type LibraryDestination } from "./LibraryLens";
 import { LayoutEditorToolbar, ReorderableSection } from "./ui/LayoutEditor";
 import { MediaShelf } from "./ui/MediaShelf";
 import { AsyncStatePanel } from "./ui/AsyncStatePanel";
-import { formatEnum, formatCompactNumber as formatNumber, formatScore10 } from "../utils/mediaFormatting";
+import { Tooltip } from "./ui/Tooltip";
+import {
+  formatEnum,
+  formatCompactNumber as formatNumber,
+  formatNumber as formatExactNumber,
+  formatScore10,
+} from "../utils/mediaFormatting";
 import type { MediaType, TrackedMangaEntry } from "../types/domain";
 
 const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
@@ -60,7 +66,7 @@ type DiscoverDensity = "comfortable" | "balanced" | "compact";
 type HomeDensity = "comfortable" | "balanced" | "compact";
 
 const PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
-  overview: "Spotlight overview",
+  overview: "List overview",
   stats: "Stats",
   continue: "Continue Watching",
   planned: "Planned Picks",
@@ -69,7 +75,7 @@ const PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = 
 };
 
 const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
-  overview: "Reading spotlight overview",
+  overview: "Reading overview",
   stats: "Stats",
   continue: "Continue Reading",
   planned: "Plan to Read",
@@ -2105,6 +2111,12 @@ function MangaSpotlightPanel({
   }
 
   const title = getMangaEntryTitle(entry, titleLanguage);
+  const focusLabel =
+    entry.status === "watching"
+      ? "Now Reading"
+      : entry.status === "planned"
+        ? "Up Next"
+        : "From Your List";
   return (
     <button
       type="button"
@@ -2122,7 +2134,7 @@ function MangaSpotlightPanel({
       <div className="absolute inset-0 bg-linear-to-t from-[#0f0f0f] via-transparent to-transparent" />
       <div className="relative flex h-full min-h-72 flex-col justify-end p-6 md:p-8">
         <span className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/65 backdrop-blur">
-          <BookOpenIcon className="h-4 w-4" /> Reading spotlight
+          <BookOpenIcon className="h-4 w-4" /> {focusLabel}
         </span>
         <h2 className="max-w-2xl text-3xl font-bold tracking-tight text-white">{title}</h2>
         <div className="mt-4 flex flex-wrap gap-2">
@@ -2163,14 +2175,14 @@ function MangaAccountOverviewPanel({
       </div>
       <div className="grid grid-cols-2 gap-3">
         {[
-          ["Library", formatNumber(total)],
-          ["Chapters read", formatNumber(chaptersRead)],
-          ["Volumes read", formatNumber(volumesRead)],
+          ["Library", formatNumber(total), formatExactCount(total, "title")],
+          ["Volumes read", formatNumber(volumesRead), formatExactCount(volumesRead, "volume read", "volumes read")],
           ["Avg score", averageScore === null ? "—" : formatScore10(averageScore)],
-          ["Favorites", formatNumber(favorites)],
-          ["Rereads", formatNumber(rereads)],
-        ].map(([label, value]) => (
-          <OverviewMetric key={label} label={label} value={value} />
+          ["Chapters read", formatNumber(chaptersRead), formatExactCount(chaptersRead, "chapter read", "chapters read")],
+          ["Favorites", formatNumber(favorites), formatExactCount(favorites, "favorite")],
+          ["Rereads", formatNumber(rereads), formatExactCount(rereads, "reread")],
+        ].map(([label, value, exactValue]) => (
+          <OverviewMetric key={label} label={label} value={value} exactValue={exactValue} />
         ))}
       </div>
     </section>
@@ -2356,15 +2368,36 @@ function AccountOverviewPanel({
       </div>
 
       <div className="mt-6 grid grid-cols-2 gap-3">
-        <OverviewMetric label="Library" value={formatNumber(total)} />
-        <OverviewMetric label="Total Episodes" value={formatNumber(totalEpisodes)} />
-        <OverviewMetric label="Episodes Seen" value={formatNumber(watchedEpisodes)} />
-        <OverviewMetric label="Time Watched" value={formatWatchedTime(watchedMinutes)} />
+        <OverviewMetric
+          label="Library"
+          value={formatNumber(total)}
+          exactValue={formatExactCount(total, "title")}
+        />
+        <OverviewMetric
+          label="Total Episodes"
+          value={formatNumber(totalEpisodes)}
+          exactValue={`${formatExactNumber(totalEpisodes)} total episodes`}
+        />
         <OverviewMetric
           label="Avg Score"
           value={averageScore ? formatScore10(averageScore) : "-"}
         />
-        <OverviewMetric label="Favorites" value={formatNumber(favorites)} />
+        <OverviewMetric
+          label="Episodes Seen"
+          value={formatNumber(watchedEpisodes)}
+          exactValue={formatExactCount(watchedEpisodes, "episode seen", "episodes seen")}
+        />
+        <OverviewMetric
+          label="Favorites"
+          value={formatNumber(favorites)}
+          exactValue={formatExactCount(favorites, "favorite")}
+        />
+        <OverviewMetric
+          label="Time Watched"
+          value={formatWatchedTime(watchedMinutes)}
+          exactValue={formatExactWatchedTime(watchedMinutes)}
+          secondaryExactValue={formatTotalWatchedTime(watchedMinutes)}
+        />
       </div>
     </section>
   );
@@ -2373,15 +2406,46 @@ function AccountOverviewPanel({
 function OverviewMetric({
   label,
   value,
+  exactValue,
+  secondaryExactValue,
 }: {
   label: string;
   value: string;
+  exactValue?: string;
+  secondaryExactValue?: string;
 }) {
-  return (
-    <div className="rounded-2xl border border-white/10 bg-white/4 p-4">
+  const metric = (
+    <div
+      className="h-full w-full rounded-2xl border border-white/10 bg-white/4 p-4"
+      aria-label={
+        exactValue
+          ? `${label}: ${exactValue}${secondaryExactValue ? `. ${secondaryExactValue}` : ""}`
+          : undefined
+      }
+    >
       <p className="text-2xl font-semibold text-white">{value}</p>
       <p className="mt-1 text-xs uppercase tracking-[0.16em] text-white/35">{label}</p>
     </div>
+  );
+
+  if (!exactValue) return metric;
+
+  return (
+    <Tooltip
+      content={
+        secondaryExactValue ? (
+          <span className="flex flex-col gap-1">
+            <span>{exactValue}</span>
+            <span className="text-white/45">{secondaryExactValue}</span>
+          </span>
+        ) : exactValue
+      }
+      as="div"
+      className="block"
+      focusable
+    >
+      {metric}
+    </Tooltip>
   );
 }
 
@@ -2775,6 +2839,13 @@ function DiscoverAnimeCard({
           <div className="h-full w-full bg-white/5" />
         )}
         {mediaType === "ANIME" && (
+          <Tooltip
+            content={trackedEntry ? "Edit list entry" : "Add to list"}
+            className={`absolute ${iconButtonClass}`}
+            placement="bottom"
+            align="end"
+            positioned
+          >
           <button
             type="button"
             onClick={(event) => {
@@ -2788,8 +2859,7 @@ function DiscoverAnimeCard({
                 onQuickAddAnime(toQuickAddAnime(anime));
               }
             }}
-            className={`absolute inline-flex items-center justify-center border border-(--app-accent)/35 bg-black/55 text-white/90 shadow-lg backdrop-blur transition hover:bg-(--app-accent-soft) hover:text-white disabled:cursor-default disabled:hover:bg-black/55 ${iconButtonClass}`}
-            title={trackedEntry ? "Edit list entry" : "Add to list"}
+            className="inline-flex h-full w-full items-center justify-center rounded-[inherit] border border-(--app-accent)/35 bg-black/55 text-white/90 shadow-lg backdrop-blur transition hover:bg-(--app-accent-soft) hover:text-white disabled:cursor-default disabled:hover:bg-black/55"
             aria-label={trackedEntry ? "Edit list entry" : "Add to list"}
           >
             {trackedEntry || isTracked ? (
@@ -2798,6 +2868,7 @@ function DiscoverAnimeCard({
               <PlusIcon className={iconClass} />
             )}
           </button>
+          </Tooltip>
         )}
       </div>
       <div className={`browse-card-body ${isGridCard ? "p-2.5" : densityStyles.bodyClass}`}>
@@ -3037,12 +3108,11 @@ function TrendingCarousel({
 
       <div className="absolute inset-x-0 bottom-4 z-20 flex justify-center gap-1">
         {items.map((item, index) => (
+          <Tooltip key={item.id} content={getTrendingTitle(item, titleLanguage)}>
           <button
-            key={item.id}
             type="button"
             onClick={() => onSelectIndex(index)}
             className="group relative h-7 w-10 rounded-full focus:outline-none focus-visible:ring-2 focus-visible:ring-white/55"
-            title={getTrendingTitle(item, titleLanguage)}
             aria-label={`Show ${getTrendingTitle(item, titleLanguage)}`}
             aria-current={index === activeIndex ? "true" : undefined}
           >
@@ -3068,6 +3138,7 @@ function TrendingCarousel({
               )}
             </span>
           </button>
+          </Tooltip>
         ))}
       </div>
     </section>
@@ -3139,6 +3210,12 @@ function SpotlightPanel({
 
   const title = getEntryTitle(entry, titleLanguage);
   const progress = getProgressLabel(entry);
+  const focusLabel =
+    entry.status === "watching"
+      ? "Now Watching"
+      : entry.status === "planned"
+        ? "Up Next"
+        : "From Your List";
 
   return (
     <button
@@ -3159,7 +3236,7 @@ function SpotlightPanel({
       <div className="relative flex h-full min-h-72 flex-col justify-end p-6 md:p-8">
         <span className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/65 backdrop-blur">
           <FireIcon className="h-4 w-4" />
-          Spotlight
+          {focusLabel}
         </span>
         <h1 className="max-w-2xl text-3xl font-bold tracking-tight text-white">
           {title}
@@ -3968,23 +4045,62 @@ function buildEntryMeta(entry: TrackedAnimeEntry) {
 }
 
 function formatWatchedTime(totalMinutes: number) {
-  if (!Number.isFinite(totalMinutes) || totalMinutes <= 0) {
-    return "0m";
-  }
-
-  const minutes = Math.round(totalMinutes);
+  const minutes = normalizeWatchedMinutes(totalMinutes);
   const hours = Math.floor(minutes / 60);
   const remainingMinutes = minutes % 60;
 
-  if (!hours) {
-    return `${remainingMinutes}m`;
+  if (hours < 24) {
+    return `${formatNumber(hours)}h ${remainingMinutes}min`;
   }
 
-  if (!remainingMinutes) {
-    return `${formatNumber(hours)}h`;
+  const days = Math.floor(hours / 24);
+  const remainingHours = hours % 24;
+  if (days < 365) {
+    return `${formatNumber(days)} ${days === 1 ? "day" : "days"} ${remainingHours}h`;
   }
 
-  return `${formatNumber(hours)}h ${remainingMinutes}m`;
+  const years = Math.floor(days / 365);
+  const remainingDays = days % 365;
+  return `${formatNumber(years)} ${years === 1 ? "year" : "years"} ${remainingDays} ${remainingDays === 1 ? "day" : "days"}`;
+}
+
+function formatExactWatchedTime(totalMinutes: number) {
+  const minutes = normalizeWatchedMinutes(totalMinutes);
+  const totalHours = Math.floor(minutes / 60);
+  const totalDays = Math.floor(totalHours / 24);
+  const years = Math.floor(totalDays / 365);
+  const days = totalDays % 365;
+  const hours = totalHours % 24;
+  const remainingMinutes = minutes % 60;
+  const dayText = `${formatExactNumber(years ? days : totalDays)} ${
+    (years ? days : totalDays) === 1 ? "day" : "days"
+  }`;
+  const timeText = `${hours} ${hours === 1 ? "hour" : "hours"} ${remainingMinutes} ${
+    remainingMinutes === 1 ? "minute" : "minutes"
+  }`;
+
+  if (!years) {
+    return `${dayText} ${timeText}`;
+  }
+
+  return `${formatExactNumber(years)} ${years === 1 ? "year" : "years"} ${dayText} ${timeText}`;
+}
+
+function formatTotalWatchedTime(totalMinutes: number) {
+  const minutes = normalizeWatchedMinutes(totalMinutes);
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  return `${formatExactNumber(hours)} ${hours === 1 ? "hour" : "hours"} ${remainingMinutes} ${
+    remainingMinutes === 1 ? "minute" : "minutes"
+  }`;
+}
+
+function formatExactCount(value: number, singular: string, plural = `${singular}s`) {
+  return `${formatExactNumber(value)} ${value === 1 ? singular : plural}`;
+}
+
+function normalizeWatchedMinutes(totalMinutes: number) {
+  return Number.isFinite(totalMinutes) && totalMinutes > 0 ? Math.round(totalMinutes) : 0;
 }
 
 function formatCompactSeason(season: string, year: number) {

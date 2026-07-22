@@ -12,6 +12,7 @@ import {
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import type { EditableListEntry, MediaType } from "../types/domain";
 import { getListStatusLabel, LIST_STATUS_ORDER } from "../utils/mediaFormatting";
+import { Tooltip } from "./ui/Tooltip";
 
 type EditableMediaListEntry = EditableListEntry & {
   manga_id?: number;
@@ -333,14 +334,16 @@ export function ListEntryModal({
             {title && <p className="mt-2 text-sm text-white/55">{title}</p>}
           </div>
 
+          <Tooltip content="Close">
           <button
             type="button"
             onClick={onClose}
+            aria-label="Close"
             className="rounded-xl p-2 text-white/55 transition hover:bg-white/10 hover:text-white"
-            title="Close"
           >
             <XMarkIcon className="h-5 w-5" />
           </button>
+          </Tooltip>
         </div>
 
         <div className="scroll-container -mr-4 flex min-h-0 flex-1 flex-col space-y-4 overflow-y-auto pr-4">
@@ -431,14 +434,16 @@ export function ListEntryModal({
             </div>
 
             <div className="flex items-center gap-2">
+              <Tooltip content="Decrease progress">
               <button
                 type="button"
                 onClick={() => updateProgress(clampedProgress - 1)}
+                aria-label="Decrease progress"
                 className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
-                title="Decrease progress"
               >
                 <MinusIcon className="h-4 w-4" />
               </button>
+              </Tooltip>
 
               <input
                 type="number"
@@ -449,14 +454,16 @@ export function ListEntryModal({
                 className="h-12 w-full rounded-2xl border border-white/10 bg-black/25 px-4 text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
               />
 
+              <Tooltip content="Increase progress">
               <button
                 type="button"
                 onClick={() => updateProgress(clampedProgress + 1)}
+                aria-label="Increase progress"
                 className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
-                title="Increase progress"
               >
                 <PlusIcon className="h-4 w-4" />
               </button>
+              </Tooltip>
             </div>
 
             {progressPercent !== null && (
@@ -479,14 +486,16 @@ export function ListEntryModal({
                 </span>
               </div>
               <div className="flex items-center gap-2">
+                <Tooltip content="Decrease volume progress">
                 <button
                   type="button"
                   onClick={() => setVolumeProgress(Math.max(0, clampedVolumeProgress - 1))}
+                  aria-label="Decrease volume progress"
                   className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
-                  title="Decrease volume progress"
                 >
                   <MinusIcon className="h-4 w-4" />
                 </button>
+                </Tooltip>
                 <input
                   type="number"
                   min={0}
@@ -501,6 +510,7 @@ export function ListEntryModal({
                   }
                   className="h-12 w-full rounded-2xl border border-white/10 bg-black/25 px-4 text-white outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
                 />
+                <Tooltip content="Increase volume progress">
                 <button
                   type="button"
                   onClick={() =>
@@ -510,11 +520,12 @@ export function ListEntryModal({
                         : clampedVolumeProgress + 1
                     )
                   }
+                  aria-label="Increase volume progress"
                   className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/5 text-white/75 transition hover:bg-white/10 hover:text-white"
-                  title="Increase volume progress"
                 >
                   <PlusIcon className="h-4 w-4" />
                 </button>
+                </Tooltip>
               </div>
             </div>
           )}
@@ -593,7 +604,6 @@ export function ListEntryModal({
                   onClick={() => setScore("")}
                   disabled={!score.trim()}
                   className="inline-flex h-12 items-center justify-center rounded-2xl border border-white/10 bg-white/5 px-4 text-sm font-medium text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-35"
-                  title="Clear score"
                 >
                   Clear
                 </button>

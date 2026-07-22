@@ -15,6 +15,7 @@ import {
 import { formatLocalDateTime } from "../utils/dateFormat";
 import type { NavbarStyle } from "./SettingsPage";
 import { FloatingMenu } from "./ui/FloatingMenu";
+import { Tooltip } from "./ui/Tooltip";
 
 type NotificationItem = {
   id: number;
@@ -328,17 +329,19 @@ export function TopNavbar({
               : ""
           }`}
         >
+          <Tooltip content="Open home" placement="bottom" align="start">
           <button
             onClick={onOpenHome}
+            aria-label="Open home"
             className={`no-drag inline-flex items-center justify-center rounded-xl border p-2 text-sm transition-all duration-200 ease-out active:scale-95 ${
               currentView === "home"
                 ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                 : "border-transparent bg-transparent text-white/65 hover:bg-white/10 hover:text-white"
             }`}
-            title="Open home"
           >
             <HomeIcon className="h-5 w-5" />
           </button>
+          </Tooltip>
 
           <button
             onClick={onOpenMyList}
@@ -353,7 +356,6 @@ export function TopNavbar({
                 ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                 : "border-transparent bg-transparent text-white/65 hover:bg-white/10 hover:text-white"
             }`}
-            title="Open my list"
           >
             <BookmarkIcon className="h-5 w-5" />
             <span>My List</span>
@@ -415,16 +417,17 @@ export function TopNavbar({
               >
                 Del
               </kbd>
+              <Tooltip content={query.trim() ? "Clear search" : "Unfocus search"} placement="bottom">
               <button
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={handleSearchCloseOrClear}
                 className="no-drag rounded-full p-1 text-white/45 transition-all duration-200 ease-out hover:scale-105 hover:bg-white/10 hover:text-white active:scale-95"
-                title={query.trim() ? "Clear search" : "Unfocus search"}
                 aria-label={query.trim() ? "Clear search" : "Unfocus search"}
               >
                 <XMarkIcon className="h-4 w-4" />
               </button>
+              </Tooltip>
             </>
           )}
         </div>
@@ -443,12 +446,13 @@ export function TopNavbar({
             onFocus={openNotifications}
             onBlur={handleNotificationsBlur}
           >
+            <Tooltip content="Notifications" placement="bottom">
             <button
               type="button"
               onMouseEnter={openNotifications}
               onClick={() => setIsNotificationsOpen((current) => !current)}
               className="relative flex items-center justify-center rounded-xl border border-transparent p-2 text-white/70 transition-all duration-200 ease-out hover:bg-white/10 hover:text-white"
-              title="Notifications"
+              aria-label="Notifications"
             >
               <BellIcon className="h-6 w-6" />
               {unreadCount > 0 && (
@@ -457,6 +461,7 @@ export function TopNavbar({
                 </span>
               )}
             </button>
+            </Tooltip>
 
             <FloatingMenu open={isNotificationsOpen} widthClass="w-80" role="dialog" className="" >
               <div onMouseEnter={openNotifications}>
@@ -504,11 +509,11 @@ export function TopNavbar({
                             {!notification.read && (
                               <span className="h-2 w-2 rounded-full bg-[var(--app-accent)] transition-transform duration-200 ease-out group-hover/notification:-translate-x-4 group-focus-within/notification:-translate-x-4" />
                             )}
+                            <Tooltip content="Dismiss notification" align="end">
                             <span
                               role="button"
                               tabIndex={0}
                               aria-label={`Dismiss ${notification.title}`}
-                              title="Dismiss notification"
                               onClick={(event) => {
                                 event.stopPropagation();
                                 onDismissNotification(notification.id);
@@ -526,6 +531,7 @@ export function TopNavbar({
                             >
                               <XMarkIcon className="h-3.5 w-3.5" />
                             </span>
+                            </Tooltip>
                           </div>
                         </div>
                         <p className="mt-2 text-[11px] text-white/30">
@@ -547,6 +553,7 @@ export function TopNavbar({
             onFocus={openAccountMenu}
             onBlur={handleAccountBlur}
           >
+            <Tooltip content={username} placement="bottom" align="end">
             <button
               type="button"
               onMouseEnter={openAccountMenu}
@@ -555,7 +562,7 @@ export function TopNavbar({
                   ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                   : "border-transparent text-white/70 hover:bg-white/10 hover:text-white"
               }`}
-              title={username}
+              aria-label={username}
             >
               <UserCircleIcon className="h-6 w-6" />
               <span className="max-w-30 truncate text-sm">{username}</span>
@@ -565,6 +572,7 @@ export function TopNavbar({
                 }`}
               />
             </button>
+            </Tooltip>
 
             <FloatingMenu open={isAccountMenuOpen} widthClass="w-48">
               <div onMouseEnter={openAccountMenu}>

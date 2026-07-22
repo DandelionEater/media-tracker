@@ -7,6 +7,7 @@ import {
   StarIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
+import { Tooltip } from "./ui/Tooltip";
 
 type MyListEntry = {
   anime_id: number;
@@ -258,16 +259,22 @@ export function MyListCard({
           )}
         </button>
 
+        <Tooltip
+          content={`Edit ${title}`}
+          className={`absolute z-10 ${isGrid ? "right-3 top-3 h-9 w-9" : "bottom-3 right-3 h-8 w-8"}`}
+          placement={isGrid ? "bottom" : "top"}
+          align="end"
+          positioned
+        >
         <button
           type="button"
           onClick={() => onEdit(entry)}
-          className={`absolute z-10 inline-flex items-center justify-center rounded-xl border border-white/10 bg-black/55 text-white/70 backdrop-blur-md transition hover:bg-black/75 hover:text-white ${
-            isGrid ? "right-3 top-3 h-9 w-9" : "bottom-3 right-3 h-8 w-8"
-          }`}
-          title={`Edit ${title}`}
+          className="inline-flex h-full w-full items-center justify-center rounded-xl border border-white/10 bg-black/55 text-white/70 backdrop-blur-md transition hover:bg-black/75 hover:text-white"
+          aria-label={`Edit ${title}`}
         >
           <PencilSquareIcon className="h-4 w-4" />
         </button>
+        </Tooltip>
       </article>
     );
   }

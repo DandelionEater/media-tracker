@@ -1,5 +1,6 @@
 import { useRef, useState, type PointerEvent as ReactPointerEvent } from "react";
 import { CheckIcon, ExclamationTriangleIcon, XMarkIcon } from "@heroicons/react/24/outline";
+import { Tooltip } from "./ui/Tooltip";
 
 export type SyncToastState = {
   id: number;
@@ -127,10 +128,10 @@ export function SyncToast({ toast, onDismiss }: SyncToastProps) {
           </p>
         </div>
 
+        <Tooltip content="Dismiss notification">
         <button
           type="button"
           aria-label={`Dismiss ${toast.title}`}
-          title="Dismiss notification"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
@@ -140,6 +141,7 @@ export function SyncToast({ toast, onDismiss }: SyncToastProps) {
         >
           <XMarkIcon className="h-4 w-4" />
         </button>
+        </Tooltip>
       </div>
     </div>
   );

@@ -6,6 +6,10 @@ const {
   getAnimeExternalIdByAnimeId,
   getUserAnimeList,
   getUserMangaList,
+  applySyncQueueFailureState,
+  enqueueSyncJob,
+  getAniListAccountByUserId,
+  getMalAccountByUserId,
 } = require('./db');
 const { mapAnimeForDb } = require('./animeMapper');
 const {
@@ -15,7 +19,7 @@ const {
 const { getSyncStatus, getSyncActivity, setAutoSyncEnabled } = require('./sync');
 
 const BACKUP_FORMAT = 'seenary.local-backup';
-const BACKUP_VERSION = 2;
+const BACKUP_VERSION = 4;
 
 function isPlainRecord(value) {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -124,6 +128,7 @@ function collectSyncState(activity) {
     deletedEntries: {},
     dirtyMangaEntries: {},
     deletedMangaEntries: {},
+    syncFailures: {},
   };
 
   for (const item of activity.pending ?? []) {
@@ -147,10 +152,38 @@ function collectSyncState(activity) {
     };
   }
 
+  for (const item of [...(activity.pending ?? []), ...(activity.excluded ?? [])]) {
+    const manga = item.media_type === 'MANGA' || Boolean(item.manga_id);
+    const mediaId = Number(manga ? item.manga_id ?? item.media_id : item.anime_id ?? item.media_id);
+    const provider = item.provider === 'mal' || String(item.operation || '').includes('mal')
+      ? 'mal'
+      : 'anilist';
+    if (!Number.isInteger(mediaId) || mediaId <= 0 || Number(item.attempts || 0) < 1) continue;
+    const mediaType = manga ? 'MANGA' : 'ANIME';
+    result.syncFailures[`${provider}:${mediaType}:${mediaId}`] = {
+      provider,
+      mediaType,
+      mediaId,
+      animeTitle: item.animeTitle ?? item.media_title ?? null,
+      attempts: Number(item.attempts || 0),
+      lastError: item.last_error ?? item.message ?? null,
+      operation: item.operation,
+      updatedAt: item.updated_at ?? item.created_at ?? new Date().toISOString(),
+      excludedAt:
+        item.status === 'blocked' || item.status === 'excluded'
+          ? item.updated_at ?? item.created_at ?? new Date().toISOString()
+          : null,
+      excludedBy:
+        item.status === 'blocked' || item.status === 'excluded'
+          ? item.excluded_by === 'system' ? 'system' : 'user'
+          : null,
+    };
+  }
+
   return result;
 }
 
-async function exportBackup(currentSession, settings) {
+async function exportBackup(currentSession, settings, preferenceBundle = {}) {
   if (!currentSession?.authenticated || !currentSession.user?.id) {
     throw new Error('You must be logged in.');
   }
@@ -189,6 +222,8 @@ async function exportBackup(currentSession, settings) {
       ...collectSyncState(activity),
       syncHistory: [...(activity.pulled ?? []), ...(activity.completed ?? []), ...(activity.failed ?? [])],
       autoSyncEnabled: Boolean(syncStatus.autoSyncEnabled),
+      portablePreferences: preferenceBundle.portablePreferences,
+      desktopPreferences: preferenceBundle.desktopPreferences,
     },
   };
 }
@@ -292,9 +327,12 @@ async function importBackup(currentSession, backup, updateSettings) {
   let animeImported = 0;
   let mangaImported = 0;
   let skipped = 0;
+  let restoredSettings = null;
+  let syncFailuresRestored = 0;
+  let pendingDeletionsRestored = 0;
 
   const restore = db.transaction(() => {
-    if (isPlainRecord(data.settings)) updateSettings(data.settings);
+    if (isPlainRecord(data.settings)) restoredSettings = updateSettings(data.settings);
 
     for (const [key, entry] of Object.entries(getRecord(data.entries))) {
       const mediaId = Number(entry?.anime_id ?? key);
@@ -345,8 +383,78 @@ async function importBackup(currentSession, backup, updateSettings) {
       else skipped += 1;
     }
 
+    const linkedAniList = getAniListAccountByUserId(currentSession.user.id);
+    const linkedMal = getMalAccountByUserId(currentSession.user.id);
+    const existingAnimeIds = new Set(
+      getUserAnimeList(currentSession.user.id).map((entry) => Number(entry.anime_id))
+    );
+    const existingMangaIds = new Set(
+      getUserMangaList(currentSession.user.id).map((entry) => Number(entry.manga_id))
+    );
+    for (const [collection, mediaType] of [
+      [getRecord(data.deletedEntries), 'ANIME'],
+      [getRecord(data.deletedMangaEntries), 'MANGA'],
+    ]) {
+      for (const [key, deletion] of Object.entries(collection)) {
+        const mangaDeletion = mediaType === 'MANGA';
+        const mediaId = Number(deletion?.[mangaDeletion ? 'manga_id' : 'anime_id'] ?? key);
+        if (!Number.isInteger(mediaId) || mediaId <= 0 || !isPlainRecord(deletion)) continue;
+        if ((mangaDeletion ? existingMangaIds : existingAnimeIds).has(mediaId)) continue;
+        const operation = linkedMal
+          ? mangaDeletion ? 'delete_mal_manga_entry' : 'delete_mal_entry'
+          : linkedAniList
+            ? mangaDeletion ? 'delete_anilist_manga_entry' : 'delete_anilist_entry'
+            : null;
+        if (!operation) continue;
+        const malId = deletion.external_ids?.mal ?? null;
+        const job = enqueueSyncJob({
+          userId: currentSession.user.id,
+          mediaId,
+          mediaType,
+          operation,
+          payload: {
+            ...deletion,
+            ...(mangaDeletion ? { malMangaId: malId } : { malAnimeId: malId }),
+          },
+          changedFields: [
+            { field: 'entry', from: 'present', to: null },
+            { field: 'status', from: deletion.status ?? null, to: null },
+          ],
+        });
+        if (job) pendingDeletionsRestored += 1;
+      }
+    }
+
     if (Number(backup.version ?? 1) >= 2 && typeof data.autoSyncEnabled === 'boolean') {
       setAutoSyncEnabled(currentSession.user.id, data.autoSyncEnabled);
+    }
+
+    if (Number(backup.version ?? 1) >= 3) {
+      for (const failure of Object.values(getRecord(data.syncFailures))) {
+        const mediaType = failure?.mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+        const mediaId = Number(failure?.mediaId);
+        const operation = String(failure?.operation || '');
+        if (
+          !Number.isInteger(mediaId) ||
+          mediaId <= 0 ||
+          !['upsert_anilist_entry', 'delete_anilist_entry', 'upsert_anilist_manga_entry',
+            'delete_anilist_manga_entry', 'upsert_mal_entry', 'delete_mal_entry',
+            'upsert_mal_manga_entry', 'delete_mal_manga_entry'].includes(operation)
+        ) {
+          continue;
+        }
+        if (applySyncQueueFailureState({
+          userId: currentSession.user.id,
+          mediaType,
+          mediaId,
+          operation,
+          attempts: failure.attempts,
+          lastError: failure.lastError,
+          excluded: Boolean(failure.excludedAt),
+        })) {
+          syncFailuresRestored += 1;
+        }
+      }
     }
   });
   restore();
@@ -355,15 +463,33 @@ async function importBackup(currentSession, backup, updateSettings) {
   const summary = [animeImported ? `${animeImported} Anime` : '', mangaImported ? `${mangaImported} Manga` : '']
     .filter(Boolean)
     .join(' and ');
+  const preferencesRestored = Boolean(restoredSettings || isPlainRecord(data.portablePreferences));
+  const restoredParts = [
+    summary ? `${summary} entr${imported === 1 ? 'y' : 'ies'}` : '',
+    preferencesRestored ? 'preferences and layouts' : '',
+    pendingDeletionsRestored
+      ? `${pendingDeletionsRestored} pending deletion${pendingDeletionsRestored === 1 ? '' : 's'}`
+      : '',
+    syncFailuresRestored
+      ? `${syncFailuresRestored} sync recovery entr${syncFailuresRestored === 1 ? 'y' : 'ies'}`
+      : '',
+  ].filter(Boolean);
   return {
     ok: true,
-    message: summary
-      ? `Imported ${summary} backup entr${imported === 1 ? 'y' : 'ies'}.`
+    message: restoredParts.length
+      ? `Restored ${restoredParts.join(' plus ')} from the backup${skipped ? `; skipped ${skipped} invalid entr${skipped === 1 ? 'y' : 'ies'}` : ''}.`
       : 'The backup was valid, but it did not contain any list entries.',
     imported,
     animeImported,
     mangaImported,
     skipped,
+    settings: restoredSettings,
+    portablePreferences: data.portablePreferences,
+    desktopPreferences: data.desktopPreferences,
+    backupVersion: Number(backup.version ?? 1),
+    preferencesRestored,
+    syncFailuresRestored,
+    pendingDeletionsRestored,
   };
 }
 

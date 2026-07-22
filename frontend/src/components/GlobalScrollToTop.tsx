@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowUpIcon } from "@heroicons/react/24/outline";
+import { Tooltip } from "./ui/Tooltip";
 
 const SHOW_AFTER_PX = 360;
 
@@ -50,20 +51,26 @@ export function GlobalScrollToTop({ viewKey }: { viewKey: string }) {
   }
 
   return (
-    <button
-      type="button"
-      onClick={scrollToTop}
-      aria-label="Scroll to top"
-      title="Scroll to top"
-      aria-hidden={!isVisible}
-      tabIndex={isVisible ? 0 : -1}
-      className={`no-drag fixed bottom-5 right-5 z-[35] inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/12 bg-[#111111]/82 text-white/75 shadow-2xl backdrop-blur-xl transition-all duration-300 ease-out hover:border-(--app-accent)/35 hover:bg-(--app-accent-soft) hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55 sm:bottom-6 sm:right-6 ${
+    <Tooltip
+      content="Scroll to top"
+      align="end"
+      positioned
+      className={`fixed bottom-5 right-5 z-[35] transition-all duration-300 ease-out sm:bottom-6 sm:right-6 ${
         isVisible
           ? "pointer-events-auto translate-y-0 scale-100 opacity-100"
           : "pointer-events-none translate-y-3 scale-90 opacity-0"
       }`}
     >
+    <button
+      type="button"
+      onClick={scrollToTop}
+      aria-label="Scroll to top"
+      aria-hidden={!isVisible}
+      tabIndex={isVisible ? 0 : -1}
+      className="no-drag inline-flex h-11 w-11 items-center justify-center rounded-2xl border border-white/12 bg-[#111111]/82 text-white/75 shadow-2xl backdrop-blur-xl transition hover:border-(--app-accent)/35 hover:bg-(--app-accent-soft) hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+    >
       <ArrowUpIcon className="h-5 w-5" />
     </button>
+    </Tooltip>
   );
 }

@@ -31,6 +31,7 @@ import {
 import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import { ListEntryModal } from "./ListEntryModal";
 import { ModalShell } from "./ui/ModalShell";
+import { Tooltip } from "./ui/Tooltip";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { formatLocalDate } from "../utils/dateFormat";
 import { formatEnum, formatNumber, getListStatusLabel } from "../utils/mediaFormatting";
@@ -960,7 +961,8 @@ function AlternateTitles({
     .join(" | ");
 
   return (
-    <p className="mt-2 max-w-4xl line-clamp-2 text-sm leading-6 text-white/42" title={fullText}>
+    <Tooltip content={fullText} as="div" className="mt-2 block max-w-4xl" focusable>
+      <p className="line-clamp-2 text-sm leading-6 text-white/42">
       {alternatives.join(" · ")}
       {alternatives.length > 0 && uniqueSynonyms.length > 0 && (
         <span className="mx-2 text-white/20">|</span>
@@ -971,7 +973,8 @@ function AlternateTitles({
           {uniqueSynonyms.join(" · ")}
         </span>
       )}
-    </p>
+      </p>
+    </Tooltip>
   );
 }
 
@@ -989,9 +992,9 @@ function HeroDetail({
       <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/28">
         {label}
       </p>
-      <p className="mt-1 line-clamp-2 text-sm leading-5 text-white/68" title={value}>
-        {value}
-      </p>
+      <Tooltip content={value} as="div" className="mt-1 block" focusable>
+        <p className="line-clamp-2 text-sm leading-5 text-white/68">{value}</p>
+      </Tooltip>
     </div>
   );
 }
@@ -1296,9 +1299,9 @@ function WatchInsightCard({ insight }: { insight: WatchInsight }) {
       <p className="mt-3 truncate text-lg font-semibold tracking-tight text-white/88">
         {insight.value}
       </p>
-      <p className="mt-1 line-clamp-2 text-xs leading-5 text-white/38" title={insight.context}>
-        {insight.context}
-      </p>
+      <Tooltip content={insight.context} as="div" className="mt-1 block" focusable>
+        <p className="line-clamp-2 text-xs leading-5 text-white/38">{insight.context}</p>
+      </Tooltip>
     </div>
   );
 }
@@ -1471,35 +1474,21 @@ function ArtworkLightbox({
           <span className="px-1">{artwork.label}</span>
           <span className="h-1 w-1 rounded-full bg-white/25" />
           <div className="flex items-center gap-1">
-            <button
-              type="button"
-              onClick={() => changeZoom(-0.25)}
-              disabled={zoom <= 1}
-              className="rounded-full p-1.5 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30"
-              title="Zoom out"
-              aria-label="Zoom out"
-            >
-              <MagnifyingGlassMinusIcon className="h-4 w-4" />
-            </button>
-            <button
-              type="button"
-              onClick={resetView}
-              disabled={zoom === 1 && position.x === 0 && position.y === 0}
-              className="min-w-12 rounded-full px-2 py-1 text-center font-semibold text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-50"
-              title="Reset zoom and position"
-            >
-              {Math.round(zoom * 100)}%
-            </button>
-            <button
-              type="button"
-              onClick={() => changeZoom(0.25)}
-              disabled={zoom >= 4}
-              className="rounded-full p-1.5 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30"
-              title="Zoom in"
-              aria-label="Zoom in"
-            >
-              <MagnifyingGlassPlusIcon className="h-4 w-4" />
-            </button>
+            <Tooltip content="Zoom out">
+              <button type="button" onClick={() => changeZoom(-0.25)} disabled={zoom <= 1} className="rounded-full p-1.5 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30" aria-label="Zoom out">
+                <MagnifyingGlassMinusIcon className="h-4 w-4" />
+              </button>
+            </Tooltip>
+            <Tooltip content="Reset zoom and position">
+              <button type="button" onClick={resetView} disabled={zoom === 1 && position.x === 0 && position.y === 0} className="min-w-12 rounded-full px-2 py-1 text-center font-semibold text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-50" aria-label="Reset zoom and position">
+                {Math.round(zoom * 100)}%
+              </button>
+            </Tooltip>
+            <Tooltip content="Zoom in">
+              <button type="button" onClick={() => changeZoom(0.25)} disabled={zoom >= 4} className="rounded-full p-1.5 text-white/65 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-30" aria-label="Zoom in">
+                <MagnifyingGlassPlusIcon className="h-4 w-4" />
+              </button>
+            </Tooltip>
           </div>
           <span className="h-1 w-1 rounded-full bg-white/25" />
           <span className="px-1">Scroll to zoom · Drag to pan · Double-click to reset</span>
@@ -1584,14 +1573,16 @@ function PersonalListPanel({
           </div>
         </div>
 
-        <button
-          onClick={onEdit}
-          disabled={busy}
-          className="rounded-2xl border border-white/10 bg-white/6 p-2.5 text-white/70 transition hover:bg-white/10 hover:text-white disabled:opacity-50"
-          title="Edit list entry"
-        >
-          <PencilSquareIcon className="h-5 w-5" />
-        </button>
+        <Tooltip content="Edit list entry">
+          <button
+            onClick={onEdit}
+            disabled={busy}
+            aria-label="Edit list entry"
+            className="rounded-2xl border border-white/10 bg-white/6 p-2.5 text-white/70 transition hover:bg-white/10 hover:text-white disabled:opacity-50"
+          >
+            <PencilSquareIcon className="h-5 w-5" />
+          </button>
+        </Tooltip>
       </div>
 
       {progressPercent !== null && (
@@ -1828,16 +1819,18 @@ function StoryAndTaxonomy({
               </div>
               <div className="mt-4 flex flex-wrap gap-2">
                 {tags.map((tag, index) => (
-                  <span
+                  <Tooltip
                     key={tag.id ?? `${tag.name ?? "tag"}-${index}`}
-                    className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-xs text-white/72"
-                    title={tag.description || tag.name || "Tag"}
+                    content={tag.description || tag.name || "Tag"}
+                    focusable
                   >
-                    {tag.name || "Tag"}
-                    {tag.rank ? (
-                      <span className="ml-1.5 text-white/32">{tag.rank}%</span>
-                    ) : null}
-                  </span>
+                    <span className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1.5 text-xs text-white/72">
+                      {tag.name || "Tag"}
+                      {tag.rank ? (
+                        <span className="ml-1.5 text-white/32">{tag.rank}%</span>
+                      ) : null}
+                    </span>
+                  </Tooltip>
                 ))}
               </div>
             </div>
@@ -2002,14 +1995,16 @@ function PeopleDetailModal({
                 <p className="mt-1 text-sm text-white/45">{nativeName}</p>
               )}
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
-              title="Close"
-            >
-              <XMarkIcon className="h-5 w-5" />
-            </button>
+            <Tooltip content="Close">
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Close"
+                className="rounded-2xl border border-white/10 bg-white/5 p-2 text-white/55 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+              >
+                <XMarkIcon className="h-5 w-5" />
+              </button>
+            </Tooltip>
           </div>
         </div>
 
@@ -2223,16 +2218,18 @@ function RelatedAnimeShelf({
             mediaId > 0 &&
             Boolean(onSelectMedia);
 
+          const tooltipLabel = canOpen ? `Open ${titleText}` : titleText;
+
           return (
+            <Tooltip key={`${media?.id ?? index}-${edge.relationType ?? "related"}`} content={tooltipLabel} as="div" className="block">
             <button
               type="button"
-              key={`${media?.id ?? index}-${edge.relationType ?? "related"}`}
               onClick={() =>
                 canOpen && relatedMediaType && onSelectMedia?.(mediaId, relatedMediaType)
               }
               disabled={!canOpen}
-              className="group grid min-w-0 grid-cols-[3.5rem_1fr] gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
-              title={canOpen ? `Open ${titleText}` : titleText}
+              className="group grid w-full min-w-0 grid-cols-[3.5rem_1fr] gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
+              aria-label={tooltipLabel}
             >
               <div className="h-20 w-14 overflow-hidden rounded-xl bg-white/5">
                 {media?.coverImage?.large ? (
@@ -2297,6 +2294,7 @@ function RelatedAnimeShelf({
                 </div>
               </div>
             </button>
+            </Tooltip>
           );
         })}
       </div>
@@ -2328,16 +2326,18 @@ function MediaShelf({
             mediaId > 0 &&
             Boolean(onSelectMedia);
 
+          const tooltipLabel = canOpen ? `Open ${titleText}` : titleText;
+
           return (
+            <Tooltip key={`${media?.id ?? index}-${label}`} content={tooltipLabel} as="div" className="block">
             <button
               type="button"
-              key={`${media?.id ?? index}-${label}`}
               onClick={() =>
                 canOpen && recommendationType && onSelectMedia?.(mediaId, recommendationType)
               }
               disabled={!canOpen}
-              className="group flex min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
-              title={canOpen ? `Open ${titleText}` : titleText}
+              className="group flex w-full min-w-0 gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/[0.07] focus:outline-none focus:ring-2 focus:ring-white/35 disabled:cursor-default disabled:hover:translate-y-0 disabled:hover:border-white/10 disabled:hover:bg-white/3"
+              aria-label={tooltipLabel}
             >
               <div className="h-20 w-14 shrink-0 overflow-hidden rounded-xl bg-white/5">
                 {media?.coverImage?.large ? (
@@ -2376,6 +2376,7 @@ function MediaShelf({
                 </div>
               </div>
             </button>
+            </Tooltip>
           );
         })}
       </div>
@@ -2508,26 +2509,28 @@ function TrailerPanel({
           {trailerUrl && (
             <div className="absolute inset-0 flex items-center justify-center gap-3 bg-black/10 opacity-0 transition duration-300 group-hover:opacity-100 group-focus-within:opacity-100">
               {embedUrl && (
+                <Tooltip content="Play trailer in Seenary">
                 <button
                   type="button"
                   onClick={() => setIsPlayerOpen(true)}
                   className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white/85 shadow-xl backdrop-blur-md transition hover:scale-110 hover:bg-(--app-accent) hover:text-black focus:outline-none focus:ring-2 focus:ring-white/60"
-                  title="Play trailer in Seenary"
                   aria-label="Play trailer in Seenary"
                 >
                   <PlayCircleIcon className="h-6 w-6" />
                 </button>
+                </Tooltip>
               )}
+              <Tooltip content="Open trailer in browser">
               <a
                 href={trailerUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="inline-flex h-11 w-11 items-center justify-center rounded-full border border-white/20 bg-black/60 text-white/85 shadow-xl backdrop-blur-md transition hover:scale-110 hover:bg-white hover:text-black focus:outline-none focus:ring-2 focus:ring-white/60"
-                title="Open trailer in browser"
                 aria-label="Open trailer in browser"
               >
                 <ArrowTopRightOnSquareIcon className="h-5 w-5" />
               </a>
+              </Tooltip>
             </div>
           )}
         </div>
@@ -2540,26 +2543,28 @@ function TrailerPanel({
           {trailerUrl && (
             <div className="flex items-center gap-2">
               {embedUrl && (
+                <Tooltip content="Play trailer in Seenary">
                 <button
                   type="button"
                   onClick={() => setIsPlayerOpen(true)}
                   className="rounded-full border border-white/10 bg-white/[0.05] p-2 text-white/65 transition hover:bg-(--app-accent) hover:text-black"
-                  title="Play trailer in Seenary"
                   aria-label="Play trailer in Seenary"
                 >
                   <PlayCircleIcon className="h-5 w-5" />
                 </button>
+                </Tooltip>
               )}
+              <Tooltip content="Open trailer in browser">
               <a
                 href={trailerUrl}
                 target="_blank"
                 rel="noreferrer"
                 className="rounded-full border border-white/10 bg-white/[0.05] p-2 text-white/65 transition hover:bg-white hover:text-black"
-                title="Open trailer in browser"
                 aria-label="Open trailer in browser"
               >
                 <ArrowTopRightOnSquareIcon className="h-5 w-5" />
               </a>
+              </Tooltip>
             </div>
           )}
         </div>
@@ -2625,25 +2630,27 @@ function TrailerPlayerModal({
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <Tooltip content="Open in browser">
             <a
               href={externalUrl}
               target="_blank"
               rel="noreferrer"
               className="rounded-full border border-white/10 bg-white/[0.05] p-2.5 text-white/65 transition hover:bg-white hover:text-black focus:outline-none focus:ring-2 focus:ring-white/60"
-              title="Open in browser"
               aria-label="Open trailer in browser"
             >
               <ArrowTopRightOnSquareIcon className="h-5 w-5" />
             </a>
+            </Tooltip>
+            <Tooltip content="Close trailer">
             <button
               type="button"
               onClick={onClose}
               className="rounded-full border border-white/10 bg-white/[0.05] p-2.5 text-white/65 transition hover:bg-white/12 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/60"
-              title="Close trailer"
               aria-label="Close trailer"
             >
               <XMarkIcon className="h-5 w-5" />
             </button>
+            </Tooltip>
           </div>
         </div>
         <div className="aspect-video min-h-0 w-full shrink bg-black">
@@ -2801,18 +2808,20 @@ function ActionButton({
   children: React.ReactNode;
 }) {
   return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`no-drag px-5 py-3 transition-transform duration-300 ease-out hover:scale-110 disabled:opacity-50 disabled:hover:scale-100 ${
-        active
-          ? "text-(--app-accent)"
-          : "text-white/80 hover:text-white"
-      }`}
-      title={label}
-    >
-      {children}
-    </button>
+    <Tooltip content={label}>
+      <button
+        onClick={onClick}
+        disabled={disabled}
+        aria-label={label}
+        className={`no-drag px-5 py-3 transition-transform duration-300 ease-out hover:scale-110 disabled:opacity-50 disabled:hover:scale-100 ${
+          active
+            ? "text-(--app-accent)"
+            : "text-white/80 hover:text-white"
+        }`}
+      >
+        {children}
+      </button>
+    </Tooltip>
   );
 }
 

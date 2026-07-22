@@ -5,6 +5,7 @@ import {
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import type { SearchMedia, TrackedMediaEntry } from "../types/domain";
 import { getListStatusLabel } from "../utils/mediaFormatting";
+import { Tooltip } from "./ui/Tooltip";
 
 type MediaCardProps = {
   media: SearchMedia;
@@ -76,7 +77,13 @@ export function MediaCard({
         "
       />
 
-      {onQuickAdd ? <button
+      {onQuickAdd ? <Tooltip
+        content={trackedEntry ? "Edit list entry" : "Add to list"}
+        className="absolute right-2 top-2 z-20"
+        placement="bottom"
+        align="end"
+        positioned
+      ><button
         type="button"
         onClick={(e) => {
           e.stopPropagation();
@@ -89,7 +96,6 @@ export function MediaCard({
           onQuickAdd(media);
         }}
         className="
-          absolute right-2 top-2 z-20
           inline-flex h-8 w-8 items-center justify-center
           rounded-xl border border-[var(--app-accent)]/35 bg-black/55 text-white/90
           backdrop-blur-sm
@@ -97,14 +103,14 @@ export function MediaCard({
           hover:bg-[var(--app-accent-soft)] hover:text-white
           opacity-100 scale-100
         "
-        title={trackedEntry ? "Edit list entry" : "Add to list"}
+        aria-label={trackedEntry ? "Edit list entry" : "Add to list"}
       >
         {trackedEntry ? (
           <BookmarkIcon className="h-4 w-4" />
         ) : (
           <PlusIcon className="h-4 w-4" />
         )}
-      </button> : (
+      </button></Tooltip> : (
         <div className="absolute right-2 top-2 z-20 rounded-xl border border-cyan-300/20 bg-cyan-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-cyan-100 backdrop-blur-sm">
           Manga
         </div>
@@ -113,43 +119,6 @@ export function MediaCard({
       {media.isAdult && (
         <div className="absolute left-2 top-2 z-20 rounded-xl border border-rose-300/20 bg-rose-400/15 px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-rose-100 backdrop-blur-sm">
           18+
-        </div>
-      )}
-
-      {trackedStatusLabel && (
-        <div
-          className="
-            absolute left-1/2 bottom-3 z-10
-            flex max-w-[85%] -translate-x-1/2 flex-col items-center gap-1.5
-            opacity-0 translate-y-2
-            transition-all duration-300
-            group-hover:opacity-100 group-hover:translate-y-0
-            pointer-events-none
-          "
-        >
-          <div
-            className="
-              rounded-full border border-white/10 bg-black/55
-              px-3 py-1 text-[10px] font-medium uppercase tracking-[0.14em] text-white/85
-              backdrop-blur-sm whitespace-nowrap
-            "
-            title={trackedStatusLabel}
-          >
-            {trackedStatusLabel}
-          </div>
-
-          {trackedProgressLabel && (
-            <div
-              className="
-                rounded-full border border-white/10 bg-black/55
-                px-3 py-1 text-[10px] font-medium text-white/85
-                backdrop-blur-sm whitespace-nowrap
-              "
-              title={trackedProgressLabel}
-            >
-              {trackedProgressLabel}
-            </div>
-          )}
         </div>
       )}
 
@@ -197,6 +166,21 @@ export function MediaCard({
             {seasonText}
           </p>
         )}
+
+        {trackedStatusLabel && (
+          <div className="grid w-full grid-rows-[0fr] opacity-0 transition-[grid-template-rows,margin,opacity] duration-300 group-hover:mt-2 group-hover:grid-rows-[1fr] group-hover:opacity-100">
+            <div className="flex min-h-0 flex-wrap items-center justify-center gap-1.5 overflow-hidden">
+              <span className="rounded-full border border-white/10 bg-black/55 px-2.5 py-1 text-[9px] font-medium uppercase tracking-[0.12em] text-white/85 backdrop-blur-sm">
+                {trackedStatusLabel}
+              </span>
+              {trackedProgressLabel && (
+                <span className="rounded-full border border-white/10 bg-black/55 px-2.5 py-1 text-[9px] font-medium text-white/85 backdrop-blur-sm">
+                  {trackedProgressLabel}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
       </div>
       </div>
 
@@ -207,6 +191,7 @@ export function MediaCard({
             {subtitleParts.join(" • ")}
           </p>
         )}
+
       </div>
     </div>
   );

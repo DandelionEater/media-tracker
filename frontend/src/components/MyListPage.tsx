@@ -24,6 +24,7 @@ import type { MediaType, TrackedMangaEntry } from "../types/domain";
 import { LibraryLens, type LibraryDestination } from "./LibraryLens";
 import { LayoutEditorToolbar, ReorderableSection } from "./ui/LayoutEditor";
 import { getListStatusLabel } from "../utils/mediaFormatting";
+import { Tooltip } from "./ui/Tooltip";
 
 type MyListEntry = {
   anime_id: number;
@@ -722,14 +723,16 @@ export function MyListPage({
                   className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/35"
                 />
                 {listSearch.trim() && (
+                  <Tooltip content="Clear list search">
                   <button
                     type="button"
                     onClick={() => setListSearch("")}
+                    aria-label="Clear list search"
                     className="rounded-full p-1 text-white/45 transition hover:bg-white/10 hover:text-white"
-                    title="Clear list search"
                   >
                     <XMarkIcon className="h-4 w-4" />
                   </button>
+                  </Tooltip>
                 )}
               </div>
 
@@ -793,7 +796,6 @@ export function MyListPage({
                     className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm transition ${
                       view === value ? "bg-[var(--app-accent)] text-black" : "text-white/50 hover:bg-white/7 hover:text-white"
                     }`}
-                    title={`${label} view`}
                   >
                     <ViewIcon className="h-4 w-4" />
                     {label}

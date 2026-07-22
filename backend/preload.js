@@ -122,7 +122,7 @@ contextBridge.exposeInMainWorld('api', {
   clearMyList: () => ipcRenderer.invoke('list:clear'),
   clearMyMangaList: () => ipcRenderer.invoke('manga-list:clear'),
   clearAllMediaLists: () => ipcRenderer.invoke('media-list:clear-all'),
-  exportLocalBackup: () => ipcRenderer.invoke('backup:export'),
+  exportLocalBackup: (preferenceBundle) => ipcRenderer.invoke('backup:export', preferenceBundle),
   importLocalBackup: (backup) => ipcRenderer.invoke('backup:import', backup),
 });
 

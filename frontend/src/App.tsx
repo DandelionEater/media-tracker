@@ -38,6 +38,10 @@ import type {
   TrackedMangaEntry,
 } from "./types/domain";
 import { AsyncStatePanel } from "./components/ui/AsyncStatePanel";
+import {
+  applyBackupPreferences,
+  collectBackupPreferences,
+} from "./utils/portablePreferences";
 
 const MediaDetails = lazy(() => import("./components/AnimeDetails"));
 const SettingsPage = lazy(() =>
@@ -865,7 +869,10 @@ function App() {
   };
 
   const handleExportLocalBackup = async () => {
-    const backup = await window.api.exportLocalBackup();
+    const preferenceBundle = authUser
+      ? await collectBackupPreferences(authUser.id)
+      : undefined;
+    const backup = await window.api.exportLocalBackup(preferenceBundle);
     const blob = new Blob([JSON.stringify(backup, null, 2)], {
       type: "application/json",
     });
@@ -874,20 +881,45 @@ function App() {
     const date = new Date().toISOString().slice(0, 10);
 
     anchor.href = url;
-    anchor.download = `seenary-backup-${date}.json`;
+    anchor.download = `seenary-portable-backup-${date}.json`;
     document.body.appendChild(anchor);
     anchor.click();
     anchor.remove();
     window.URL.revokeObjectURL(url);
-    showSyncToast("success", "Backup exported", "Your local Seenary backup was downloaded.");
+    showSyncToast("success", "Backup exported", "Your portable Seenary backup was downloaded.");
   };
 
-  const handleImportLocalBackup = async (backup: unknown): Promise<BackupImportResult> => {
+  const handleImportLocalBackup = async (
+    backup: unknown,
+    options: { restoreDesktopPreferences?: boolean } = {}
+  ): Promise<BackupImportResult> => {
     const result = await window.api.importLocalBackup(backup);
 
     if (result.ok) {
+      let desktopRestored = 0;
+      if (authUser && result.portablePreferences) {
+        const restored = await applyBackupPreferences(
+          authUser.id,
+          result.portablePreferences,
+          result.desktopPreferences,
+          options
+        );
+        setLibraryMediaType(restored.preferences.navigation.libraryMediaType);
+        setHomeMode(restored.preferences.navigation.homeMode);
+        desktopRestored = restored.desktopRestored;
+      }
+      if (result.settings && typeof result.settings === "object") {
+        setSettings((current) => ({
+          ...current,
+          ...(result.settings as Partial<AppSettings>),
+        }));
+      }
       await loadTrackedEntries();
-      showSyncToast("success", "Backup imported", result.message);
+      const message = desktopRestored > 0
+        ? `${result.message} Restored ${desktopRestored} device preference${desktopRestored === 1 ? "" : "s"}.`
+        : result.message;
+      showSyncToast("success", "Backup imported", message);
+      return { ...result, message };
     } else {
       showSyncToast("error", "Backup import failed", result.message);
     }

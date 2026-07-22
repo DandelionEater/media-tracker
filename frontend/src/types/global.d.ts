@@ -671,7 +671,10 @@ declare global {
         mangaRemovedCount?: number;
       }>;
 
-      exportLocalBackup: () => Promise<SeenaryBackup>;
+      exportLocalBackup: (preferenceBundle?: {
+        portablePreferences?: unknown;
+        desktopPreferences?: unknown;
+      }) => Promise<SeenaryBackup>;
 
       importLocalBackup: (backup: unknown) => Promise<{
         ok: boolean;
@@ -680,6 +683,13 @@ declare global {
         animeImported?: number;
         mangaImported?: number;
         skipped?: number;
+        settings?: unknown;
+        portablePreferences?: unknown;
+        desktopPreferences?: unknown;
+        backupVersion?: number;
+        preferencesRestored?: boolean;
+        syncFailuresRestored?: number;
+        pendingDeletionsRestored?: number;
       }>;
     };
     desktopUpdater?: {

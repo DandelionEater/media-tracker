@@ -114,17 +114,153 @@ async function run() {
     true
   );
 
-  const exportedBackup = await backup.exportBackup(session, { themeAccent: 'violet' });
+  const portablePreferences = {
+    version: 1,
+    navigation: { libraryMediaType: 'MANGA', homeMode: 'discover' },
+    layouts: { personalLayoutOrder: ['stats', 'overview'] },
+    myList: {
+      anime: { view: 'grid', sortMode: 'personalScore' },
+      manga: { view: 'board', sortMode: 'alphabetical' },
+    },
+  };
+  const exportedBackup = await backup.exportBackup(
+    session,
+    { themeAccent: 'violet' },
+    { portablePreferences }
+  );
+  assert.equal(exportedBackup.version, 4);
+  assert.deepEqual(exportedBackup.data.portablePreferences, portablePreferences);
   assert.ok(exportedBackup.data.entries[String(sharedMediaId)]);
   assert.ok(exportedBackup.data.mangaEntries[String(sharedMediaId)]);
   assert.equal(lists.removeMyAnimeEntry(session, sharedMediaId).ok, true);
   assert.equal(lists.removeMyMangaEntry(session, sharedMediaId).ok, true);
-  const restoredBackup = await backup.importBackup(session, exportedBackup, () => undefined);
+  let restoredSettings = null;
+  const restoredBackup = await backup.importBackup(session, exportedBackup, (settings) => {
+    restoredSettings = settings;
+    return settings;
+  });
   assert.equal(restoredBackup.ok, true);
   assert.equal(restoredBackup.animeImported, 1);
   assert.equal(restoredBackup.mangaImported, 1);
+  assert.equal(restoredBackup.backupVersion, 4);
+  assert.equal(restoredBackup.portablePreferences.navigation.libraryMediaType, 'MANGA');
+  assert.equal(restoredSettings.themeAccent, 'violet');
   assert.equal(db.getUserAnimeList(session.user.id).length, 1);
   assert.equal(db.getUserMangaList(session.user.id).length, 1);
+
+  db.upsertAniListAccount({
+    userId: session.user.id,
+    anilistUserId: 303,
+    anilistUsername: 'backup_recovery',
+    originalAniListUsername: 'backup_recovery',
+    accessToken: 'smoke-token',
+  });
+  const failedJob = db.enqueueSyncJob({
+    userId: session.user.id,
+    animeId: sharedMediaId,
+    operation: 'upsert_anilist_entry',
+    payload: { status: 'COMPLETED', progress: 11 },
+    changedFields: [{ field: 'progress', from: 12, to: 11 }],
+  });
+  assert.ok(failedJob);
+  db.markSyncQueueJobFailed(failedJob.id, 'Portable recovery smoke', null, true);
+  const recoveryBackup = await backup.exportBackup(session, { themeAccent: 'violet' });
+  const failureKey = `anilist:ANIME:${sharedMediaId}`;
+  assert.equal(recoveryBackup.data.syncFailures[failureKey].excludedAt !== null, true);
+  db.deleteSyncQueueJob(failedJob.id);
+  db.enqueueSyncJob({
+    userId: session.user.id,
+    animeId: sharedMediaId,
+    operation: 'upsert_anilist_entry',
+    payload: { status: 'COMPLETED', progress: 11 },
+    changedFields: [{ field: 'progress', from: 12, to: 11 }],
+  });
+  const recoveryResult = await backup.importBackup(session, recoveryBackup, (settings) => settings);
+  assert.equal(recoveryResult.ok, true);
+  assert.equal(recoveryResult.syncFailuresRestored, 1);
+  const restoredFailedJob = db.getSyncQueueJob(
+    session.user.id,
+    sharedMediaId,
+    'upsert_anilist_entry',
+    'ANIME'
+  );
+  assert.equal(restoredFailedJob.status, 'blocked');
+  const deletionMediaId = 987654;
+  const deletionRecovery = await backup.importBackup(
+    session,
+    {
+      format: 'seenary.local-backup',
+      version: 4,
+      data: {
+        entries: {},
+        mangaEntries: {},
+        deletedEntries: {
+          [deletionMediaId]: {
+            anime_id: deletionMediaId,
+            media_type: 'ANIME',
+            title: 'Pending deletion smoke',
+            status: 'planned',
+            external_ids: { anilist: String(deletionMediaId), mal: null },
+          },
+        },
+      },
+    },
+    (settings) => settings
+  );
+  assert.equal(deletionRecovery.pendingDeletionsRestored, 1);
+  assert.ok(
+    db.getSyncQueueJob(session.user.id, deletionMediaId, 'delete_anilist_entry', 'ANIME')
+  );
+  db.deleteAniListAccountByUserId(session.user.id);
+
+  const legacyPreferenceBackup = {
+    format: 'seenary.local-backup',
+    version: 1,
+    exportedAt: new Date().toISOString(),
+    data: { settings: { themeAccent: 'rose' }, entries: {}, mangaEntries: {} },
+  };
+  const legacyPreferenceResult = await backup.importBackup(
+    session,
+    legacyPreferenceBackup,
+    (settings) => settings
+  );
+  assert.equal(legacyPreferenceResult.ok, true);
+  assert.equal(legacyPreferenceResult.backupVersion, 1);
+  assert.equal(legacyPreferenceResult.preferencesRestored, true);
+
+  for (const version of [2, 3]) {
+    const migratedResult = await backup.importBackup(
+      session,
+      {
+        format: 'seenary.local-backup',
+        version,
+        exportedAt: new Date().toISOString(),
+        data: {
+          settings: { themeAccent: version === 2 ? 'amber' : 'emerald' },
+          entries: {},
+          mangaEntries: {},
+          autoSyncEnabled: false,
+          ...(version >= 3 ? { syncFailures: {} } : {}),
+        },
+      },
+      (settings) => settings
+    );
+    assert.equal(migratedResult.ok, true);
+    assert.equal(migratedResult.backupVersion, version);
+  }
+
+  const futureBackupResult = await backup.importBackup(
+    session,
+    { ...exportedBackup, version: 5 },
+    (settings) => settings
+  );
+  assert.equal(futureBackupResult.ok, false);
+  const malformedBackupResult = await backup.importBackup(
+    session,
+    { format: 'not-seenary', version: 4, data: {} },
+    (settings) => settings
+  );
+  assert.equal(malformedBackupResult.ok, false);
 
   db.upsertAniListAccount({
     userId: linkedRegistration.user.id,

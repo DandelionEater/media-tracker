@@ -25,6 +25,13 @@ import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference"
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
 import { formatLocalDateTime as formatDateTime } from "../utils/dateFormat";
 import type { ImportPreviewItem } from "../types/domain";
+import {
+  inspectSeenaryBackup,
+  selectBackupSections,
+  type BackupInspection,
+} from "../utils/portablePreferences";
+import { ModalShell } from "./ui/ModalShell";
+import { Tooltip } from "./ui/Tooltip";
 
 export type ThemeAccent = "violet" | "rose" | "amber" | "emerald" | "custom";
 type OverlayBackground = "solid" | "glass" | "transparent";
@@ -210,7 +217,10 @@ type SettingsPageProps = {
     message: string;
   }>;
   onExportLocalBackup: () => Promise<void>;
-  onImportLocalBackup: (backup: unknown) => Promise<{
+  onImportLocalBackup: (
+    backup: unknown,
+    options?: { restoreDesktopPreferences?: boolean }
+  ) => Promise<{
     ok: boolean;
     message: string;
     imported?: number;
@@ -665,6 +675,13 @@ export function SettingsPage({
   } | null>(null);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
+  const [backupPreview, setBackupPreview] = useState<{
+    backup: unknown;
+    inspection: BackupInspection;
+    restoreLibrary: boolean;
+    restorePreferences: boolean;
+    restoreDesktopPreferences: boolean;
+  } | null>(null);
   const [clearTarget, setClearTarget] = useState<"anime" | "manga" | "all" | null>(null);
   const [isClearingList, setIsClearingList] = useState(false);
   const [isDeleteAccountArmed, setIsDeleteAccountArmed] = useState(false);
@@ -2104,11 +2121,17 @@ export function SettingsPage({
       setBackupFeedback(null);
       const text = await file.text();
       const backup = JSON.parse(text);
-      const result = await onImportLocalBackup(backup);
-
-      setBackupFeedback({
-        kind: result.ok ? "success" : "error",
-        message: result.message,
+      const inspection = inspectSeenaryBackup(backup);
+      if (!inspection.valid) {
+        setBackupFeedback({ kind: "error", message: inspection.message });
+        return;
+      }
+      setBackupPreview({
+        backup,
+        inspection,
+        restoreLibrary: true,
+        restorePreferences: inspection.hasPortablePreferences,
+        restoreDesktopPreferences: false,
       });
     } catch {
       setBackupFeedback({
@@ -2120,6 +2143,32 @@ export function SettingsPage({
       if (backupImportInputRef.current) {
         backupImportInputRef.current.value = "";
       }
+    }
+  }
+
+  async function confirmBackupImport() {
+    if (!backupPreview || isImportingBackup) return;
+    try {
+      setIsImportingBackup(true);
+      setBackupFeedback(null);
+      const selectedBackup = selectBackupSections(backupPreview.backup, backupPreview);
+      const result = await onImportLocalBackup(selectedBackup, {
+        restoreDesktopPreferences: backupPreview.restoreDesktopPreferences,
+      });
+      setBackupFeedback({
+        kind: result.ok ? "success" : "error",
+        message: result.message,
+      });
+      if (result.ok) {
+        if (backupPreview.restoreDesktopPreferences) {
+          await Promise.all([loadDesktopWindow(), loadDesktopStartup(), loadDesktopShortcut()]);
+        }
+        setBackupPreview(null);
+      }
+    } catch {
+      setBackupFeedback({ kind: "error", message: "Could not import this backup file." });
+    } finally {
+      setIsImportingBackup(false);
     }
   }
 
@@ -2271,17 +2320,18 @@ export function SettingsPage({
                           aria-label="Hide/show shortcut"
                         />
                         {desktopShortcut.draftAccelerator && (
+                          <Tooltip content="Clear shortcut" className="absolute right-2 top-1/2 h-8 w-8 -translate-y-1/2" positioned>
                           <button
                             type="button"
                             disabled={!desktopShortcut.enabled || desktopShortcut.loading}
                             onMouseDown={(event) => event.preventDefault()}
                             onClick={() => updateDraftShortcut("")}
-                            className="absolute right-2 top-1/2 flex h-8 w-8 -translate-y-1/2 items-center justify-center rounded-full text-white/45 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-                            title="Clear shortcut"
+                            className="flex h-full w-full items-center justify-center rounded-full text-white/45 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                             aria-label="Clear shortcut"
                           >
                             <XMarkIcon className="h-4 w-4" />
                           </button>
+                          </Tooltip>
                         )}
                       </div>
                       <button
@@ -3596,16 +3646,16 @@ export function SettingsPage({
               icon={CloudArrowDownIcon}
               title="Import & Data"
               description="Bring anime data into the app and manage local list data."
-              summary={["AniList import", "Clear list"]}
+              summary={["Portable backups", "AniList import", "Clear lists"]}
               open={openSection === "data"}
               onToggle={() => toggleSection("data")}
             >
             <div className="space-y-6">
               <div className="rounded-3xl border border-cyan-300/15 bg-cyan-300/8 p-5">
-                <p className="font-semibold text-white">Local data and backups</p>
+                <p className="font-semibold text-white">Portable data and backups</p>
                 <p className="mt-2 text-sm leading-6 text-white/70">
-                  Your web list is saved on this browser and device. Link AniList or MyAnimeList
-                  for sync, or export a backup file if you want to move your Seenary data to another PC.
+                  Export your Anime and Manga library, preferences, layouts, and sync recovery
+                  state to a portable file that can move between Seenary installations.
                 </p>
 
                 <div className="mt-5 flex flex-wrap gap-3">
@@ -4249,6 +4299,165 @@ export function SettingsPage({
         onConfirm={unlinkExternalAccount}
       />
 
+      <ModalShell
+        open={Boolean(backupPreview)}
+        onClose={() => !isImportingBackup && setBackupPreview(null)}
+        ariaLabel="Preview backup import"
+        panelClassName="max-w-xl p-6"
+        closeOnBackdrop={!isImportingBackup}
+        showCloseButton
+      >
+        {backupPreview && (
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-white/35">
+              Portable backup
+            </p>
+            <h2 className="mt-3 text-2xl font-bold text-white">Review before importing</h2>
+            <p className="mt-2 text-sm leading-6 text-white/55">
+              {backupPreview.inspection.message}
+            </p>
+
+            <div className="mt-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <ImportStat label="Version" value={`v${backupPreview.inspection.version}`} />
+              <ImportStat label="Anime" value={backupPreview.inspection.animeEntries} />
+              <ImportStat label="Manga" value={backupPreview.inspection.mangaEntries} />
+              <ImportStat
+                label="Preferences"
+                value={backupPreview.inspection.hasPortablePreferences ? "Included" : "None"}
+              />
+            </div>
+
+            {(backupPreview.inspection.username || backupPreview.inspection.exportedAt) && (
+              <p className="mt-4 text-xs text-white/40">
+                {backupPreview.inspection.username
+                  ? `Exported for ${backupPreview.inspection.username}`
+                  : "Seenary backup"}
+                {backupPreview.inspection.exportedAt
+                  ? ` · ${formatDateTime(backupPreview.inspection.exportedAt)}`
+                  : ""}
+              </p>
+            )}
+
+            <div className="mt-5 space-y-2">
+              <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <input
+                  type="checkbox"
+                  checked={backupPreview.restoreLibrary}
+                  onChange={(event) =>
+                    setBackupPreview((current) =>
+                      current ? { ...current, restoreLibrary: event.target.checked } : current
+                    )
+                  }
+                  className="mt-0.5 h-4 w-4 accent-[var(--app-accent)]"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-white">Library data</span>
+                  <span className="mt-1 block text-xs text-white/50">
+                    Merge Anime, Manga, list progress, notes, and sync recovery state.
+                  </span>
+                </span>
+              </label>
+
+              {backupPreview.inspection.hasPortablePreferences && (
+                <label className="flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                  <input
+                    type="checkbox"
+                    checked={backupPreview.restorePreferences}
+                    onChange={(event) =>
+                      setBackupPreview((current) =>
+                        current
+                          ? {
+                              ...current,
+                              restorePreferences: event.target.checked,
+                              restoreDesktopPreferences: event.target.checked
+                                ? current.restoreDesktopPreferences
+                                : false,
+                            }
+                          : current
+                      )
+                    }
+                    className="mt-0.5 h-4 w-4 accent-[var(--app-accent)]"
+                  />
+                  <span>
+                    <span className="block text-sm font-semibold text-white">
+                      Preferences and layouts
+                    </span>
+                    <span className="mt-1 block text-xs text-white/50">
+                      Restore appearance, content, navigation, My List, and layout choices.
+                    </span>
+                  </span>
+                </label>
+              )}
+            </div>
+
+            {backupPreview.inspection.hasDesktopPreferences &&
+              (window.desktopShortcuts || window.desktopWindow || window.desktopStartup) && (
+              <label className="mt-5 flex cursor-pointer items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <input
+                  type="checkbox"
+                  checked={backupPreview.restoreDesktopPreferences}
+                  disabled={!backupPreview.restorePreferences}
+                  onChange={(event) =>
+                    setBackupPreview((current) =>
+                      current
+                        ? { ...current, restoreDesktopPreferences: event.target.checked }
+                        : current
+                    )
+                  }
+                  className="mt-0.5 h-4 w-4 accent-[var(--app-accent)]"
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-white">
+                    Restore device preferences
+                  </span>
+                  <span className="mt-1 block text-xs leading-5 text-white/50">
+                    Applies the desktop shortcut, window size preset, and launch-at-login choice.
+                    Window position and account credentials are never imported.
+                  </span>
+                </span>
+              </label>
+            )}
+
+            {backupPreview.inspection.hasDesktopPreferences &&
+              !window.desktopShortcuts &&
+              !window.desktopWindow &&
+              !window.desktopStartup && (
+                <p className="mt-5 rounded-2xl border border-white/10 bg-white/[0.03] p-3 text-xs leading-5 text-white/50">
+                  This backup contains desktop-device preferences. They will remain untouched because
+                  this Seenary session is running in a web browser.
+                </p>
+              )}
+
+            <p className="mt-5 rounded-2xl border border-cyan-300/15 bg-cyan-300/8 p-3 text-xs leading-5 text-cyan-50/75">
+              Library entries are merged safely. Portable preferences and layouts included in the
+              backup replace their matching local preferences.
+            </p>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                disabled={isImportingBackup}
+                onClick={() => setBackupPreview(null)}
+                className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-semibold text-white/70 transition hover:bg-white/8 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={
+                  isImportingBackup ||
+                  (!backupPreview.restoreLibrary && !backupPreview.restorePreferences)
+                }
+                onClick={confirmBackupImport}
+                className="rounded-2xl bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-wait disabled:opacity-50"
+              >
+                {isImportingBackup ? "Importing..." : "Import backup"}
+              </button>
+            </div>
+          </div>
+        )}
+      </ModalShell>
+
       <SyncActivityModal
         isOpen={isSyncActivityOpen}
         activeTab={syncActivityTab}
@@ -4470,7 +4679,7 @@ function InfoCard({ label, value }: { label: string; value: string }) {
   );
 }
 
-function ImportStat({ label, value }: { label: string; value: number }) {
+function ImportStat({ label, value }: { label: string; value: number | string }) {
   return (
     <div className="rounded-2xl border border-white/10 bg-black/15 px-3 py-3">
       <p className="text-[11px] uppercase tracking-[0.22em] text-white/35">{label}</p>

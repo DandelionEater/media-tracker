@@ -475,5 +475,7 @@ export type SeenaryBackup = {
     syncHistory?: SyncActivityItem[];
     syncFailures?: Record<string, unknown>;
     autoSyncEnabled?: boolean;
+    portablePreferences?: unknown;
+    desktopPreferences?: unknown;
   };
 };

@@ -1162,6 +1162,13 @@ const excludeSyncQueueJobStmt = db.prepare(`
     AND (status = 'pending' OR status = 'failed')
 `);
 
+const applySyncQueueFailureStateStmt = db.prepare(`
+  UPDATE sync_queue
+  SET status = ?, attempts = ?, last_error = ?, next_attempt_at = NULL,
+      updated_at = CURRENT_TIMESTAMP
+  WHERE user_id = ? AND media_type = ? AND media_id = ? AND operation = ?
+`);
+
 const deleteSyncQueueJobStmt = db.prepare(`
   DELETE FROM sync_queue
   WHERE id = ?
@@ -2221,6 +2228,27 @@ function excludeSyncQueueJob(userId, id) {
   return excludeSyncQueueJobStmt.run(id, userId).changes > 0;
 }
 
+function applySyncQueueFailureState({
+  userId,
+  mediaType,
+  mediaId,
+  operation,
+  attempts,
+  lastError,
+  excluded,
+}) {
+  const normalizedAttempts = Math.min(100, Math.max(1, Math.round(Number(attempts) || 1)));
+  return applySyncQueueFailureStateStmt.run(
+    excluded ? 'blocked' : 'failed',
+    normalizedAttempts,
+    lastError || null,
+    userId,
+    mediaType === 'MANGA' ? 'MANGA' : 'ANIME',
+    Number(mediaId),
+    operation
+  ).changes > 0;
+}
+
 function deleteSyncQueueJob(id) {
   deleteSyncQueueJobStmt.run(id);
 }
@@ -2338,6 +2366,7 @@ module.exports = {
   markSyncQueueJobFailed,
   restoreSyncQueueJob,
   excludeSyncQueueJob,
+  applySyncQueueFailureState,
   deleteSyncQueueJob,
   deleteSyncQueueJobByEntry,
   insertSyncHistory,

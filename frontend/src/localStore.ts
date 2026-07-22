@@ -71,6 +71,35 @@ function getSyncFailureKey(provider: SyncProvider, mediaType: "ANIME" | "MANGA",
   return `${provider}:${mediaType}:${mediaId}`;
 }
 
+function normalizeSyncFailures(value: unknown) {
+  if (!isPlainRecord(value)) return {};
+  const failures: Record<string, SyncFailureRecord> = {};
+  for (const candidate of Object.values(value)) {
+    if (!isPlainRecord(candidate)) continue;
+    const provider = candidate.provider === "mal" ? "mal" : candidate.provider === "anilist" ? "anilist" : null;
+    const mediaType = candidate.mediaType === "MANGA" ? "MANGA" : candidate.mediaType === "ANIME" ? "ANIME" : null;
+    const mediaId = Number(candidate.mediaId);
+    if (!provider || !mediaType || !Number.isInteger(mediaId) || mediaId <= 0) continue;
+    const attempts = Math.min(100, Math.max(1, Math.round(Number(candidate.attempts) || 1)));
+    failures[getSyncFailureKey(provider, mediaType, mediaId)] = {
+      provider,
+      mediaType,
+      mediaId,
+      animeTitle: typeof candidate.animeTitle === "string" ? candidate.animeTitle : null,
+      attempts,
+      lastError: typeof candidate.lastError === "string" ? candidate.lastError : null,
+      operation: typeof candidate.operation === "string" ? candidate.operation : "sync_entry",
+      updatedAt: typeof candidate.updatedAt === "string" ? candidate.updatedAt : new Date().toISOString(),
+      excludedAt: typeof candidate.excludedAt === "string" ? candidate.excludedAt : null,
+      excludedBy:
+        candidate.excludedBy === "user" || candidate.excludedBy === "system"
+          ? candidate.excludedBy
+          : null,
+    };
+  }
+  return failures;
+}
+
 function isExcludedForProvider(
   state: LocalState,
   provider: SyncProvider | null | undefined,
@@ -88,7 +117,7 @@ const LEGACY_STATE_PREFIX = "seenary.local-user.";
 const LEGACY_MIGRATED_PREFIX = "seenary.indexeddb-migrated.";
 const FALLBACK_STATE_PREFIX = "seenary.local-fallback.";
 const BACKUP_FORMAT = "seenary.local-backup";
-const BACKUP_VERSION = 3;
+const BACKUP_VERSION = 4;
 
 type ValidSeenaryBackup = SeenaryBackup & {
   format: string;
@@ -338,8 +367,7 @@ function normalizeState(userId: number, value: Partial<LocalState> | null | unde
         ? value.deletedMangaEntries
         : {},
     syncHistory: Array.isArray(value?.syncHistory) ? value.syncHistory : [],
-    syncFailures:
-      value?.syncFailures && typeof value.syncFailures === "object" ? value.syncFailures : {},
+    syncFailures: normalizeSyncFailures(value?.syncFailures),
     autoSyncEnabled:
       typeof value?.autoSyncEnabled === "boolean" ? value.autoSyncEnabled : true,
   };
@@ -1719,7 +1747,14 @@ export const localStore = {
     };
   },
 
-  async exportBackup(userId: number, username: string) {
+  async exportBackup(
+    userId: number,
+    username: string,
+    preferenceBundle: {
+      portablePreferences?: unknown;
+      desktopPreferences?: unknown;
+    } = {}
+  ) {
     const state = await readState(userId);
 
     return {
@@ -1740,6 +1775,8 @@ export const localStore = {
         syncHistory: state.syncHistory,
         syncFailures: state.syncFailures,
         autoSyncEnabled: state.autoSyncEnabled,
+        portablePreferences: preferenceBundle.portablePreferences,
+        desktopPreferences: preferenceBundle.desktopPreferences,
       },
     };
   },
@@ -1763,9 +1800,14 @@ export const localStore = {
     );
     let animeImported = 0;
     let mangaImported = 0;
+    let pendingDeletionsRestored = 0;
+    let syncFailuresRestored = 0;
 
     state.settings = isPlainRecord(backup.data.settings)
-      ? normalizeSettings(backup.data.settings as Partial<LocalSettings>)
+      ? normalizeSettings({
+          ...normalizeSettings(state.settings),
+          ...(backup.data.settings as Partial<LocalSettings>),
+        })
       : state.settings;
     state.anime = {
       ...state.anime,
@@ -1801,19 +1843,28 @@ export const localStore = {
       for (const [key, deletion] of Object.entries(
         getBackupRecord<DeletedListEntry>(backup.data.deletedEntries)
       )) {
-        if (isPlainRecord(deletion) && !state.entries[key]) state.deletedEntries[key] = deletion;
+        if (isPlainRecord(deletion) && !state.entries[key]) {
+          state.deletedEntries[key] = deletion;
+          pendingDeletionsRestored += 1;
+        }
       }
       for (const [key, deletion] of Object.entries(
         getBackupRecord<DeletedListEntry>(backup.data.deletedMangaEntries)
       )) {
         if (isPlainRecord(deletion) && !state.mangaEntries[key]) {
           state.deletedMangaEntries[key] = deletion;
+          pendingDeletionsRestored += 1;
         }
       }
 
       state.syncHistory = mergeSyncHistory(state.syncHistory, backup.data.syncHistory);
       if (backupVersion >= 3 && isPlainRecord(backup.data.syncFailures)) {
-        state.syncFailures = backup.data.syncFailures as Record<string, SyncFailureRecord>;
+        const restoredFailures = normalizeSyncFailures(backup.data.syncFailures);
+        state.syncFailures = {
+          ...state.syncFailures,
+          ...restoredFailures,
+        };
+        syncFailuresRestored = Object.keys(restoredFailures).length;
       }
       if (typeof backup.data.autoSyncEnabled === "boolean") {
         state.autoSyncEnabled = backup.data.autoSyncEnabled;
@@ -1830,16 +1881,35 @@ export const localStore = {
       animeImported ? `${animeImported} Anime` : "",
       mangaImported ? `${mangaImported} Manga` : "",
     ].filter(Boolean).join(" and ");
+    const preferencesRestored = isPlainRecord(backup.data.settings) ||
+      isPlainRecord(backup.data.portablePreferences);
+    const restoredParts = [
+      importSummary ? `${importSummary} entr${imported === 1 ? "y" : "ies"}` : "",
+      preferencesRestored ? "preferences and layouts" : "",
+      pendingDeletionsRestored
+        ? `${pendingDeletionsRestored} pending deletion${pendingDeletionsRestored === 1 ? "" : "s"}`
+        : "",
+      syncFailuresRestored
+        ? `${syncFailuresRestored} sync recovery entr${syncFailuresRestored === 1 ? "y" : "ies"}`
+        : "",
+    ].filter(Boolean);
 
     return {
       ok: true,
-      message: importSummary
-        ? `Imported ${importSummary} backup entr${imported === 1 ? "y" : "ies"}.`
+      message: restoredParts.length
+        ? `Restored ${restoredParts.join(" plus ")} from the backup${skipped ? `; skipped ${skipped} invalid entr${skipped === 1 ? "y" : "ies"}` : ""}.`
         : "The backup was valid, but it did not contain any list entries.",
       imported,
       animeImported,
       mangaImported,
       skipped,
+      settings: normalizeSettings(state.settings),
+      portablePreferences: backup.data.portablePreferences,
+      desktopPreferences: backup.data.desktopPreferences,
+      backupVersion,
+      preferencesRestored,
+      pendingDeletionsRestored,
+      syncFailuresRestored,
     };
   },
 };

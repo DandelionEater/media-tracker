@@ -862,10 +862,14 @@ export function installApiClient() {
       }
       return result;
     },
-    exportLocalBackup: async () => {
+    exportLocalBackup: async (preferenceBundle) => {
       const userId = await requireActiveUserId();
       const session = await getSession();
-      return await localStore.exportBackup(userId, session?.user?.username ?? "Seenary user");
+      return await localStore.exportBackup(
+        userId,
+        session?.user?.username ?? "Seenary user",
+        preferenceBundle
+      );
     },
     importLocalBackup: async (backup) => {
       const userId = await requireActiveUserId();

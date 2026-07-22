@@ -2623,9 +2623,9 @@ ipcMain.handle('media-list:clear-all', () => {
   }
 });
 
-ipcMain.handle('backup:export', async () => {
+ipcMain.handle('backup:export', async (_event, preferenceBundle) => {
   try {
-    return await exportBackup(getCurrentSession(), getAppPreferences());
+    return await exportBackup(getCurrentSession(), getAppPreferences(), preferenceBundle);
   } catch (error) {
     console.error('Backup export error:', error);
     throw new Error(error.message || 'Failed to export backup.');
