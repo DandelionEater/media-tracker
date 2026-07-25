@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { DragEvent, ReactNode } from "react";
 import {
   BookmarkIcon,
@@ -90,6 +90,9 @@ type MyListPageProps = {
   onMediaTypeChange: (mediaType: MediaType) => void;
   onLibraryDestinationChange: (destination: LibraryDestination) => void;
   onLibraryLensVisibilityChange: (isVisible: boolean) => void;
+  initialScrollTop: number;
+  onScrollContainerChange: (element: HTMLDivElement | null) => void;
+  onScrollPositionChange: (scrollTop: number) => void;
 };
 
 type SortMode = "alphabetical" | "personalScore";
@@ -350,6 +353,9 @@ export function MyListPage({
   onMediaTypeChange,
   onLibraryDestinationChange,
   onLibraryLensVisibilityChange,
+  initialScrollTop,
+  onScrollContainerChange,
+  onScrollPositionChange,
 }: MyListPageProps) {
   const entries: MyListEntry[] =
     activeMediaType === "MANGA" ? mangaEntries : animeEntries;
@@ -383,6 +389,22 @@ export function MyListPage({
   const [openFilter, setOpenFilter] = useState<OpenFilter>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const openSectionsBeforeEdit = useRef<Record<ListStatus, boolean> | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement | null>(null);
+  const initialScrollTopOnMount = useRef(initialScrollTop);
+  const isRestoringScroll = useRef(false);
+  const restoringScrollTarget = useRef(0);
+
+  const rememberScrollContainer = useCallback(
+    (element: HTMLDivElement | null) => {
+      scrollContainerRef.current = element;
+      onScrollContainerChange(element);
+    },
+    [onScrollContainerChange]
+  );
+  const handleOpenMedia = useCallback(
+    (mediaId: number) => onSelectMedia(mediaId, activeMediaType),
+    [activeMediaType, onSelectMedia]
+  );
 
   function handleMediaTypeChange(mediaType: MediaType) {
     if (mediaType === activeMediaType) return;
@@ -414,6 +436,50 @@ export function MyListPage({
   useEffect(() => {
     onRefreshList();
   }, [onRefreshList]);
+
+  useLayoutEffect(() => {
+    let frame = 0;
+    let timeout = 0;
+    let cancelled = false;
+    let attempts = 0;
+    const targetScrollTop = initialScrollTopOnMount.current;
+
+    restoringScrollTarget.current = targetScrollTop;
+    isRestoringScroll.current = targetScrollTop > 0;
+
+    function restoreScroll() {
+      if (cancelled) return;
+
+      const container = scrollContainerRef.current;
+      if (!container) {
+        isRestoringScroll.current = false;
+        return;
+      }
+
+      container.scrollTop = targetScrollTop;
+      const isAtTarget = Math.abs(container.scrollTop - targetScrollTop) < 2;
+
+      if (isAtTarget || targetScrollTop <= 0 || attempts >= 40) {
+        isRestoringScroll.current = false;
+        onScrollPositionChange(container.scrollTop);
+        return;
+      }
+
+      attempts += 1;
+      timeout = window.setTimeout(() => {
+        frame = window.requestAnimationFrame(restoreScroll);
+      }, 50);
+    }
+
+    frame = window.requestAnimationFrame(restoreScroll);
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frame);
+      window.clearTimeout(timeout);
+      isRestoringScroll.current = false;
+    };
+  }, [onScrollPositionChange]);
 
   useEffect(() => {
     if (!window.desktopConfig) return;
@@ -690,7 +756,20 @@ export function MyListPage({
 
   return (
     <>
-      <div data-global-scroll-root className="scroll-container h-full overflow-y-auto px-6 py-24">
+      <div
+        data-global-scroll-root
+        ref={rememberScrollContainer}
+        onScroll={(event) => {
+          const scrollTop = event.currentTarget.scrollTop;
+
+          if (isRestoringScroll.current && scrollTop < restoringScrollTarget.current) {
+            return;
+          }
+
+          onScrollPositionChange(scrollTop);
+        }}
+        className="scroll-container h-full overflow-y-auto px-6 py-24"
+      >
         <div className="mx-auto max-w-6xl space-y-10">
           <section className="flex flex-col gap-5 border-b border-white/10 pb-6 md:flex-row md:items-end md:justify-between">
             <div>
@@ -842,11 +921,8 @@ export function MyListPage({
               </div>
             </div>
 
-            <div
-              className={`grid transition-[grid-template-rows,opacity] duration-300 ${filtersOpen ? "" : "!mt-0"}`}
-              style={{ gridTemplateRows: filtersOpen ? "1fr" : "0fr", opacity: filtersOpen ? 1 : 0 }}
-            >
-              <div className={filtersOpen ? "overflow-visible" : "overflow-hidden"}>
+            {filtersOpen && (
+              <div className="filter-panel-enter">
                 <div className="grid gap-4 rounded-3xl border border-white/10 bg-white/[0.035] p-4 md:grid-cols-2 xl:grid-cols-4">
                   <FilterSelect
                     label="Rating"
@@ -977,7 +1053,7 @@ export function MyListPage({
                   )}
                 </div>
               </div>
-            </div>
+            )}
 
           </div>
 
@@ -1084,7 +1160,7 @@ export function MyListPage({
                                   key={`${entry.anime_id}-${entry.status}`}
                                   entry={entry}
                                   statusLabel={label}
-                                  onOpen={(id) => onSelectMedia(id, activeMediaType)}
+                                  onOpen={handleOpenMedia}
                                   onEdit={setEditingEntry}
                                   titleLanguage={titleLanguage}
                                   searchQuery={listSearch}

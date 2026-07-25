@@ -119,9 +119,9 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('manga-list:save-entry', { mangaId, data }),
   removeMyMangaListEntry: (mangaId) => ipcRenderer.invoke('manga-list:remove-entry', mangaId),
 
-  clearMyList: () => ipcRenderer.invoke('list:clear'),
-  clearMyMangaList: () => ipcRenderer.invoke('manga-list:clear'),
-  clearAllMediaLists: () => ipcRenderer.invoke('media-list:clear-all'),
+  clearMyList: (options) => ipcRenderer.invoke('list:clear', options),
+  clearMyMangaList: (options) => ipcRenderer.invoke('manga-list:clear', options),
+  clearAllMediaLists: (options) => ipcRenderer.invoke('media-list:clear-all', options),
   exportLocalBackup: (preferenceBundle) => ipcRenderer.invoke('backup:export', preferenceBundle),
   importLocalBackup: (backup) => ipcRenderer.invoke('backup:import', backup),
 });

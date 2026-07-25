@@ -3519,12 +3519,12 @@ function SinceYouLikedPairCard({
 
   return (
     <div className="rounded-3xl border border-white/10 bg-white/5 p-4 shadow-xl">
-      <div className="flex flex-col gap-4 lg:flex-row lg:items-stretch">
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,29fr)_3rem_minmax(0,71fr)] lg:items-stretch">
         <button
           type="button"
           onClick={() => entry.source && onSelectAnime(entry.source.animeId)}
           disabled={!entry.source}
-          className="flex min-w-0 items-center gap-4 rounded-3xl border border-white/10 bg-white/3 p-4 text-left transition hover:bg-white/8 disabled:cursor-default disabled:hover:bg-white/3 lg:basis-[29%] lg:max-w-[29%]"
+          className="flex min-w-0 items-center gap-4 rounded-3xl border border-white/10 bg-white/3 p-4 text-left transition hover:bg-white/8 disabled:cursor-default disabled:hover:bg-white/3"
         >
           <div className="h-28 w-20 shrink-0 overflow-hidden rounded-2xl bg-white/5">
             {entry.source?.coverImage ? (
@@ -3555,14 +3555,14 @@ function SinceYouLikedPairCard({
           </div>
         </button>
 
-        <div className="flex items-center justify-center text-white/30 lg:w-12">
+        <div className="flex items-center justify-center text-white/30">
           <ArrowRightIcon className="h-6 w-6" />
         </div>
 
         <button
           type="button"
           onClick={() => onSelectAnime(entry.animeId)}
-          className="flex min-w-0 flex-1 items-center gap-4 rounded-3xl border border-white/10 bg-white/3 p-4 text-left transition hover:bg-white/8 lg:basis-[71%]"
+          className="flex min-w-0 items-center gap-4 rounded-3xl border border-white/10 bg-white/3 p-4 text-left transition hover:bg-white/8"
         >
           <div className="h-32 w-22 shrink-0 overflow-hidden rounded-2xl bg-white/5">
             {entry.coverImage?.large ? (
@@ -3714,13 +3714,13 @@ function MetaPill({ children }: { children: ReactNode }) {
 function SmallInfoPill({
   icon: Icon,
   children,
-  tone = "neutral",
+  tone,
 }: {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   children: ReactNode;
   tone?: "neutral" | "sky" | "amber" | "violet" | "rose" | "emerald";
 }) {
-  const toneClass = getSmallInfoPillTone(tone);
+  const toneClass = getSmallInfoPillTone(tone ?? getSmallInfoPillIconTone(Icon));
 
   return (
     <span className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-white/10 bg-white/8 py-1 pl-1 pr-2.5 text-[11px] text-white/65">
@@ -3732,6 +3732,17 @@ function SmallInfoPill({
       <span className="min-w-0 truncate">{children}</span>
     </span>
   );
+}
+
+function getSmallInfoPillIconTone(
+  Icon: React.ComponentType<React.SVGProps<SVGSVGElement>>
+): "neutral" | "sky" | "amber" | "violet" | "rose" | "emerald" {
+  if (Icon === TvIcon || Icon === BookOpenIcon) return "sky";
+  if (Icon === StarIcon) return "amber";
+  if (Icon === ClockIcon || Icon === CalendarDaysIcon) return "violet";
+  if (Icon === HeartIcon || Icon === FireIcon) return "rose";
+  if (Icon === BookmarkIcon || Icon === ArrowTrendingUpIcon) return "emerald";
+  return "neutral";
 }
 
 function getSmallInfoPillTone(tone: "neutral" | "sky" | "amber" | "violet" | "rose" | "emerald") {

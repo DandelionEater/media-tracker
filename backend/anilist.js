@@ -1139,7 +1139,7 @@ async function getMangaDetailsByMalId(idMal) {
   return await fetchMangaDetails({ idMal });
 }
 
-async function getAnimeAdultFlags(animeIds) {
+async function getAnimeListMetadata(animeIds) {
   const ids = [...new Set((animeIds || []).map(Number))].filter(
     (id) => Number.isInteger(id) && id > 0
   );
@@ -1153,6 +1153,8 @@ async function getAnimeAdultFlags(animeIds) {
           media(id_in: $ids, type: ANIME) {
             id
             isAdult
+            episodes
+            duration
           }
         }
       }
@@ -1162,6 +1164,10 @@ async function getAnimeAdultFlags(animeIds) {
   }
 
   return results;
+}
+
+async function getAnimeAdultFlags(animeIds) {
+  return await getAnimeListMetadata(animeIds);
 }
 
 async function findAnimeSeriesStartDate(media) {
@@ -1443,6 +1449,7 @@ module.exports = {
   getAnimeDetails,
   getMangaDetails,
   getMangaDetailsByMalId,
+  getAnimeListMetadata,
   getAnimeAdultFlags,
   getCharacterDetails,
   getStaffDetails,

@@ -287,6 +287,71 @@ async function run() {
   const exclusiveStatus = sync.getSyncStatus(linkedRegistration.user.id);
   assert.equal(exclusiveStatus.ok, true);
   assert.equal(exclusiveStatus.provider, 'anilist');
+  sync.setAutoSyncEnabled(linkedRegistration.user.id, false);
+
+  const localOnlyClearId = 404001;
+  db.saveAnimeSummary(
+    mapAnimeForDb({
+      id: localOnlyClearId,
+      title: { romaji: 'Local-only clear smoke', userPreferred: 'Local-only clear smoke' },
+      episodes: 1,
+      format: 'SPECIAL',
+      status: 'FINISHED',
+    })
+  );
+  assert.equal(
+    lists.saveMyAnimeEntry(session, localOnlyClearId, {
+      status: 'planned',
+      progress: 0,
+    }).ok,
+    true
+  );
+  assert.ok(
+    db.getSyncQueueJob(session.user.id, localOnlyClearId, 'upsert_anilist_entry', 'ANIME')
+  );
+  assert.equal(
+    lists.clearMyAnimeList(session, { queueProviderDeletion: false }).ok,
+    true
+  );
+  assert.equal(
+    db.getSyncQueueJob(session.user.id, localOnlyClearId, 'upsert_anilist_entry', 'ANIME'),
+    undefined
+  );
+  assert.equal(
+    db.getSyncQueueJob(session.user.id, localOnlyClearId, 'delete_anilist_entry', 'ANIME'),
+    undefined
+  );
+
+  const providerClearId = 404002;
+  db.saveAnimeSummary(
+    mapAnimeForDb({
+      id: providerClearId,
+      title: { romaji: 'Provider clear smoke', userPreferred: 'Provider clear smoke' },
+      episodes: 1,
+      format: 'SPECIAL',
+      status: 'FINISHED',
+    })
+  );
+  assert.equal(
+    lists.saveMyAnimeEntry(session, providerClearId, {
+      status: 'completed',
+      progress: 1,
+    }).ok,
+    true
+  );
+  db.deleteSyncQueueJobByEntry(
+    session.user.id,
+    providerClearId,
+    'upsert_anilist_entry',
+    'ANIME'
+  );
+  assert.equal(
+    lists.clearMyAnimeList(session, { queueProviderDeletion: true }).ok,
+    true
+  );
+  assert.ok(
+    db.getSyncQueueJob(session.user.id, providerClearId, 'delete_anilist_entry', 'ANIME')
+  );
 
   console.log(
     `Fresh database, mixed-ID backup/restore, authentication, and provider invariants passed (${path.basename(databasePath)}).`

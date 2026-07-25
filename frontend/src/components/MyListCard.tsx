@@ -6,6 +6,7 @@ import {
   PencilSquareIcon,
   StarIcon,
 } from "@heroicons/react/24/outline";
+import { memo } from "react";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { Tooltip } from "./ui/Tooltip";
 
@@ -110,7 +111,7 @@ const DENSITY_STYLES: Record<
   },
 };
 
-export function MyListCard({
+export const MyListCard = memo(function MyListCard({
   entry,
   statusLabel,
   onOpen,
@@ -409,7 +410,7 @@ export function MyListCard({
       </div>
     </div>
   );
-}
+});
 
 function HighlightedText({
   text,

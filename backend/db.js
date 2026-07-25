@@ -747,6 +747,16 @@ const updateAnimeAdultFlagStmt = db.prepare(`
   WHERE id = ?
 `);
 
+const updateAnimeListMetadataStmt = db.prepare(`
+  UPDATE anime
+  SET
+    is_adult = COALESCE(?, is_adult),
+    episodes = COALESCE(?, episodes),
+    duration = COALESCE(?, duration),
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
+
 const createUserStmt = db.prepare(`
   INSERT INTO users (
     username,
@@ -1612,6 +1622,22 @@ function updateAnimeAdultFlag(animeId, isAdult) {
   updateAnimeAdultFlagStmt.run(isAdult ? 1 : 0, animeId);
 }
 
+function updateAnimeListMetadata(media) {
+  const animeId = Number(media?.id);
+  if (!Number.isInteger(animeId) || animeId <= 0) return;
+
+  updateAnimeListMetadataStmt.run(
+    typeof media.isAdult === 'boolean' ? (media.isAdult ? 1 : 0) : null,
+    Number.isFinite(Number(media.episodes)) && Number(media.episodes) > 0
+      ? Number(media.episodes)
+      : null,
+    Number.isFinite(Number(media.duration)) && Number(media.duration) > 0
+      ? Number(media.duration)
+      : null,
+    animeId
+  );
+}
+
 function getAnimeById(id) {
   const anime = getAnimeByIdStmt.get(id);
 
@@ -2311,6 +2337,7 @@ module.exports = {
   saveManga,
   saveAnimeSummary,
   updateAnimeAdultFlag,
+  updateAnimeListMetadata,
   getAnimeById,
   getMangaById,
   getPersonDetails,

@@ -647,7 +647,7 @@ declare global {
         message: string;
       }>;
 
-      clearMyList: () => Promise<{
+      clearMyList: (options?: { queueProviderDeletion?: boolean }) => Promise<{
         ok: boolean;
         message: string;
         removedCount?: number;
@@ -655,7 +655,7 @@ declare global {
         mangaRemovedCount?: number;
       }>;
 
-      clearMyMangaList: () => Promise<{
+      clearMyMangaList: (options?: { queueProviderDeletion?: boolean }) => Promise<{
         ok: boolean;
         message: string;
         removedCount?: number;
@@ -663,7 +663,7 @@ declare global {
         mangaRemovedCount?: number;
       }>;
 
-      clearAllMediaLists: () => Promise<{
+      clearAllMediaLists: (options?: { queueProviderDeletion?: boolean }) => Promise<{
         ok: boolean;
         message: string;
         removedCount?: number;

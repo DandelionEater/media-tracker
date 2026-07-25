@@ -731,6 +731,7 @@ export default function MediaDetails({
                     streamingEpisodes={streamingEpisodes}
                     externalLinks={externalLinks}
                     mediaType={mediaType}
+                    progress={listEntry?.progress ?? null}
                   />
                 )}
 
@@ -2384,70 +2385,390 @@ function MediaShelf({
   );
 }
 
+const KNOWN_LINK_COLORS: Array<[RegExp, string]> = [
+  [/\bcrunchyroll\b/i, "#f47521"],
+  [/\bbilibili\b/i, "#00aeec"],
+  [/\bamazon prime video\b|\bprime video\b/i, "#00a8e1"],
+  [/\byoutube\b/i, "#ff0033"],
+  [/\bnetflix\b/i, "#e50914"],
+  [/\bhidive\b/i, "#00aeef"],
+  [/\bhulu\b/i, "#1ce783"],
+  [/\bdisney\+?\b/i, "#4b69ff"],
+  [/\bmax\b|\bhbo max\b/i, "#5b39f5"],
+  [/\btubi\b/i, "#ff501a"],
+  [/\btwitter\b|\bx \(twitter\)\b/i, "#d7d9db"],
+  [/\btiktok\b/i, "#c8cbcf"],
+];
+
+function getLinkBrandColor(site?: string | null, suppliedColor?: string | null) {
+  const knownColor = KNOWN_LINK_COLORS.find(([pattern]) => pattern.test(site || ""))?.[1];
+  return knownColor || suppliedColor;
+}
+
+function getReadableLinkColor(color?: string | null) {
+  if (!color) return "rgba(255, 255, 255, 0.72)";
+
+  const hex = color.trim().match(/^#([\da-f]{3}|[\da-f]{6})$/i)?.[1];
+  if (!hex) return color;
+  const normalized = hex.length === 3 ? [...hex].map((value) => value + value).join("") : hex;
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  const luminance = (0.2126 * red + 0.7152 * green + 0.0722 * blue) / 255;
+
+  if (luminance >= 0.14) return color;
+  const lift = (channel: number) => Math.round(channel + (255 - channel) * 0.78);
+  return `rgb(${lift(red)}, ${lift(green)}, ${lift(blue)})`;
+}
+
+function BrandedLinkIcon({
+  link,
+  site,
+  className,
+  fallback = "link",
+}: {
+  link: Pick<ExternalLink, "icon" | "color"> | null;
+  site?: string | null;
+  className: string;
+  fallback?: "link" | "play";
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [iconFailed, setIconFailed] = useState(false);
+  const brandColor = getReadableLinkColor(getLinkBrandColor(site, link?.color));
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    const iconUrl = link?.icon;
+    if (!canvas || !iconUrl) return;
+
+    let cancelled = false;
+    const context = canvas.getContext("2d");
+    const image = new Image();
+
+    image.onload = () => {
+      if (cancelled || !context) return;
+      const size = canvas.width;
+      const scale = Math.min(size / image.naturalWidth, size / image.naturalHeight);
+      const width = image.naturalWidth * scale;
+      const height = image.naturalHeight * scale;
+      const x = (size - width) / 2;
+      const y = (size - height) / 2;
+
+      context.clearRect(0, 0, size, size);
+      context.globalCompositeOperation = "source-over";
+      context.drawImage(image, x, y, width, height);
+      context.globalCompositeOperation = "source-in";
+      context.fillStyle = brandColor;
+      context.fillRect(0, 0, size, size);
+      context.globalCompositeOperation = "source-over";
+    };
+    image.onerror = () => {
+      if (!cancelled) setIconFailed(true);
+    };
+    image.src = iconUrl;
+
+    return () => {
+      cancelled = true;
+      image.onload = null;
+      image.onerror = null;
+    };
+  }, [brandColor, link?.icon]);
+
+  if (link?.icon && !iconFailed) {
+    return (
+      <canvas
+        ref={canvasRef}
+        width={64}
+        height={64}
+        aria-hidden="true"
+        className={className}
+      />
+    );
+  }
+
+  const FallbackIcon = fallback === "play" ? PlayCircleIcon : LinkIcon;
+  return <FallbackIcon className={className} style={{ color: brandColor }} />;
+}
+
+function getStreamingEpisodeNumber(episode: StreamingEpisode) {
+  const match = episode.title?.match(/\bEpisode\s+(\d+)\b/i);
+  return match ? Number(match[1]) : null;
+}
+
 function LinksSection({
   streamingEpisodes,
   externalLinks,
   mediaType,
+  progress,
 }: {
   streamingEpisodes: StreamingEpisode[];
   externalLinks: ExternalLink[];
   mediaType: MediaType;
+  progress: number | null;
 }) {
-  return (
-    <ContentSection title={mediaType === "MANGA" ? "Official links" : "Watch & Links"} icon={LinkIcon}>
-      <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-        {streamingEpisodes.slice(0, 6).map((episode, index) => (
-          <a
-            key={`stream-${episode.url ?? index}`}
-            href={episode.url ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-            className="flex min-w-0 gap-3 rounded-3xl border border-white/10 bg-white/3 p-3 transition hover:bg-white/8"
-          >
-            <div className="h-16 w-24 shrink-0 overflow-hidden rounded-2xl bg-white/5">
-              {episode.thumbnail ? (
-                <img
-                  src={episode.thumbnail}
-                  alt={episode.title ?? "Streaming episode"}
-                  className="h-full w-full object-cover"
-                />
-              ) : (
-                <div className="h-full w-full bg-white/5" />
-              )}
-            </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-white/85">
-                {episode.title || episode.site}
-              </p>
-              <p className="mt-1 text-xs text-white/45">{episode.site}</p>
-            </div>
-          </a>
-        ))}
+  const [showAllEpisodes, setShowAllEpisodes] = useState(false);
+  const isManga = mediaType === "MANGA";
+  const streamingLinks = externalLinks.filter(
+    (link) => link.type?.toUpperCase() === "STREAMING"
+  );
+  const supportingLinks = isManga
+    ? externalLinks
+    : externalLinks.filter((link) => link.type?.toUpperCase() !== "STREAMING");
+  const providerKeys = new Set<string>();
+  const providers = streamingLinks.reduce<
+    Array<{ site: string; link: ExternalLink | null; episodes: StreamingEpisode[] }>
+  >((items, link) => {
+    const site = link.site?.trim() || "Streaming provider";
+    const key = site.toLocaleLowerCase();
+    if (providerKeys.has(key)) return items;
+    providerKeys.add(key);
+    items.push({
+      site,
+      link,
+      episodes: streamingEpisodes.filter(
+        (episode) => episode.site?.trim().toLocaleLowerCase() === key
+      ),
+    });
+    return items;
+  }, []);
 
-        {externalLinks.slice(0, 8).map((link) => (
-          <a
-            key={`external-${link.id ?? link.url}`}
-            href={link.url ?? undefined}
-            target="_blank"
-            rel="noreferrer"
-            className="flex items-center gap-3 rounded-3xl border border-white/10 bg-white/3 p-3 transition hover:bg-white/8"
-          >
-            <div
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl border border-white/10 bg-white/8"
-              style={{ color: link.color || undefined }}
-            >
-              <LinkIcon className="h-5 w-5" />
+  streamingEpisodes.forEach((episode) => {
+    const site = episode.site?.trim() || "Streaming provider";
+    const key = site.toLocaleLowerCase();
+    if (providerKeys.has(key)) return;
+    providerKeys.add(key);
+    providers.push({
+      site,
+      link: null,
+      episodes: streamingEpisodes.filter(
+        (candidate) => candidate.site?.trim().toLocaleLowerCase() === key
+      ),
+    });
+  });
+
+  const nextEpisodeNumber =
+    typeof progress === "number" && progress >= 0 ? progress + 1 : null;
+  const nextEpisodeIndex =
+    nextEpisodeNumber === null
+      ? -1
+      : streamingEpisodes.findIndex(
+          (episode) => getStreamingEpisodeNumber(episode) === nextEpisodeNumber
+        );
+  const collapsedEpisodeStart =
+    nextEpisodeIndex >= 0
+      ? Math.min(nextEpisodeIndex, Math.max(0, streamingEpisodes.length - 4))
+      : 0;
+  const visibleEpisodes = showAllEpisodes
+    ? streamingEpisodes
+    : streamingEpisodes.slice(collapsedEpisodeStart, collapsedEpisodeStart + 4);
+
+  return (
+    <ContentSection title={isManga ? "Official links" : "Watch & Links"} icon={LinkIcon}>
+      <div className="space-y-5">
+        {!isManga && providers.length > 0 && (
+          <div>
+            <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
+              <div>
+                <h3 className="text-sm font-semibold text-white/80">Where to watch</h3>
+                <p className="mt-1 text-xs text-white/40">
+                  Availability varies by region. Provider links are supplied by AniList.
+                </p>
+              </div>
             </div>
-            <div className="min-w-0">
-              <p className="truncate text-sm font-semibold text-white/85">
-                {link.site || "External link"}
-              </p>
-              {link.type && (
-                <p className="mt-1 text-xs text-white/45">{formatEnum(link.type)}</p>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+              {providers.map((provider) => {
+                const destination =
+                  provider.link?.url || provider.episodes[0]?.url || undefined;
+                return (
+                  <a
+                    key={`provider-${provider.site}`}
+                    href={destination}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="group flex min-w-0 items-center gap-3 rounded-3xl border border-white/10 bg-white/3 p-3 transition hover:border-white/20 hover:bg-white/8"
+                  >
+                    <div
+                      className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/8"
+                      style={{
+                        borderColor: getLinkBrandColor(
+                          provider.site,
+                          provider.link?.color
+                        )
+                          ? `color-mix(in srgb, ${getLinkBrandColor(
+                              provider.site,
+                              provider.link?.color
+                            )} 18%, transparent)`
+                          : undefined,
+                        background: getLinkBrandColor(provider.site, provider.link?.color)
+                          ? `color-mix(in srgb, ${getLinkBrandColor(
+                              provider.site,
+                              provider.link?.color
+                            )} 6%, transparent)`
+                          : undefined,
+                      }}
+                    >
+                      <BrandedLinkIcon
+                        link={provider.link}
+                        site={provider.site}
+                        className="h-6 w-6 opacity-80"
+                        fallback="play"
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-semibold text-white/85">
+                        {provider.site}
+                      </p>
+                      <p className="mt-1 truncate text-xs text-white/45">
+                        {formatEnum(provider.link?.type || "STREAMING")}
+                        {provider.episodes.length > 0 &&
+                          ` · ${provider.episodes.length} ${
+                            provider.episodes.length === 1 ? "episode" : "episodes"
+                          } listed`}
+                      </p>
+                    </div>
+                    <ArrowTopRightOnSquareIcon className="h-4 w-4 shrink-0 text-white/25 transition group-hover:text-white/60" />
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {!isManga && streamingEpisodes.length > 0 && (
+          <div>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-white/80">Streaming episodes</h3>
+                <p className="mt-1 text-xs text-white/40">
+                  {collapsedEpisodeStart > 0 && !showAllEpisodes
+                    ? "Showing what comes next from your list progress."
+                    : "Direct episode links shared by the listed provider."}
+                </p>
+              </div>
+              {streamingEpisodes.length > 4 && (
+                <button
+                  type="button"
+                  onClick={() => setShowAllEpisodes((current) => !current)}
+                  className="flex shrink-0 items-center gap-1 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/60 transition hover:bg-white/10 hover:text-white/85"
+                  aria-expanded={showAllEpisodes}
+                >
+                  {showAllEpisodes ? "Show less" : `Show all ${streamingEpisodes.length}`}
+                  <ChevronDownIcon
+                    className={`h-3.5 w-3.5 transition ${
+                      showAllEpisodes ? "rotate-180" : ""
+                    }`}
+                  />
+                </button>
               )}
             </div>
-          </a>
-        ))}
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {visibleEpisodes.map((episode, index) => {
+                const episodeNumber = getStreamingEpisodeNumber(episode);
+                const isUpNext =
+                  nextEpisodeNumber !== null && episodeNumber === nextEpisodeNumber;
+                return (
+                  <a
+                    key={`stream-${episode.url ?? index}`}
+                    href={episode.url ?? undefined}
+                    target="_blank"
+                    rel="noreferrer"
+                    className={`group flex min-w-0 gap-3 rounded-3xl border bg-white/3 p-3 transition hover:bg-white/8 ${
+                      isUpNext ? "border-[var(--app-accent)]/45" : "border-white/10"
+                    }`}
+                  >
+                    <div className="h-16 w-24 shrink-0 overflow-hidden rounded-2xl bg-white/5">
+                      {episode.thumbnail ? (
+                        <img
+                          src={episode.thumbnail}
+                          alt={episode.title ?? "Streaming episode"}
+                          className="h-full w-full object-cover transition duration-300 group-hover:scale-105"
+                        />
+                      ) : (
+                        <div className="flex h-full w-full items-center justify-center bg-white/5">
+                          <PlayCircleIcon className="h-6 w-6 text-white/25" />
+                        </div>
+                      )}
+                    </div>
+                    <div className="min-w-0 flex-1 self-center">
+                      <div className="flex items-center gap-2">
+                        <p className="truncate text-sm font-semibold text-white/85">
+                          {episode.title || episode.site}
+                        </p>
+                        {isUpNext && (
+                          <span className="shrink-0 rounded-full bg-[var(--app-accent-soft)] px-2 py-0.5 text-[10px] font-semibold text-[var(--app-accent)]">
+                            Up next
+                          </span>
+                        )}
+                      </div>
+                      <p className="mt-1 text-xs text-white/45">
+                        {episode.site || "Streaming"}
+                      </p>
+                    </div>
+                    <ArrowTopRightOnSquareIcon className="h-4 w-4 shrink-0 self-center text-white/20 transition group-hover:text-white/60" />
+                  </a>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {supportingLinks.length > 0 && (
+          <div>
+            {!isManga && (
+              <div className="mb-3">
+                <h3 className="text-sm font-semibold text-white/80">More official links</h3>
+                <p className="mt-1 text-xs text-white/40">
+                  Official sites, video channels, and social profiles.
+                </p>
+              </div>
+            )}
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+              {supportingLinks.map((link, index) => (
+                <a
+                  key={`external-${link.id ?? link.url ?? index}`}
+                  href={link.url ?? undefined}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="group flex items-center gap-3 rounded-3xl border border-white/10 bg-white/3 p-3 transition hover:border-white/20 hover:bg-white/8"
+                >
+                  <div
+                    className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/8"
+                    style={{
+                      borderColor: getLinkBrandColor(link.site, link.color)
+                        ? `color-mix(in srgb, ${getLinkBrandColor(
+                            link.site,
+                            link.color
+                          )} 18%, transparent)`
+                        : undefined,
+                      background: getLinkBrandColor(link.site, link.color)
+                        ? `color-mix(in srgb, ${getLinkBrandColor(
+                            link.site,
+                            link.color
+                          )} 6%, transparent)`
+                        : undefined,
+                    }}
+                  >
+                    <BrandedLinkIcon
+                      link={link}
+                      site={link.site}
+                      className="h-5 w-5 opacity-80"
+                    />
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold text-white/85">
+                      {link.site || "External link"}
+                    </p>
+                    <p className="mt-1 truncate text-xs text-white/45">
+                      {formatEnum(link.type || "INFO")}
+                      {link.language ? ` · ${link.language}` : ""}
+                    </p>
+                  </div>
+                  <ArrowTopRightOnSquareIcon className="h-4 w-4 shrink-0 text-white/20 transition group-hover:text-white/60" />
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     </ContentSection>
   );

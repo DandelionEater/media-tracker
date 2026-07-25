@@ -207,7 +207,10 @@ type SettingsPageProps = {
       skipped: number;
     };
   }>;
-  onClearLists: (target: "anime" | "manga" | "all") => Promise<{
+  onClearLists: (
+    target: "anime" | "manga" | "all",
+    queueProviderDeletion: boolean
+  ) => Promise<{
     ok: boolean;
     message: string;
     removedCount?: number;
@@ -683,6 +686,7 @@ export function SettingsPage({
     restoreDesktopPreferences: boolean;
   } | null>(null);
   const [clearTarget, setClearTarget] = useState<"anime" | "manga" | "all" | null>(null);
+  const [queueProviderDeletion, setQueueProviderDeletion] = useState(false);
   const [isClearingList, setIsClearingList] = useState(false);
   const [isDeleteAccountArmed, setIsDeleteAccountArmed] = useState(false);
   const [deleteAccountConfirmation, setDeleteAccountConfirmation] = useState("");
@@ -1443,6 +1447,34 @@ export function SettingsPage({
         ...current,
         feedback: { kind: "error", message: "Failed to update sync setting." },
       }));
+    }
+  }
+
+  async function confirmClearLists() {
+    if (!clearTarget || isClearingList) return;
+
+    try {
+      setIsClearingList(true);
+      const result = await onClearLists(
+        clearTarget,
+        queueProviderDeletion && syncStatus.linked
+      );
+      setClearFeedback({
+        kind: result.ok ? "success" : "error",
+        message: result.message,
+      });
+    } catch (error) {
+      setClearFeedback({
+        kind: "error",
+        message:
+          error instanceof Error
+            ? error.message
+            : "Seenary could not clear the selected list.",
+      });
+    } finally {
+      setIsClearingList(false);
+      setClearTarget(null);
+      setQueueProviderDeletion(false);
     }
   }
 
@@ -2213,6 +2245,15 @@ export function SettingsPage({
                 `Version ${APP_VERSION}`,
                 ...(window.desktopStartup
                   ? [desktopStartup.openAtLogin ? "Launches at login" : "Manual launch"]
+                  : []),
+                ...(desktopShortcut.available
+                  ? [
+                      desktopShortcut.loading
+                        ? "Shortcut loading..."
+                        : desktopShortcut.enabled && desktopShortcut.accelerator
+                          ? `Shortcut ${desktopShortcut.accelerator}`
+                          : "Shortcut disabled",
+                    ]
                   : []),
                 "Welcome replay",
               ]}
@@ -3109,6 +3150,47 @@ export function SettingsPage({
               <div>
                 <SectionHeading
                   icon={HomeIcon}
+                  title="Startup view"
+                  description="Choose what Seenary shows first after you log in."
+                />
+
+                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                  {START_VIEW_OPTIONS.map((option) => {
+                    const selected = settings.startView === option.value;
+
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        onClick={() => onUpdateSettings({ startView: option.value })}
+                        className={`rounded-3xl border p-5 text-left transition hover:bg-white/8 focus:outline-none focus:ring-2 focus:ring-white/55 ${
+                          selected
+                            ? "border-white/25 bg-white/10"
+                            : "border-white/10 bg-white/[0.03]"
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <p className="font-semibold text-white">{option.label}</p>
+                            <p className="mt-2 text-sm leading-6 text-white/45">
+                              {option.description}
+                            </p>
+                          </div>
+                          {selected && (
+                            <span className="rounded-full bg-[var(--app-accent)] px-1.5 py-1 text-black">
+                              <CheckIcon className="h-3.5 w-3.5" />
+                            </span>
+                          )}
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div>
+                <SectionHeading
+                  icon={HomeIcon}
                   title="Home behavior"
                   description="Choose how the home page should greet you when the app opens."
                 />
@@ -3156,46 +3238,6 @@ export function SettingsPage({
                 </div>
               </div>
 
-              <div>
-                <SectionHeading
-                  icon={HomeIcon}
-                  title="Startup view"
-                  description="Choose what Seenary shows first after you log in."
-                />
-
-                <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-                  {START_VIEW_OPTIONS.map((option) => {
-                    const selected = settings.startView === option.value;
-
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => onUpdateSettings({ startView: option.value })}
-                        className={`rounded-3xl border p-5 text-left transition hover:bg-white/8 focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                          selected
-                            ? "border-white/25 bg-white/10"
-                            : "border-white/10 bg-white/[0.03]"
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div>
-                            <p className="font-semibold text-white">{option.label}</p>
-                            <p className="mt-2 text-sm leading-6 text-white/45">
-                              {option.description}
-                            </p>
-                          </div>
-                          {selected && (
-                            <span className="rounded-full bg-[var(--app-accent)] px-1.5 py-1 text-black">
-                              <CheckIcon className="h-3.5 w-3.5" />
-                            </span>
-                          )}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
             </div>
             </AccordionSection>
           </div>
@@ -3986,7 +4028,46 @@ export function SettingsPage({
                     <p className="font-semibold text-white">Clear list data</p>
                     <p className="mt-2 text-sm leading-6 text-white/70">
                       Choose exactly which local list to clear. Your Seenary account remains active.
-                      If automatic sync is enabled, these removals may also be sent to linked services.
+                    </p>
+                  </div>
+
+                  <div
+                    className={`rounded-2xl border p-4 ${
+                      !syncStatus.linked
+                        ? "border-white/10 bg-black/20"
+                        : syncStatus.autoSyncEnabled
+                          ? "border-rose-300/25 bg-rose-500/10"
+                          : "border-amber-300/25 bg-amber-300/10"
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center gap-2">
+                      <p className="text-sm font-semibold text-white">Provider deletion timing</p>
+                      <span
+                        className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ${
+                          !syncStatus.linked
+                            ? "border-white/10 bg-white/5 text-white/55"
+                            : syncStatus.autoSyncEnabled
+                              ? "border-rose-300/25 bg-rose-400/15 text-rose-100"
+                              : "border-amber-300/25 bg-amber-300/15 text-amber-100"
+                        }`}
+                      >
+                      {syncStatus.loading
+                        ? "Checking auto sync"
+                        : !syncStatus.linked
+                          ? "Auto sync unavailable"
+                          : syncStatus.autoSyncEnabled
+                            ? "Auto sync on"
+                            : "Auto sync off"}
+                      </span>
+                    </div>
+                    <p className="mt-2 text-sm leading-6 text-white/65">
+                      {syncStatus.loading
+                        ? "Checking linked-service and automatic-sync status before list clearing is enabled."
+                        : !syncStatus.linked
+                          ? "No external list is linked, so clearing affects Seenary only."
+                        : syncStatus.autoSyncEnabled
+                          ? `Automatic sync is on. If you choose provider deletion in the approval step, queued deletions are sent to ${manualSyncTargetsLabel} automatically.`
+                          : `Automatic sync is off. If you choose provider deletion, the jobs wait until you use Sync now or enable automatic sync again.`}
                     </p>
                   </div>
 
@@ -3999,13 +4080,14 @@ export function SettingsPage({
                       <button
                         key={target}
                         type="button"
-                        disabled={isClearingList}
+                        disabled={isClearingList || syncStatus.loading}
                         onClick={() => {
                           setClearFeedback(null);
+                          setQueueProviderDeletion(false);
                           setClearTarget(target);
                         }}
                         className={`rounded-2xl border px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
-                          isClearingList
+                          isClearingList || syncStatus.loading
                             ? "cursor-not-allowed border-white/5 bg-white/[0.03] text-white/35"
                             : target === "all"
                               ? "border-rose-300/30 bg-rose-500/25 text-rose-50 hover:bg-rose-500/35"
@@ -4016,56 +4098,6 @@ export function SettingsPage({
                       </button>
                     ))}
                   </div>
-
-                  {clearTarget && (
-                    <div className="rounded-2xl border border-rose-300/20 bg-black/20 p-4">
-                      <p className="text-sm font-semibold text-rose-50">
-                        Second confirmation: permanently clear {clearTarget === "anime"
-                          ? "every Anime entry"
-                          : clearTarget === "manga"
-                            ? "every Manga entry"
-                            : "every Anime and Manga entry"}?
-                      </p>
-                      <div className="mt-4 flex flex-wrap gap-3">
-                        <button
-                          type="button"
-                          disabled={isClearingList}
-                          onClick={async () => {
-                            try {
-                              setIsClearingList(true);
-                              const result = await onClearLists(clearTarget);
-                              setClearFeedback({
-                                kind: result.ok ? "success" : "error",
-                                message: result.message,
-                              });
-                            } catch (error) {
-                              setClearFeedback({
-                                kind: "error",
-                                message:
-                                  error instanceof Error
-                                    ? error.message
-                                    : "Seenary could not clear the selected list.",
-                              });
-                            } finally {
-                              setIsClearingList(false);
-                              setClearTarget(null);
-                            }
-                          }}
-                          className="rounded-2xl border border-rose-400/25 bg-rose-500 px-4 py-2.5 text-sm font-semibold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                        >
-                          {isClearingList ? "Clearing..." : "Yes, clear permanently"}
-                        </button>
-                        <button
-                          type="button"
-                          disabled={isClearingList}
-                          onClick={() => setClearTarget(null)}
-                          className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-white/70 transition hover:bg-white/8 hover:text-white"
-                        >
-                          Cancel
-                        </button>
-                      </div>
-                    </div>
-                  )}
 
                   {clearFeedback && (
                     <div
@@ -4164,6 +4196,163 @@ export function SettingsPage({
           </div>
         </div>
       </div>
+
+      <ModalShell
+        open={Boolean(clearTarget)}
+        onClose={() => {
+          if (!isClearingList) {
+            setClearTarget(null);
+            setQueueProviderDeletion(false);
+          }
+        }}
+        ariaLabel="Confirm permanent list clearing"
+        panelClassName="max-w-[clamp(32rem,60vw,56rem)] p-6"
+        closeOnBackdrop={!isClearingList}
+        showCloseButton
+      >
+        {clearTarget && (
+          <div>
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-rose-300/25 bg-rose-500/15 text-rose-100">
+              <TrashIcon className="h-6 w-6" />
+            </div>
+            <p className="mt-5 text-xs font-semibold uppercase tracking-[0.26em] text-rose-200/70">
+              Permanent action
+            </p>
+            <h2 className="mt-2 text-2xl font-bold text-white">
+              Clear {clearTarget === "anime"
+                ? "every Anime entry"
+                : clearTarget === "manga"
+                  ? "every Manga entry"
+                  : "all Anime and Manga entries"}?
+            </h2>
+            <p className="mt-3 text-sm leading-6 text-white/60">
+              This removes the selected list data from Seenary. It cannot be undone unless you have
+              a backup that contains these entries.
+            </p>
+
+            {syncStatus.linked && (
+              <div className="mt-5">
+                <p className="text-sm font-semibold text-white">Where should deletion apply?</p>
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    disabled={isClearingList}
+                    aria-pressed={!queueProviderDeletion}
+                    onClick={() => setQueueProviderDeletion(false)}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      !queueProviderDeletion
+                        ? "border-[var(--app-accent)]/45 bg-[var(--app-accent-soft)]"
+                        : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+                    } disabled:opacity-50`}
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-white">Seenary only</span>
+                      {!queueProviderDeletion && (
+                        <span className="rounded-full bg-[var(--app-accent)] p-1 text-black">
+                          <CheckIcon className="h-3.5 w-3.5" />
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-2 block text-xs leading-5 text-white/55">
+                      Remove local entries without creating provider-deletion jobs.
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={isClearingList}
+                    aria-pressed={queueProviderDeletion}
+                    onClick={() => setQueueProviderDeletion(true)}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      queueProviderDeletion
+                        ? "border-rose-300/35 bg-rose-500/12"
+                        : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+                    } disabled:opacity-50`}
+                  >
+                    <span className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold text-white">
+                        Seenary + {manualSyncTargetsLabel}
+                      </span>
+                      {queueProviderDeletion && (
+                        <span className="rounded-full bg-rose-400 p-1 text-black">
+                          <CheckIcon className="h-3.5 w-3.5" />
+                        </span>
+                      )}
+                    </span>
+                    <span className="mt-2 block text-xs leading-5 text-white/55">
+                      Remove local entries and queue matching deletions for the linked provider.
+                    </span>
+                  </button>
+                </div>
+              </div>
+            )}
+
+            <div
+              className={`mt-5 rounded-2xl border p-4 ${
+                !syncStatus.linked
+                  ? "border-white/10 bg-white/[0.03]"
+                  : syncStatus.autoSyncEnabled
+                    ? "border-rose-300/25 bg-rose-500/10"
+                    : "border-amber-300/25 bg-amber-300/10"
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                <p className="text-sm font-semibold text-white">Automatic sync</p>
+                <span
+                  className={`rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.12em] ${
+                    !syncStatus.linked
+                      ? "border-white/10 bg-white/5 text-white/55"
+                      : syncStatus.autoSyncEnabled
+                        ? "border-rose-300/25 bg-rose-400/15 text-rose-100"
+                        : "border-amber-300/25 bg-amber-300/15 text-amber-100"
+                  }`}
+                >
+                  {!syncStatus.linked
+                    ? "Unavailable"
+                    : syncStatus.autoSyncEnabled
+                      ? "On"
+                      : "Off"}
+                </span>
+              </div>
+              <p className="mt-2 text-sm leading-6 text-white/65">
+                {!syncStatus.linked
+                  ? "No external service is linked. This action affects Seenary only."
+                  : !queueProviderDeletion
+                    ? "You selected Seenary only. No provider-deletion jobs will be created, regardless of the automatic-sync setting."
+                  : syncStatus.autoSyncEnabled
+                    ? `Deletion jobs will be queued and automatically sent to ${manualSyncTargetsLabel}. Matching entries can be removed from that linked list too.`
+                    : `Deletion jobs will still be queued for ${manualSyncTargetsLabel}. They can remove matching remote entries later if you use Sync now or turn automatic sync back on.`}
+              </p>
+            </div>
+
+            <div className="mt-6 flex flex-col-reverse gap-3 sm:flex-row sm:justify-end">
+              <button
+                type="button"
+                disabled={isClearingList}
+                onClick={() => {
+                  setClearTarget(null);
+                  setQueueProviderDeletion(false);
+                }}
+                className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-semibold text-white/70 transition hover:bg-white/8 hover:text-white disabled:opacity-50"
+              >
+                Keep my list
+              </button>
+              <button
+                type="button"
+                disabled={isClearingList}
+                onClick={confirmClearLists}
+                className="rounded-2xl border border-rose-300/25 bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-500 disabled:cursor-wait disabled:opacity-50"
+              >
+                {isClearingList
+                  ? "Clearing..."
+                  : queueProviderDeletion && syncStatus.linked
+                    ? "Clear and queue provider deletions"
+                    : "Clear from Seenary"}
+              </button>
+            </div>
+          </div>
+        )}
+      </ModalShell>
 
       {isImportModalOpen && (
       <ImportSelectionModal

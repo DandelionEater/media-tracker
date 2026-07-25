@@ -2596,27 +2596,27 @@ ipcMain.handle('manga-list:remove-entry', (_event, mangaId) => {
   }
 });
 
-ipcMain.handle('list:clear', () => {
+ipcMain.handle('list:clear', (_event, options = {}) => {
   try {
-    return clearMyAnimeList(getCurrentSession());
+    return clearMyAnimeList(getCurrentSession(), options);
   } catch (error) {
     console.error('List clear error:', error);
     return { ok: false, message: 'Failed to clear your list.', removedCount: 0 };
   }
 });
 
-ipcMain.handle('manga-list:clear', () => {
+ipcMain.handle('manga-list:clear', (_event, options = {}) => {
   try {
-    return clearMyMangaList(getCurrentSession());
+    return clearMyMangaList(getCurrentSession(), options);
   } catch (error) {
     console.error('Manga list clear error:', error);
     return { ok: false, message: 'Failed to clear your Manga list.', removedCount: 0 };
   }
 });
 
-ipcMain.handle('media-list:clear-all', () => {
+ipcMain.handle('media-list:clear-all', (_event, options = {}) => {
   try {
-    return clearAllMediaLists(getCurrentSession());
+    return clearAllMediaLists(getCurrentSession(), options);
   } catch (error) {
     console.error('Media lists clear error:', error);
     return { ok: false, message: 'Failed to clear your media lists.', removedCount: 0 };

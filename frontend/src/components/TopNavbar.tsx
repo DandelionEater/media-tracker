@@ -74,6 +74,7 @@ export function TopNavbar({
   const notificationsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const selectSearchTextOnFocusRef = useRef(true);
+  const lastNavigationWasPointerRef = useRef(false);
   const accountCloseTimerRef = useRef<number | null>(null);
   const notificationsCloseTimerRef = useRef<number | null>(null);
   const unreadCount = notifications.filter((notification) => !notification.read).length;
@@ -193,6 +194,8 @@ export function TopNavbar({
     };
 
     const handlePointerDown = (event: PointerEvent) => {
+      lastNavigationWasPointerRef.current = true;
+
       if (!accountMenuRef.current?.contains(event.target as Node | null)) {
         closeAccountMenu();
       }
@@ -203,6 +206,10 @@ export function TopNavbar({
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (isKeyboardNavigationKey(event.key)) {
+        lastNavigationWasPointerRef.current = false;
+      }
+
       if (event.key === "Escape") {
         closeAccountMenu();
         closeNotifications();
@@ -270,7 +277,7 @@ export function TopNavbar({
         return;
       }
 
-      if (!shouldFocusSearchFromKey(event)) {
+      if (!shouldFocusSearchFromKey(event, lastNavigationWasPointerRef.current)) {
         return;
       }
 
@@ -623,7 +630,7 @@ export function TopNavbar({
   );
 }
 
-function shouldFocusSearchFromKey(event: KeyboardEvent) {
+function shouldFocusSearchFromKey(event: KeyboardEvent, lastNavigationWasPointer: boolean) {
   const isEnterShortcut = event.key === "Enter";
   const isTypeToSearchShortcut = event.key.length === 1;
 
@@ -644,9 +651,13 @@ function shouldFocusSearchFromKey(event: KeyboardEvent) {
     return false;
   }
 
+  const interactiveTarget = target?.closest(
+    "button, a, [role='button'], [role='menuitem'], [role='option']"
+  );
+
   if (
-    isEnterShortcut &&
-    target?.closest("button, a, [role='button'], [role='menuitem'], [role='option']")
+    interactiveTarget &&
+    (event.key === " " || (isEnterShortcut && !lastNavigationWasPointer))
   ) {
     return false;
   }
@@ -656,6 +667,19 @@ function shouldFocusSearchFromKey(event: KeyboardEvent) {
   }
 
   return true;
+}
+
+function isKeyboardNavigationKey(key: string) {
+  return (
+    key === "Tab" ||
+    key === " " ||
+    key === "Escape" ||
+    key === "Home" ||
+    key === "End" ||
+    key === "PageUp" ||
+    key === "PageDown" ||
+    key.startsWith("Arrow")
+  );
 }
 
 function hasOpenModalSurface() {

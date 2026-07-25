@@ -776,18 +776,26 @@ export function installApiClient() {
         }
       }
 
-      const missingAdultFlags = entries
+      const missingMetadataIds = entries
         .filter(
-          (entry) =>
-            (entry.is_adult === null || entry.is_adult === undefined) &&
-            (entry.details?.isAdult === null || entry.details?.isAdult === undefined)
+          (entry) => {
+            const duration = Number(entry.duration);
+            const needsDuration =
+              Number(entry.progress) > 0 && (!Number.isFinite(duration) || duration <= 0);
+            const needsAdultFlag =
+              (entry.is_adult === null || entry.is_adult === undefined) &&
+              (entry.details?.isAdult === null || entry.details?.isAdult === undefined);
+            return needsDuration || needsAdultFlag;
+          }
         )
         .map((entry) => entry.anime_id);
 
-      if (missingAdultFlags.length) {
-        const flags = await rpc("getAnimeAdultFlags", [missingAdultFlags]).catch(() => []);
-        if (Array.isArray(flags) && flags.length) {
-          await localStore.cacheAnimeAdultFlags(userId, flags);
+      if (missingMetadataIds.length) {
+        const metadata = await rpc("getAnimeListMetadata", [missingMetadataIds]).catch(
+          () => []
+        );
+        if (Array.isArray(metadata) && metadata.length) {
+          await localStore.cacheAnimeListMetadata(userId, metadata);
           entries = await localStore.getList(userId);
         }
       }
@@ -838,26 +846,26 @@ export function installApiClient() {
       }
       return result;
     },
-    clearMyList: async () => {
+    clearMyList: async (options: { queueProviderDeletion?: boolean } = {}) => {
       const userId = await requireActiveUserId();
-      const result = await localStore.clearList(userId);
-      if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
+      const result = await localStore.clearList(userId, options);
+      if (options.queueProviderDeletion !== false && result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
         scheduleLocalAutoSync(userId);
       }
       return result;
     },
-    clearMyMangaList: async () => {
+    clearMyMangaList: async (options: { queueProviderDeletion?: boolean } = {}) => {
       const userId = await requireActiveUserId();
-      const result = await localStore.clearMangaList(userId);
-      if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
+      const result = await localStore.clearMangaList(userId, options);
+      if (options.queueProviderDeletion !== false && result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
         scheduleLocalAutoSync(userId);
       }
       return result;
     },
-    clearAllMediaLists: async () => {
+    clearAllMediaLists: async (options: { queueProviderDeletion?: boolean } = {}) => {
       const userId = await requireActiveUserId();
-      const result = await localStore.clearAllLists(userId);
-      if (result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
+      const result = await localStore.clearAllLists(userId, options);
+      if (options.queueProviderDeletion !== false && result.ok && result.removedCount > 0 && (await localStore.getAutoSyncEnabled(userId))) {
         scheduleLocalAutoSync(userId);
       }
       return result;

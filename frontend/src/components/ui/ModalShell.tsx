@@ -32,7 +32,7 @@ export function ModalShell({
   if (!open) return null;
 
   return (
-    <div className={`fixed inset-0 ${zClassName} flex items-center justify-center px-6 py-10`} role="dialog" aria-modal="true" aria-label={ariaLabel}>
+    <div className={`fixed inset-0 ${zClassName} flex items-center justify-center overflow-hidden rounded-3xl px-6 py-10`} role="dialog" aria-modal="true" aria-label={ariaLabel}>
       <button type="button" aria-label={`Close ${ariaLabel}`} onClick={closeOnBackdrop ? onClose : undefined} className="absolute inset-0 bg-black/82" />
       <div className={`relative z-10 w-full rounded-3xl border border-white/10 bg-[#111111]/95 shadow-2xl ${panelClassName}`}>
         {showCloseButton && <button type="button" onClick={onClose} aria-label={`Close ${ariaLabel}`} className="absolute right-5 top-5 rounded-2xl border border-white/10 bg-white/[0.04] p-2 text-white/60 transition hover:bg-white/8 hover:text-white"><XMarkIcon className="h-5 w-5" /></button>}

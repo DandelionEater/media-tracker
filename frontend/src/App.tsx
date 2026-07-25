@@ -291,6 +291,8 @@ function App() {
   const sessionWarningKeysRef = useRef<Set<string>>(new Set());
   const homeScrollTopRef = useRef(0);
   const homeScrollElementRef = useRef<HTMLDivElement | null>(null);
+  const listScrollTopRef = useRef(0);
+  const listScrollElementRef = useRef<HTMLDivElement | null>(null);
   const searchRequestIdRef = useRef(0);
 
   const privacySafeTrackedEntries = useMemo(
@@ -400,6 +402,20 @@ function App() {
   const captureHomeScrollTop = useCallback(() => {
     if (currentView === "home" && homeScrollElementRef.current) {
       homeScrollTopRef.current = homeScrollElementRef.current.scrollTop;
+    }
+  }, [currentView]);
+
+  const handleListScrollPositionChange = useCallback((scrollTop: number) => {
+    listScrollTopRef.current = scrollTop;
+  }, []);
+
+  const handleListScrollContainerChange = useCallback((element: HTMLDivElement | null) => {
+    listScrollElementRef.current = element;
+  }, []);
+
+  const captureListScrollTop = useCallback(() => {
+    if (currentView === "list" && listScrollElementRef.current) {
+      listScrollTopRef.current = listScrollElementRef.current.scrollTop;
     }
   }, [currentView]);
 
@@ -831,13 +847,15 @@ function App() {
   };
 
   const handleClearLists = async (
-    target: "anime" | "manga" | "all"
+    target: "anime" | "manga" | "all",
+    queueProviderDeletion: boolean
   ): Promise<ClearListResult> => {
+    const options = { queueProviderDeletion };
     const result = await (target === "anime"
-      ? window.api.clearMyList()
+      ? window.api.clearMyList(options)
       : target === "manga"
-        ? window.api.clearMyMangaList()
-        : window.api.clearAllMediaLists());
+        ? window.api.clearMyMangaList(options)
+        : window.api.clearAllMediaLists(options));
 
     if (result.ok) {
       await loadTrackedEntries();
@@ -1140,6 +1158,7 @@ function App() {
 
   const handleOpenMediaDetails = (mediaId: number, mediaType: MediaType) => {
     captureHomeScrollTop();
+    captureListScrollTop();
 
     window.localStorage.setItem(LIBRARY_MEDIA_STORAGE_KEY, mediaType);
     window.localStorage.setItem(LEGACY_MY_LIST_MEDIA_STORAGE_KEY, mediaType);
@@ -1265,14 +1284,17 @@ function App() {
       return;
     }
 
-    setSelectedAnimeId(null);
     setDetailsHistory([]);
-    await loadTrackedEntries();
 
     if (detailsReturnView === "list") {
       setCurrentView("list");
+      setSelectedAnimeId(null);
+      await loadTrackedEntries();
       return;
     }
+
+    setSelectedAnimeId(null);
+    await loadTrackedEntries();
 
     if (searchQuery.trim()) {
       setCurrentView("home");
@@ -1393,6 +1415,9 @@ function App() {
                     onMediaTypeChange={handleLibraryMediaChange}
                     onLibraryDestinationChange={handleLibraryDestinationChange}
                     onLibraryLensVisibilityChange={setIsLibraryLensVisible}
+                    initialScrollTop={listScrollTopRef.current}
+                    onScrollContainerChange={handleListScrollContainerChange}
+                    onScrollPositionChange={handleListScrollPositionChange}
                   />
                   ) : currentView === "settings" ? (
                     <SettingsPage

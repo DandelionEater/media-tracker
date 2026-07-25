@@ -111,11 +111,13 @@ export function LibraryLens({
     }, 140);
   }
 
-  function chooseMedia(nextMediaType: MediaType) {
+  function chooseMedia(nextMediaType: MediaType, restoreKeyboardFocus: boolean) {
     cancelMediaMenuClose();
     onMediaChange(nextMediaType);
     setMediaMenuOpen(false);
-    mediaButtonRef.current?.focus();
+    if (restoreKeyboardFocus) {
+      mediaButtonRef.current?.focus();
+    }
   }
 
   function chooseDestination(nextDestination: LibraryDestination) {
@@ -124,7 +126,21 @@ export function LibraryLens({
   }
 
   return (
-    <div ref={rootRef} className="no-drag relative z-30">
+    <div
+      ref={rootRef}
+      onMouseDownCapture={(event) => {
+        if (event.button !== 0) return;
+
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("button")) {
+          // Pointer-driven view changes should not leave a Lens control focused
+          // and intercept the next global Enter-to-search shortcut. Keyboard
+          // activation still keeps the expected menu focus behavior.
+          event.preventDefault();
+        }
+      }}
+      className="no-drag relative z-30"
+    >
       <button
         type="button"
         aria-haspopup="menu"
@@ -170,7 +186,7 @@ export function LibraryLens({
                   role="menuitemradio"
                   aria-checked={mediaType === option}
                   tabIndex={mediaMenuOpen ? 0 : -1}
-                  onClick={() => chooseMedia(option)}
+                  onClick={(event) => chooseMedia(option, event.detail === 0)}
                   className={`flex w-full items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-sm font-semibold transition ${
                     mediaType === option
                       ? "bg-(--app-accent) text-black"

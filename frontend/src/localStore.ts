@@ -862,6 +862,48 @@ export const localStore = {
     await writeState(userId, state);
   },
 
+  async cacheAnimeListMetadata(
+    userId: number,
+    items: Array<{
+      id?: number | null;
+      isAdult?: boolean | null;
+      episodes?: number | null;
+      duration?: number | null;
+    }>
+  ) {
+    const state = await readState(userId);
+
+    for (const item of items) {
+      const key = String(Number(item.id));
+      const anime = state.anime[key];
+      if (!anime) continue;
+
+      if (typeof item.isAdult === "boolean") {
+        anime.is_adult = item.isAdult ? 1 : 0;
+      }
+      if (typeof item.episodes === "number" && item.episodes > 0) {
+        anime.episodes = item.episodes;
+      }
+      if (typeof item.duration === "number" && item.duration > 0) {
+        anime.duration = item.duration;
+      }
+      if (anime.details) {
+        anime.details = {
+          ...anime.details,
+          ...(typeof item.isAdult === "boolean" ? { isAdult: item.isAdult } : {}),
+          ...(typeof item.episodes === "number" && item.episodes > 0
+            ? { episodes: item.episodes }
+            : {}),
+          ...(typeof item.duration === "number" && item.duration > 0
+            ? { duration: item.duration }
+            : {}),
+        };
+      }
+    }
+
+    await writeState(userId, state);
+  },
+
   async cachePreviewAnime(userId: number, item: ImportPreviewItem) {
     const anime = normalizePreviewAnime(item);
     if (!anime) return;
@@ -973,6 +1015,7 @@ export const localStore = {
         cover_image_large: entry.cover_image_large ?? null,
         banner_image: entry.banner_image ?? null,
         episodes: entry.episodes ?? null,
+        duration: entry.duration ?? null,
         format: entry.format ?? null,
         anime_status: entry.anime_status ?? null,
         season: entry.season ?? null,
@@ -1079,27 +1122,33 @@ export const localStore = {
     return { ok: true, message: "Anime removed from your list." };
   },
 
-  async clearList(userId: number) {
+  async clearList(
+    userId: number,
+    options: { queueProviderDeletion?: boolean } = {}
+  ) {
     const state = await readState(userId);
     const removedCount = Object.keys(state.entries).length;
-    state.deletedEntries = {
-      ...state.deletedEntries,
-      ...Object.fromEntries(
-        Object.keys(state.entries).map((key) => [
-          key,
-          {
-            anime_id: Number(key),
-            external_ids: state.anime[key]?.external_ids ?? { anilist: key, mal: null },
-            title:
-              state.anime[key]?.title_preferred ??
-              state.anime[key]?.title_english ??
-              state.anime[key]?.title_romaji ??
-              `Anime #${key}`,
-            deleted_at: new Date().toISOString(),
-          },
-        ])
-      ),
-    };
+    const queueProviderDeletion = options.queueProviderDeletion !== false;
+    if (queueProviderDeletion) {
+      state.deletedEntries = {
+        ...state.deletedEntries,
+        ...Object.fromEntries(
+          Object.keys(state.entries).map((key) => [
+            key,
+            {
+              anime_id: Number(key),
+              external_ids: state.anime[key]?.external_ids ?? { anilist: key, mal: null },
+              title:
+                state.anime[key]?.title_preferred ??
+                state.anime[key]?.title_english ??
+                state.anime[key]?.title_romaji ??
+                `Anime #${key}`,
+              deleted_at: new Date().toISOString(),
+            },
+          ])
+        ),
+      };
+    }
     state.entries = {};
     state.dirtyEntries = {};
     await writeState(userId, state);
@@ -1107,7 +1156,7 @@ export const localStore = {
       ok: true,
       message:
         removedCount > 0
-          ? `Cleared ${removedCount} entr${removedCount === 1 ? "y" : "ies"} from your list.`
+          ? `Cleared ${removedCount} entr${removedCount === 1 ? "y" : "ies"} from your list.${queueProviderDeletion ? "" : " No linked-service deletions were queued."}`
           : "Your list was already empty.",
       removedCount,
       animeRemovedCount: removedCount,
@@ -1115,28 +1164,34 @@ export const localStore = {
     };
   },
 
-  async clearMangaList(userId: number) {
+  async clearMangaList(
+    userId: number,
+    options: { queueProviderDeletion?: boolean } = {}
+  ) {
     const state = await readState(userId);
     const removedCount = Object.keys(state.mangaEntries).length;
-    state.deletedMangaEntries = {
-      ...state.deletedMangaEntries,
-      ...Object.fromEntries(
-        Object.keys(state.mangaEntries).map((key) => [
-          key,
-          {
-            manga_id: Number(key),
-            media_type: "MANGA" as const,
-            external_ids: state.manga[key]?.external_ids ?? { anilist: key, mal: null },
-            title:
-              state.manga[key]?.title_preferred ??
-              state.manga[key]?.title_english ??
-              state.manga[key]?.title_romaji ??
-              `Manga #${key}`,
-            deleted_at: new Date().toISOString(),
-          },
-        ])
-      ),
-    };
+    const queueProviderDeletion = options.queueProviderDeletion !== false;
+    if (queueProviderDeletion) {
+      state.deletedMangaEntries = {
+        ...state.deletedMangaEntries,
+        ...Object.fromEntries(
+          Object.keys(state.mangaEntries).map((key) => [
+            key,
+            {
+              manga_id: Number(key),
+              media_type: "MANGA" as const,
+              external_ids: state.manga[key]?.external_ids ?? { anilist: key, mal: null },
+              title:
+                state.manga[key]?.title_preferred ??
+                state.manga[key]?.title_english ??
+                state.manga[key]?.title_romaji ??
+                `Manga #${key}`,
+              deleted_at: new Date().toISOString(),
+            },
+          ])
+        ),
+      };
+    }
     state.mangaEntries = {};
     state.dirtyMangaEntries = {};
     await writeState(userId, state);
@@ -1144,7 +1199,7 @@ export const localStore = {
       ok: true,
       message:
         removedCount > 0
-          ? `Cleared ${removedCount} Manga entr${removedCount === 1 ? "y" : "ies"} from your list.`
+          ? `Cleared ${removedCount} Manga entr${removedCount === 1 ? "y" : "ies"} from your list.${queueProviderDeletion ? "" : " No linked-service deletions were queued."}`
           : "Your Manga list was already empty.",
       removedCount,
       animeRemovedCount: 0,
@@ -1152,50 +1207,56 @@ export const localStore = {
     };
   },
 
-  async clearAllLists(userId: number) {
+  async clearAllLists(
+    userId: number,
+    options: { queueProviderDeletion?: boolean } = {}
+  ) {
     const state = await readState(userId);
     const animeRemovedCount = Object.keys(state.entries).length;
     const mangaRemovedCount = Object.keys(state.mangaEntries).length;
     const now = new Date().toISOString();
 
-    state.deletedEntries = {
-      ...state.deletedEntries,
-      ...Object.fromEntries(
-        Object.keys(state.entries).map((key) => [
-          key,
-          {
-            anime_id: Number(key),
-            media_type: "ANIME" as const,
-            external_ids: state.anime[key]?.external_ids ?? { anilist: key, mal: null },
-            title:
-              state.anime[key]?.title_preferred ??
-              state.anime[key]?.title_english ??
-              state.anime[key]?.title_romaji ??
-              `Anime #${key}`,
-            deleted_at: now,
-          },
-        ])
-      ),
-    };
-    state.deletedMangaEntries = {
-      ...state.deletedMangaEntries,
-      ...Object.fromEntries(
-        Object.keys(state.mangaEntries).map((key) => [
-          key,
-          {
-            manga_id: Number(key),
-            media_type: "MANGA" as const,
-            external_ids: state.manga[key]?.external_ids ?? { anilist: key, mal: null },
-            title:
-              state.manga[key]?.title_preferred ??
-              state.manga[key]?.title_english ??
-              state.manga[key]?.title_romaji ??
-              `Manga #${key}`,
-            deleted_at: now,
-          },
-        ])
-      ),
-    };
+    const queueProviderDeletion = options.queueProviderDeletion !== false;
+    if (queueProviderDeletion) {
+      state.deletedEntries = {
+        ...state.deletedEntries,
+        ...Object.fromEntries(
+          Object.keys(state.entries).map((key) => [
+            key,
+            {
+              anime_id: Number(key),
+              media_type: "ANIME" as const,
+              external_ids: state.anime[key]?.external_ids ?? { anilist: key, mal: null },
+              title:
+                state.anime[key]?.title_preferred ??
+                state.anime[key]?.title_english ??
+                state.anime[key]?.title_romaji ??
+                `Anime #${key}`,
+              deleted_at: now,
+            },
+          ])
+        ),
+      };
+      state.deletedMangaEntries = {
+        ...state.deletedMangaEntries,
+        ...Object.fromEntries(
+          Object.keys(state.mangaEntries).map((key) => [
+            key,
+            {
+              manga_id: Number(key),
+              media_type: "MANGA" as const,
+              external_ids: state.manga[key]?.external_ids ?? { anilist: key, mal: null },
+              title:
+                state.manga[key]?.title_preferred ??
+                state.manga[key]?.title_english ??
+                state.manga[key]?.title_romaji ??
+                `Manga #${key}`,
+              deleted_at: now,
+            },
+          ])
+        ),
+      };
+    }
     state.entries = {};
     state.mangaEntries = {};
     state.dirtyEntries = {};
@@ -1207,7 +1268,7 @@ export const localStore = {
       ok: true,
       message:
         removedCount > 0
-          ? `Cleared ${animeRemovedCount} Anime and ${mangaRemovedCount} Manga entries.`
+          ? `Cleared ${animeRemovedCount} Anime and ${mangaRemovedCount} Manga entries.${queueProviderDeletion ? "" : " No linked-service deletions were queued."}`
           : "Both of your media lists were already empty.",
       removedCount,
       animeRemovedCount,

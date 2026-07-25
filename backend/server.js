@@ -1928,6 +1928,8 @@ async function handleRpc(method, args, req, res) {
       return await getAnimeDetails(args[0]);
     case 'getAnimeAdultFlags':
       return await anilist.getAnimeAdultFlags(args[0]);
+    case 'getAnimeListMetadata':
+      return await anilist.getAnimeListMetadata(args[0]);
     case 'getCharacterDetails':
       return await getCharacterDetails(args[0]);
     case 'getStaffDetails':

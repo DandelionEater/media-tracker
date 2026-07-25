@@ -16,7 +16,7 @@ const {
   clearUserMangaList,
   saveManga,
   saveAnimeSummary,
-  updateAnimeAdultFlag,
+  updateAnimeListMetadata,
   getAniListAccountByUserId,
   getMalAccountByUserId,
   getAnimeExternalIdByAnimeId,
@@ -172,21 +172,25 @@ async function getMyAnimeList(currentSession) {
   }
 
   let storedEntries = getUserAnimeList(auth.user.id);
-  const missingAdultFlags = storedEntries
-    .filter((entry) => entry.is_adult === null || entry.is_adult === undefined)
+  const missingMetadataIds = storedEntries
+    .filter((entry) => {
+      const duration = Number(entry.duration);
+      const needsDuration =
+        Number(entry.progress) > 0 && (!Number.isFinite(duration) || duration <= 0);
+      const needsAdultFlag = entry.is_adult === null || entry.is_adult === undefined;
+      return needsDuration || needsAdultFlag;
+    })
     .map((entry) => entry.anime_id);
 
-  if (missingAdultFlags.length) {
+  if (missingMetadataIds.length) {
     try {
-      const flags = await anilist.getAnimeAdultFlags(missingAdultFlags);
-      for (const media of flags) {
-        if (typeof media.isAdult === 'boolean') {
-          updateAnimeAdultFlag(media.id, media.isAdult);
-        }
+      const metadata = await anilist.getAnimeListMetadata(missingMetadataIds);
+      for (const media of metadata) {
+        updateAnimeListMetadata(media);
       }
       storedEntries = getUserAnimeList(auth.user.id);
     } catch (error) {
-      console.warn('Failed to refresh adult-content flags for My List:', error);
+      console.warn('Failed to refresh list metadata for My List:', error);
     }
   }
 
@@ -525,11 +529,12 @@ function isPendingCreateJob(job) {
   );
 }
 
-function queueDeleteSyncIfNeeded(userId, existingEntry) {
+function queueDeleteSyncIfNeeded(userId, existingEntry, options = {}) {
   if (!existingEntry) {
     return;
   }
 
+  const queueProviderDeletion = options.queueProviderDeletion !== false;
   const linkedAniListAccount = getAniListAccountByUserId(userId);
   const linkedMalAccount = getMalAccountByUserId(userId);
   const changedFields = getDeleteChangedFields(existingEntry);
@@ -540,7 +545,7 @@ function queueDeleteSyncIfNeeded(userId, existingEntry) {
     const pendingUpsert = getSyncQueueJob(userId, existingEntry.anime_id, 'upsert_anilist_entry');
     deleteSyncQueueJobByEntry(userId, existingEntry.anime_id, 'upsert_anilist_entry');
 
-    if (!isPendingCreateJob(pendingUpsert)) {
+    if (queueProviderDeletion && !isPendingCreateJob(pendingUpsert)) {
       enqueueSyncJob({
         userId,
         animeId: existingEntry.anime_id,
@@ -558,7 +563,7 @@ function queueDeleteSyncIfNeeded(userId, existingEntry) {
 
     deleteSyncQueueJobByEntry(userId, existingEntry.anime_id, 'upsert_mal_entry');
 
-    if (!isPendingCreateJob(pendingUpsert)) {
+    if (queueProviderDeletion && !isPendingCreateJob(pendingUpsert)) {
       enqueueSyncJob({
         userId,
         animeId: existingEntry.anime_id,
@@ -573,8 +578,9 @@ function queueDeleteSyncIfNeeded(userId, existingEntry) {
   if (queued) scheduleAutoSync(userId);
 }
 
-function queueMangaDeleteSyncIfNeeded(userId, existingEntry) {
+function queueMangaDeleteSyncIfNeeded(userId, existingEntry, options = {}) {
   if (!existingEntry) return;
+  const queueProviderDeletion = options.queueProviderDeletion !== false;
   const changedFields = getDeleteChangedFields(existingEntry);
   const linkedAniListAccount = getAniListAccountByUserId(userId);
   const linkedMalAccount = getMalAccountByUserId(userId);
@@ -593,7 +599,7 @@ function queueMangaDeleteSyncIfNeeded(userId, existingEntry) {
       'upsert_anilist_manga_entry',
       'MANGA'
     );
-    if (!isPendingCreateJob(pending)) {
+    if (queueProviderDeletion && !isPendingCreateJob(pending)) {
       enqueueSyncJob({
         userId,
         mangaId: existingEntry.manga_id,
@@ -622,7 +628,7 @@ function queueMangaDeleteSyncIfNeeded(userId, existingEntry) {
       'upsert_mal_manga_entry',
       'MANGA'
     );
-    if (!isPendingCreateJob(pending)) {
+    if (queueProviderDeletion && !isPendingCreateJob(pending)) {
       enqueueSyncJob({
         userId,
         mangaId: existingEntry.manga_id,
@@ -660,7 +666,7 @@ function removeMyAnimeEntry(currentSession, animeId) {
   return { ok: true, message: 'Anime removed from your list.' };
 }
 
-function clearMyAnimeList(currentSession) {
+function clearMyAnimeList(currentSession, options = {}) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) {
     return { ok: false, message: auth.message };
@@ -668,8 +674,9 @@ function clearMyAnimeList(currentSession) {
 
   const existingEntries = getUserAnimeList(auth.user.id);
 
+  const queueProviderDeletion = options.queueProviderDeletion !== false;
   for (const entry of existingEntries) {
-    queueDeleteSyncIfNeeded(auth.user.id, entry);
+    queueDeleteSyncIfNeeded(auth.user.id, entry, { queueProviderDeletion });
   }
 
   const removedCount = clearUserAnimeList(auth.user.id);
@@ -678,7 +685,7 @@ function clearMyAnimeList(currentSession) {
     ok: true,
     message:
       removedCount > 0
-        ? `Cleared ${removedCount} Anime entr${removedCount === 1 ? 'y' : 'ies'} from your list.`
+        ? `Cleared ${removedCount} Anime entr${removedCount === 1 ? 'y' : 'ies'} from your list.${queueProviderDeletion ? '' : ' No linked-service deletions were queued.'}`
         : 'Your Anime list was already empty.',
     removedCount,
     animeRemovedCount: removedCount,
@@ -686,19 +693,22 @@ function clearMyAnimeList(currentSession) {
   };
 }
 
-function clearMyMangaList(currentSession) {
+function clearMyMangaList(currentSession, options = {}) {
   const auth = requireAuthenticatedUser(currentSession);
   if (!auth.ok) return { ok: false, message: auth.message };
 
+  const queueProviderDeletion = options.queueProviderDeletion !== false;
   const existingEntries = getUserMangaList(auth.user.id);
-  for (const entry of existingEntries) queueMangaDeleteSyncIfNeeded(auth.user.id, entry);
+  for (const entry of existingEntries) {
+    queueMangaDeleteSyncIfNeeded(auth.user.id, entry, { queueProviderDeletion });
+  }
 
   const removedCount = clearUserMangaList(auth.user.id);
   return {
     ok: true,
     message:
       removedCount > 0
-        ? `Cleared ${removedCount} Manga entr${removedCount === 1 ? 'y' : 'ies'} from your list.`
+        ? `Cleared ${removedCount} Manga entr${removedCount === 1 ? 'y' : 'ies'} from your list.${queueProviderDeletion ? '' : ' No linked-service deletions were queued.'}`
         : 'Your Manga list was already empty.',
     removedCount,
     animeRemovedCount: 0,
@@ -706,10 +716,11 @@ function clearMyMangaList(currentSession) {
   };
 }
 
-function clearAllMediaLists(currentSession) {
-  const animeResult = clearMyAnimeList(currentSession);
+function clearAllMediaLists(currentSession, options = {}) {
+  const queueProviderDeletion = options.queueProviderDeletion !== false;
+  const animeResult = clearMyAnimeList(currentSession, { queueProviderDeletion });
   if (!animeResult.ok) return animeResult;
-  const mangaResult = clearMyMangaList(currentSession);
+  const mangaResult = clearMyMangaList(currentSession, { queueProviderDeletion });
   if (!mangaResult.ok) return mangaResult;
 
   const animeRemovedCount = Number(animeResult.removedCount ?? 0);
@@ -719,7 +730,7 @@ function clearAllMediaLists(currentSession) {
     ok: true,
     message:
       removedCount > 0
-        ? `Cleared ${animeRemovedCount} Anime and ${mangaRemovedCount} Manga entries.`
+        ? `Cleared ${animeRemovedCount} Anime and ${mangaRemovedCount} Manga entries.${queueProviderDeletion ? '' : ' No linked-service deletions were queued.'}`
         : 'Both of your media lists were already empty.',
     removedCount,
     animeRemovedCount,
