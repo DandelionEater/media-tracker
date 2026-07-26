@@ -1,6 +1,6 @@
 {
   "name": "seenary",
-  "version": "0.1.7-dev",
+  "version": "0.1.7-beta",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
