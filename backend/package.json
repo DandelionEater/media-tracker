@@ -85,7 +85,10 @@
       "createDesktopShortcut": "always",
       "createStartMenuShortcut": true,
       "installerIcon": "build/icon.ico",
+      "installerSidebar": "build/installerSidebar.bmp",
+      "installerHeader": "build/installerHeader.bmp",
       "uninstallerIcon": "build/icon.ico",
+      "uninstallerSidebar": "build/installerSidebar.bmp",
       "shortcutName": "Seenary"
     }
   }

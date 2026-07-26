@@ -31,4 +31,5 @@ run(builderCommand, [
   'nsis',
   `--config.directories.output=${path.relative(backendDir, releaseDir)}`,
 ]);
+run(process.execPath, ['scripts/build-custom-installer.js'], { shell: false });
 run(process.execPath, ['scripts/write-release-notes.js', releaseDir], { shell: false });

@@ -6,6 +6,7 @@ import {
   ArrowRightIcon,
   ArrowTopRightOnSquareIcon,
   ArrowsPointingOutIcon,
+  BookOpenIcon,
   BookmarkIcon,
   CalendarDaysIcon,
   CheckCircleIcon,
@@ -2396,13 +2397,43 @@ const KNOWN_LINK_COLORS: Array<[RegExp, string]> = [
   [/\bdisney\+?\b/i, "#4b69ff"],
   [/\bmax\b|\bhbo max\b/i, "#5b39f5"],
   [/\btubi\b/i, "#ff501a"],
-  [/\btwitter\b|\bx \(twitter\)\b/i, "#d7d9db"],
-  [/\btiktok\b/i, "#c8cbcf"],
+  [/\btwitter\b|\bx \(twitter\)\b/i, "#ffffff"],
+  [/\btiktok\b/i, "#25f4ee"],
 ];
 
 function getLinkBrandColor(site?: string | null, suppliedColor?: string | null) {
   const knownColor = KNOWN_LINK_COLORS.find(([pattern]) => pattern.test(site || ""))?.[1];
   return knownColor || suppliedColor;
+}
+
+function isTikTokLinkSite(site?: string | null) {
+  return /\btiktok\b/i.test(site || "");
+}
+
+function isXLinkSite(site?: string | null) {
+  return /\btwitter\b|\bx \(twitter\)\b/i.test(site || "");
+}
+
+function getLinkIconSurfaceStyle(
+  site?: string | null,
+  suppliedColor?: string | null
+) {
+  if (isTikTokLinkSite(site) || isXLinkSite(site)) {
+    return {
+      borderColor: "rgba(255, 255, 255, 0.14)",
+      background: "#050505",
+    };
+  }
+
+  const brandColor = getLinkBrandColor(site, suppliedColor);
+  return {
+    borderColor: brandColor
+      ? `color-mix(in srgb, ${brandColor} 18%, transparent)`
+      : undefined,
+    background: brandColor
+      ? `color-mix(in srgb, ${brandColor} 6%, transparent)`
+      : undefined,
+  };
 }
 
 function getReadableLinkColor(color?: string | null) {
@@ -2430,11 +2461,12 @@ function BrandedLinkIcon({
   link: Pick<ExternalLink, "icon" | "color"> | null;
   site?: string | null;
   className: string;
-  fallback?: "link" | "play";
+  fallback?: "link" | "play" | "book";
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [iconFailed, setIconFailed] = useState(false);
   const brandColor = getReadableLinkColor(getLinkBrandColor(site, link?.color));
+  const usesTikTokPalette = isTikTokLinkSite(site);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -2448,19 +2480,37 @@ function BrandedLinkIcon({
     image.onload = () => {
       if (cancelled || !context) return;
       const size = canvas.width;
-      const scale = Math.min(size / image.naturalWidth, size / image.naturalHeight);
+      const scale =
+        Math.min(size / image.naturalWidth, size / image.naturalHeight) *
+        (usesTikTokPalette ? 0.9 : 1);
       const width = image.naturalWidth * scale;
       const height = image.naturalHeight * scale;
       const x = (size - width) / 2;
       const y = (size - height) / 2;
 
       context.clearRect(0, 0, size, size);
-      context.globalCompositeOperation = "source-over";
-      context.drawImage(image, x, y, width, height);
-      context.globalCompositeOperation = "source-in";
-      context.fillStyle = brandColor;
-      context.fillRect(0, 0, size, size);
-      context.globalCompositeOperation = "source-over";
+
+      const drawTintedLayer = (color: string, offsetX = 0, offsetY = 0) => {
+        const layer = document.createElement("canvas");
+        layer.width = size;
+        layer.height = size;
+        const layerContext = layer.getContext("2d");
+        if (!layerContext) return;
+
+        layerContext.drawImage(image, x + offsetX, y + offsetY, width, height);
+        layerContext.globalCompositeOperation = "source-in";
+        layerContext.fillStyle = color;
+        layerContext.fillRect(0, 0, size, size);
+        context.drawImage(layer, 0, 0);
+      };
+
+      if (usesTikTokPalette) {
+        drawTintedLayer("#25f4ee", -2, -1);
+        drawTintedLayer("#fe2c55", 2, 1);
+        drawTintedLayer("#ffffff");
+      } else {
+        drawTintedLayer(brandColor);
+      }
     };
     image.onerror = () => {
       if (!cancelled) setIconFailed(true);
@@ -2472,7 +2522,7 @@ function BrandedLinkIcon({
       image.onload = null;
       image.onerror = null;
     };
-  }, [brandColor, link?.icon]);
+  }, [brandColor, link?.icon, usesTikTokPalette]);
 
   if (link?.icon && !iconFailed) {
     return (
@@ -2486,7 +2536,8 @@ function BrandedLinkIcon({
     );
   }
 
-  const FallbackIcon = fallback === "play" ? PlayCircleIcon : LinkIcon;
+  const FallbackIcon =
+    fallback === "play" ? PlayCircleIcon : fallback === "book" ? BookOpenIcon : LinkIcon;
   return <FallbackIcon className={className} style={{ color: brandColor }} />;
 }
 
@@ -2511,9 +2562,9 @@ function LinksSection({
   const streamingLinks = externalLinks.filter(
     (link) => link.type?.toUpperCase() === "STREAMING"
   );
-  const supportingLinks = isManga
-    ? externalLinks
-    : externalLinks.filter((link) => link.type?.toUpperCase() !== "STREAMING");
+  const supportingLinks = externalLinks.filter(
+    (link) => link.type?.toUpperCase() !== "STREAMING"
+  );
   const providerKeys = new Set<string>();
   const providers = streamingLinks.reduce<
     Array<{ site: string; link: ExternalLink | null; episodes: StreamingEpisode[] }>
@@ -2563,15 +2614,17 @@ function LinksSection({
     : streamingEpisodes.slice(collapsedEpisodeStart, collapsedEpisodeStart + 4);
 
   return (
-    <ContentSection title={isManga ? "Official links" : "Watch & Links"} icon={LinkIcon}>
+    <ContentSection title={isManga ? "Read & Links" : "Watch & Links"} icon={LinkIcon}>
       <div className="space-y-5">
-        {!isManga && providers.length > 0 && (
+        {providers.length > 0 && (
           <div>
             <div className="mb-3 flex flex-wrap items-end justify-between gap-2">
               <div>
-                <h3 className="text-sm font-semibold text-white/80">Where to watch</h3>
+                <h3 className="text-sm font-semibold text-white/80">
+                  {isManga ? "Where to read" : "Where to watch"}
+                </h3>
                 <p className="mt-1 text-xs text-white/40">
-                  Availability varies by region. Provider links are supplied by AniList.
+                  Availability and languages vary by region. Provider links are supplied by AniList.
                 </p>
               </div>
             </div>
@@ -2589,29 +2642,16 @@ function LinksSection({
                   >
                     <div
                       className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/8"
-                      style={{
-                        borderColor: getLinkBrandColor(
-                          provider.site,
-                          provider.link?.color
-                        )
-                          ? `color-mix(in srgb, ${getLinkBrandColor(
-                              provider.site,
-                              provider.link?.color
-                            )} 18%, transparent)`
-                          : undefined,
-                        background: getLinkBrandColor(provider.site, provider.link?.color)
-                          ? `color-mix(in srgb, ${getLinkBrandColor(
-                              provider.site,
-                              provider.link?.color
-                            )} 6%, transparent)`
-                          : undefined,
-                      }}
+                      style={getLinkIconSurfaceStyle(
+                        provider.site,
+                        provider.link?.color
+                      )}
                     >
                       <BrandedLinkIcon
                         link={provider.link}
                         site={provider.site}
                         className="h-6 w-6 opacity-80"
-                        fallback="play"
+                        fallback={isManga ? "book" : "play"}
                       />
                     </div>
                     <div className="min-w-0 flex-1">
@@ -2619,7 +2659,12 @@ function LinksSection({
                         {provider.site}
                       </p>
                       <p className="mt-1 truncate text-xs text-white/45">
-                        {formatEnum(provider.link?.type || "STREAMING")}
+                        {isManga
+                          ? "Read online"
+                          : formatEnum(provider.link?.type || "STREAMING")}
+                        {isManga && provider.link?.language
+                          ? ` · ${provider.link.language}`
+                          : ""}
                         {provider.episodes.length > 0 &&
                           ` · ${provider.episodes.length} ${
                             provider.episodes.length === 1 ? "episode" : "episodes"
@@ -2714,14 +2759,14 @@ function LinksSection({
 
         {supportingLinks.length > 0 && (
           <div>
-            {!isManga && (
-              <div className="mb-3">
-                <h3 className="text-sm font-semibold text-white/80">More official links</h3>
-                <p className="mt-1 text-xs text-white/40">
-                  Official sites, video channels, and social profiles.
-                </p>
-              </div>
-            )}
+            <div className="mb-3">
+              <h3 className="text-sm font-semibold text-white/80">More official links</h3>
+              <p className="mt-1 text-xs text-white/40">
+                {isManga
+                  ? "Official sites, publisher pages, and social profiles."
+                  : "Official sites, video channels, and social profiles."}
+              </p>
+            </div>
             <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
               {supportingLinks.map((link, index) => (
                 <a
@@ -2733,20 +2778,7 @@ function LinksSection({
                 >
                   <div
                     className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-2xl border border-white/10 bg-white/8"
-                    style={{
-                      borderColor: getLinkBrandColor(link.site, link.color)
-                        ? `color-mix(in srgb, ${getLinkBrandColor(
-                            link.site,
-                            link.color
-                          )} 18%, transparent)`
-                        : undefined,
-                      background: getLinkBrandColor(link.site, link.color)
-                        ? `color-mix(in srgb, ${getLinkBrandColor(
-                            link.site,
-                            link.color
-                          )} 6%, transparent)`
-                        : undefined,
-                    }}
+                    style={getLinkIconSurfaceStyle(link.site, link.color)}
                   >
                     <BrandedLinkIcon
                       link={link}

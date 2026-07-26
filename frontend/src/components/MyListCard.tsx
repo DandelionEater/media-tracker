@@ -159,6 +159,7 @@ export const MyListCard = memo(function MyListCard({
     ? Math.max(0, entry.episodes - entry.progress)
     : null;
   const airingStatus = getAiringStatusLabel(entry.anime_status, isManga);
+  const airingStatusStyle = getAiringStatusStyle(entry.anime_status);
   const updatedLabel = formatUpdatedLabel(entry.local_updated_at || entry.updated_at, nowMs);
   const nextEpisodeLabel = String(entry.anime_status || "").toUpperCase() === "RELEASING"
     ? formatNextEpisodeLabel(entry.next_airing_episode, entry.next_airing_at, nowMs)
@@ -286,7 +287,8 @@ export const MyListCard = memo(function MyListCard({
 
       <div className={`absolute z-10 flex items-center gap-2 ${densityStyles.statusWrapClass}`}>
         {airingStatus && (
-          <span className={`rounded-full border border-white/10 bg-white/7 font-medium text-white/55 ${densityStyles.statusClass}`}>
+          <span className={`inline-flex items-center gap-1.5 rounded-full border font-medium ${airingStatusStyle.badge} ${densityStyles.statusClass}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${airingStatusStyle.dot}`} />
             {airingStatus}
           </span>
         )}
@@ -484,6 +486,26 @@ function getAiringStatusLabel(status?: string | null, isManga = false) {
       return isManga ? "Finished publishing" : "Finished airing";
     default:
       return null;
+  }
+}
+
+function getAiringStatusStyle(status?: string | null) {
+  switch (String(status || "").toUpperCase()) {
+    case "RELEASING":
+      return {
+        badge: "border-emerald-400/25 bg-emerald-500/10 text-emerald-200",
+        dot: "bg-emerald-400 shadow-[0_0_10px_rgba(52,211,153,0.65)]",
+      };
+    case "FINISHED":
+      return {
+        badge: "border-blue-400/25 bg-blue-500/10 text-blue-200",
+        dot: "bg-blue-400 shadow-[0_0_10px_rgba(96,165,250,0.65)]",
+      };
+    default:
+      return {
+        badge: "border-rose-400/25 bg-rose-500/10 text-rose-200",
+        dot: "bg-rose-400 shadow-[0_0_10px_rgba(251,113,133,0.65)]",
+      };
   }
 }
 
