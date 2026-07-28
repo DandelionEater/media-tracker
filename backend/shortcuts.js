@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const { app, globalShortcut, ipcMain } = require('electron');
+const { isNativeWayland } = require('./desktopEnvironment');
 
 const DEFAULT_HIDE_SHOW_SHORTCUT = 'Control+Space';
 const SETTINGS_FILE = 'desktop-shortcuts.json';
@@ -8,6 +9,7 @@ const SETTINGS_FILE = 'desktop-shortcuts.json';
 let activeHideShowAccelerator = null;
 let gamingModeEnabled = false;
 let shortcutRecordingActive = false;
+let lastRegistrationSucceeded = null;
 
 function getSettingsPath() {
   return path.join(app.getPath('userData'), SETTINGS_FILE);
@@ -48,11 +50,27 @@ function writeShortcutSettings(settings) {
 
 function getHideShowShortcutSetting() {
   const settings = readShortcutSettings();
+  const registrationPaused = gamingModeEnabled || shortcutRecordingActive;
+  const registrationFailed =
+    settings.hideShowEnabled && !registrationPaused && lastRegistrationSucceeded === false;
+
   return {
-    ok: true,
+    ok: !registrationFailed,
     enabled: settings.hideShowEnabled,
     accelerator: settings.hideShowAccelerator,
     defaultAccelerator: DEFAULT_HIDE_SHOW_SHORTCUT,
+    registrationMethod: isNativeWayland() ? 'portal' : 'native',
+    registered:
+      settings.hideShowEnabled && !registrationPaused
+        ? Boolean(activeHideShowAccelerator)
+        : false,
+    ...(registrationFailed
+      ? {
+          message: isNativeWayland()
+            ? 'KDE, GNOME, or your Wayland shortcut portal did not allow this global shortcut.'
+            : `Could not register ${settings.hideShowAccelerator}. It may be used by another app.`,
+        }
+      : {}),
   };
 }
 
@@ -84,6 +102,7 @@ function registerHideShowShortcut(win, accelerator) {
     activeHideShowAccelerator = normalizedAccelerator;
   }
 
+  lastRegistrationSucceeded = registered;
   return registered;
 }
 
@@ -100,6 +119,7 @@ function registerShortcuts(win) {
   const settings = readShortcutSettings();
 
   if (!settings.hideShowEnabled || gamingModeEnabled || shortcutRecordingActive) {
+    lastRegistrationSucceeded = null;
     return;
   }
 
@@ -152,6 +172,7 @@ function updateHideShowShortcutSetting(win, payload = {}) {
   unregisterHideShowShortcut();
 
   if (!enabled) {
+    lastRegistrationSucceeded = null;
     writeShortcutSettings({
       hideShowEnabled: false,
       hideShowAccelerator: accelerator,
@@ -185,7 +206,9 @@ function updateHideShowShortcutSetting(win, payload = {}) {
       ok: false,
       enabled: current.hideShowEnabled,
       accelerator: current.hideShowAccelerator,
-      message: `Could not register ${accelerator}. It may be used by another app.`,
+      message: isNativeWayland()
+        ? `Could not register ${accelerator}. Your Wayland shortcut portal may have declined it or another shortcut may already use it.`
+        : `Could not register ${accelerator}. It may be used by another app.`,
     };
   }
 
@@ -204,7 +227,9 @@ function updateHideShowShortcutSetting(win, payload = {}) {
     accelerator,
     message: gamingModeEnabled
       ? `Hide/show shortcut set to ${accelerator}. Gaming mode is still pausing it.`
-      : `Hide/show shortcut set to ${accelerator}.`,
+      : isNativeWayland()
+        ? `Hide/show shortcut set to ${accelerator} through the Wayland shortcut portal.`
+        : `Hide/show shortcut set to ${accelerator}.`,
   };
 }
 

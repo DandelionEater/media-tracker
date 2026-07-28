@@ -1,6 +1,7 @@
 const { app, ipcMain, screen } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const { isNativeWayland } = require('./desktopEnvironment');
 
 const WINDOW_STATE_FILE = 'desktop-window-state.json';
 const DEFAULT_WINDOW_PRESET = 'balanced';
@@ -118,9 +119,35 @@ function getVisibleBounds(bounds) {
   };
 }
 
+function getPersistableBounds(bounds, previousBounds = null) {
+  const normalized = normalizeBounds(bounds);
+
+  if (!normalized || !isNativeWayland()) {
+    return normalized;
+  }
+
+  const previous = normalizeBounds(previousBounds);
+
+  return {
+    ...normalized,
+    x: previous?.x ?? 0,
+    y: previous?.y ?? 0,
+  };
+}
+
 function getInitialWindowOptions() {
   const state = readWindowState();
   const preset = WINDOW_PRESETS[state.preset] ?? WINDOW_PRESETS[DEFAULT_WINDOW_PRESET];
+
+  if (isNativeWayland()) {
+    const savedSize = normalizeBounds(state.bounds);
+
+    return {
+      width: savedSize?.width ?? preset.width,
+      height: savedSize?.height ?? preset.height,
+    };
+  }
+
   const bounds = getVisibleBounds(state.bounds);
 
   return {
@@ -159,8 +186,8 @@ function saveWindowBounds(win, preset = readWindowState().preset) {
     return null;
   }
 
-  const bounds = win.getBounds();
   const saved = readWindowState();
+  const bounds = getPersistableBounds(win.getBounds(), saved.bounds);
   const nextPreset = isPresetBounds(bounds, preset) ? preset : CUSTOM_WINDOW_PRESET;
 
   const nextState = {
@@ -179,8 +206,8 @@ function getLiveWindowState(win) {
     return null;
   }
 
-  const bounds = win.getBounds();
   const saved = readWindowState();
+  const bounds = getPersistableBounds(win.getBounds(), saved.bounds);
   const preset = isPresetBounds(bounds, saved.preset) ? saved.preset : CUSTOM_WINDOW_PRESET;
 
   return {
@@ -231,13 +258,20 @@ function attachWindowState(win) {
 
 function getWindowState(win) {
   const saved = readWindowState();
-  const bounds = win && !win.isDestroyed() ? win.getBounds() : saved.bounds;
+  const bounds =
+    win && !win.isDestroyed()
+      ? getPersistableBounds(win.getBounds(), saved.bounds)
+      : saved.bounds;
 
   return {
     ok: true,
     preset: saved.preset,
     bounds,
     customBounds: saved.customBounds,
+    capabilities: {
+      exactPositioning: !isNativeWayland(),
+      liveResize: isNativeWayland() ? 'verify' : 'supported',
+    },
     presets: Object.entries(WINDOW_PRESETS).map(([id, value]) => ({
       id,
       width: value.width,
@@ -246,7 +280,31 @@ function getWindowState(win) {
   };
 }
 
-function applyWindowPreset(win, presetId) {
+function sizeMatches(bounds, target) {
+  return (
+    Math.abs(bounds.width - target.width) <= 2 &&
+    Math.abs(bounds.height - target.height) <= 2
+  );
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function applyWaylandSize(win, target) {
+  win.setSize(target.width, target.height, false);
+
+  let actual = win.getBounds();
+
+  if (!sizeMatches(actual, target)) {
+    await wait(200);
+    actual = win.getBounds();
+  }
+
+  return actual;
+}
+
+async function applyWindowPreset(win, presetId) {
   const preset = getValidPreset(presetId);
 
   if (!win || win.isDestroyed() || !preset) {
@@ -256,8 +314,37 @@ function applyWindowPreset(win, presetId) {
     };
   }
 
-  const bounds = getPresetBounds(win, preset);
   const saved = readWindowState();
+
+  if (isNativeWayland()) {
+    const actualBounds = await applyWaylandSize(win, WINDOW_PRESETS[preset]);
+    const bounds = getPersistableBounds(actualBounds, saved.bounds);
+
+    if (!sizeMatches(bounds, WINDOW_PRESETS[preset])) {
+      return {
+        ok: false,
+        preset: saved.preset,
+        bounds,
+        customBounds: saved.customBounds,
+        message:
+          'Your Wayland compositor kept control of the live window size. Manual resizing is still available.',
+      };
+    }
+
+    const nextState = { preset, bounds, customBounds: saved.customBounds };
+    writeWindowState(nextState);
+    emitWindowStateChanged(win, nextState);
+
+    return {
+      ok: true,
+      preset,
+      bounds,
+      customBounds: saved.customBounds,
+      message: `Window preset set to ${preset}. Live resize was accepted by your Wayland compositor.`,
+    };
+  }
+
+  const bounds = getPresetBounds(win, preset);
   win.setBounds(bounds, false);
   const nextState = { preset, bounds, customBounds: saved.customBounds };
   writeWindowState(nextState);
@@ -272,7 +359,7 @@ function applyWindowPreset(win, presetId) {
   };
 }
 
-function applyCustomWindowBounds(win, payload = {}) {
+async function applyCustomWindowBounds(win, payload = {}) {
   if (!win || win.isDestroyed()) {
     return {
       ok: false,
@@ -281,6 +368,52 @@ function applyCustomWindowBounds(win, payload = {}) {
   }
 
   const currentBounds = win.getBounds();
+
+  if (isNativeWayland()) {
+    const saved = readWindowState();
+    const target = {
+      width: Math.max(
+        MIN_WINDOW_BOUNDS.width,
+        Math.round(Number(payload.width) || currentBounds.width)
+      ),
+      height: Math.max(
+        MIN_WINDOW_BOUNDS.height,
+        Math.round(Number(payload.height) || currentBounds.height)
+      ),
+    };
+    const actualBounds = await applyWaylandSize(win, target);
+    const bounds = getPersistableBounds(actualBounds, saved.bounds);
+
+    if (!sizeMatches(bounds, target)) {
+      return {
+        ok: false,
+        preset: saved.preset,
+        bounds,
+        customBounds: saved.customBounds,
+        minimum: MIN_WINDOW_BOUNDS,
+        message:
+          'Your Wayland compositor kept control of the live window size. You can resize Seenary manually.',
+      };
+    }
+
+    const nextState = {
+      preset: CUSTOM_WINDOW_PRESET,
+      bounds,
+      customBounds: bounds,
+    };
+    writeWindowState(nextState);
+    emitWindowStateChanged(win, nextState);
+
+    return {
+      ok: true,
+      preset: CUSTOM_WINDOW_PRESET,
+      bounds,
+      customBounds: bounds,
+      minimum: MIN_WINDOW_BOUNDS,
+      message: 'Custom window size applied through your Wayland compositor.',
+    };
+  }
+
   const display = screen.getDisplayMatching(currentBounds);
   const workArea = display.workArea;
   const width = Math.min(

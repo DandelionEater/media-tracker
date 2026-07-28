@@ -15,23 +15,28 @@ let downloadedUpdateInfo = null;
 let handlersRegistered = false;
 let updaterEventsRegistered = false;
 
+function isAutoUpdateAvailable() {
+  return process.platform !== 'linux';
+}
+
 function getUpdateFeedUrl() {
   return process.env.SEENARY_UPDATE_FEED_URL || DEFAULT_UPDATE_FEED_URL;
 }
 
 function setupAutoUpdates(win) {
-  if (!app.isPackaged) {
+  activeWindow = win;
+  registerUpdaterIpc();
+
+  if (!app.isPackaged || !isAutoUpdateAvailable()) {
     return;
   }
 
-  activeWindow = win;
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
   autoUpdater.setFeedURL({
     provider: 'generic',
     url: getUpdateFeedUrl(),
   });
-  registerUpdaterIpc();
   registerUpdaterEvents();
 
   scheduleStartupCheck();
@@ -108,7 +113,7 @@ function scheduleRecurringChecks() {
 }
 
 function checkForUpdates(win = null) {
-  if (!app.isPackaged || isChecking || isDownloading) {
+  if (!app.isPackaged || !isAutoUpdateAvailable() || isChecking || isDownloading) {
     return;
   }
 
@@ -127,8 +132,13 @@ function registerUpdaterIpc() {
   handlersRegistered = true;
 
   ipcMain.handle('updater:download', async () => {
-    if (!app.isPackaged || isDownloading) {
-      return { ok: false };
+    if (!app.isPackaged || !isAutoUpdateAvailable() || isDownloading) {
+      return {
+        ok: false,
+        message: isAutoUpdateAvailable()
+          ? 'Seenary updates are available after installing the desktop app.'
+          : 'Automatic updates are not enabled in this first Linux test build.',
+      };
     }
 
     isDownloading = true;
@@ -222,6 +232,7 @@ function stopAutoUpdates() {
 function getUpdateState() {
   return {
     ok: true,
+    available: isAutoUpdateAvailable(),
     checking: isChecking,
     downloading: isDownloading,
     intervalMs: UPDATE_CHECK_INTERVAL_MS,
@@ -233,5 +244,6 @@ function getUpdateState() {
 module.exports = {
   setupAutoUpdates,
   checkForUpdates,
+  isAutoUpdateAvailable,
   stopAutoUpdates,
 };

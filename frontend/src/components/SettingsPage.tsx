@@ -295,6 +295,13 @@ type DesktopStartupState = {
   openAtLogin: boolean;
   feedback: { kind: "success" | "error"; message: string } | null;
 };
+type DesktopEnvironmentState = {
+  loading: boolean;
+  platform: string;
+  displayBackend: "wayland" | "x11" | "other" | "unknown";
+  desktopEnvironment: string | null;
+  shortcutMethod: "native" | "portal";
+};
 type WindowPresetId = "compact" | "balanced" | "cinematic" | "custom";
 type SelectableWindowPresetId = Exclude<WindowPresetId, "custom">;
 type DesktopWindowState = {
@@ -722,6 +729,13 @@ export function SettingsPage({
     openAtLogin: false,
     feedback: null,
   });
+  const [desktopEnvironment, setDesktopEnvironment] = useState<DesktopEnvironmentState>({
+    loading: Boolean(window.desktopEnvironment),
+    platform: "",
+    displayBackend: "unknown",
+    desktopEnvironment: null,
+    shortcutMethod: "native",
+  });
   const [desktopWindow, setDesktopWindow] = useState<DesktopWindowState>({
     available: Boolean(window.desktopWindow),
     loading: Boolean(window.desktopWindow),
@@ -914,6 +928,10 @@ export function SettingsPage({
   }, []);
 
   useEffect(() => {
+    loadDesktopEnvironment();
+  }, []);
+
+  useEffect(() => {
     if (!window.api.onSyncProgress) {
       return;
     }
@@ -948,7 +966,7 @@ export function SettingsPage({
         preset: getWindowPresetId(state.preset),
         bounds: state.bounds ?? current.bounds,
         customBounds: state.customBounds ?? current.customBounds,
-        feedback: null,
+        feedback: current.feedback,
       }));
     });
   }, []);
@@ -1077,6 +1095,10 @@ export function SettingsPage({
       if (!result.ok) {
         setDesktopWindow((current) => ({
           ...current,
+          loading: false,
+          preset: getWindowPresetId(result.preset),
+          bounds: result.bounds ?? current.bounds,
+          customBounds: result.customBounds ?? current.customBounds,
           feedback: { kind: "error", message: result.message || "Failed to update custom size." },
         }));
         return;
@@ -1158,6 +1180,26 @@ export function SettingsPage({
         loading: false,
         feedback: { kind: "error", message: "Failed to load startup setting." },
       }));
+    }
+  }
+
+  async function loadDesktopEnvironment() {
+    if (!window.desktopEnvironment) {
+      return;
+    }
+
+    try {
+      const result = await window.desktopEnvironment.getInfo();
+
+      setDesktopEnvironment({
+        loading: false,
+        platform: result.platform,
+        displayBackend: result.displayBackend,
+        desktopEnvironment: result.desktopEnvironment,
+        shortcutMethod: result.capabilities.globalShortcuts,
+      });
+    } catch {
+      setDesktopEnvironment((current) => ({ ...current, loading: false }));
     }
   }
 
@@ -2243,7 +2285,7 @@ export function SettingsPage({
               description="App information, startup behavior, shortcuts, and welcome screen access."
               summary={[
                 `Version ${APP_VERSION}`,
-                ...(window.desktopStartup
+                ...(window.desktopStartup && desktopStartup.available
                   ? [desktopStartup.openAtLogin ? "Launches at login" : "Manual launch"]
                   : []),
                 ...(desktopShortcut.available
@@ -2271,6 +2313,26 @@ export function SettingsPage({
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <InfoCard label="Version" value={APP_VERSION} />
                   <InfoCard label="Profile" value={username} />
+                  {desktopEnvironment.platform === "linux" && (
+                    <>
+                      <InfoCard
+                        label="Desktop"
+                        value={desktopEnvironment.desktopEnvironment || "Unknown"}
+                      />
+                      <InfoCard
+                        label="Display system"
+                        value={
+                          desktopEnvironment.loading
+                            ? "Detecting..."
+                            : desktopEnvironment.displayBackend === "wayland"
+                              ? "Wayland (native)"
+                              : desktopEnvironment.displayBackend === "x11"
+                                ? "X11 / Xwayland"
+                                : "Unknown"
+                        }
+                      />
+                    </>
+                  )}
                 </div>
               </div>
 
@@ -2289,7 +2351,9 @@ export function SettingsPage({
                       description={
                         desktopStartup.available
                           ? "Open the desktop app automatically after you sign in to your computer."
-                          : "This option is available after installing the desktop app."
+                          : desktopEnvironment.platform === "linux"
+                            ? "Linux launch-at-login integration will follow after the first test build."
+                            : "This option is available after installing the desktop app."
                       }
                       checked={desktopStartup.openAtLogin}
                       disabled={!desktopStartup.available || desktopStartup.loading}
@@ -2325,7 +2389,9 @@ export function SettingsPage({
                         <p className="font-semibold text-white">Hide/show Seenary</p>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-white/45">
                           Use Electron accelerator format, such as Control+Shift+Space or Alt+Space.
-                          Turn it off if the shortcut conflicts with another app.
+                          {desktopEnvironment.shortcutMethod === "portal"
+                            ? " Your Wayland desktop portal decides whether the shortcut can be registered."
+                            : " Turn it off if the shortcut conflicts with another app."}
                         </p>
                       </div>
 
@@ -2912,6 +2978,13 @@ export function SettingsPage({
                     title="Window layout"
                     description="Change size without losing Seenary's place, or return to your last custom size."
                   />
+
+                  {desktopEnvironment.displayBackend === "wayland" && (
+                    <p className="mb-3 rounded-2xl border border-cyan-300/15 bg-cyan-300/8 px-4 py-3 text-sm leading-6 text-cyan-50/75">
+                      Seenary will try live size changes and verify whether your Wayland compositor
+                      accepted them. Window placement remains managed by your desktop.
+                    </p>
+                  )}
 
                   <div className="grid grid-cols-1 gap-3 md:grid-cols-4">
                     {WINDOW_PRESET_OPTIONS.map((option) => {

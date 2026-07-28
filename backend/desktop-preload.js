@@ -47,6 +47,10 @@ contextBridge.exposeInMainWorld('desktopStartup', {
   setStartupSetting: (enabled) => ipcRenderer.invoke('startup:set', enabled),
 });
 
+contextBridge.exposeInMainWorld('desktopEnvironment', {
+  getInfo: () => ipcRenderer.invoke('desktop-environment:get'),
+});
+
 contextBridge.exposeInMainWorld('desktopWindow', {
   closeApp: () => ipcRenderer.send('app:quit'),
   onFocusSearch: (callback) => {

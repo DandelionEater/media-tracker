@@ -1,5 +1,6 @@
 const { app, BrowserWindow, shell } = require('electron');
 const path = require('path');
+const { setupBundledFrontend } = require('./bundledFrontend');
 const { setupTray } = require('./tray');
 const {
   getGamingModeEnabled,
@@ -8,10 +9,20 @@ const {
   setGamingModeEnabled,
 } = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
-const { setupAutoUpdates, checkForUpdates, stopAutoUpdates } = require('./updater');
+const {
+  setupAutoUpdates,
+  checkForUpdates,
+  isAutoUpdateAvailable,
+  stopAutoUpdates,
+} = require('./updater');
 const { registerSystemLocaleIpc } = require('./systemLocale');
 const { registerAppLifecycleIpc } = require('./appLifecycle');
 const { registerLayoutConfigIpc } = require('./layoutConfig');
+const {
+  enableWaylandGlobalShortcutsPortal,
+  getDesktopEnvironmentInfo,
+  registerDesktopEnvironmentIpc,
+} = require('./desktopEnvironment');
 const {
   attachWindowState,
   getInitialWindowOptions,
@@ -24,6 +35,7 @@ let mainWindow = null;
 
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.setName('Seenary');
+enableWaylandGlobalShortcutsPortal();
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
@@ -46,12 +58,16 @@ app.on('second-instance', () => {
 });
 
 registerSystemLocaleIpc();
+registerDesktopEnvironmentIpc();
 
 function getTrayOptions(win) {
   return {
     isGamingModeEnabled: getGamingModeEnabled,
     onToggleGamingMode: (enabled) => setGamingModeEnabled(win, enabled),
-    onCheckForUpdates: app.isPackaged ? () => checkForUpdates(win, { manual: true }) : null,
+    onCheckForUpdates:
+      app.isPackaged && isAutoUpdateAvailable()
+        ? () => checkForUpdates(win, { manual: true })
+        : null,
   };
 }
 
@@ -92,7 +108,11 @@ function createWindow() {
   return win;
 }
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  const bundledFrontend = await setupBundledFrontend();
+  console.log('Seenary desktop frontend:', bundledFrontend);
+  console.log('Seenary desktop environment:', getDesktopEnvironmentInfo());
+
   registerAppLifecycleIpc();
   const win = createWindow();
   mainWindow = win;

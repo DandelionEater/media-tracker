@@ -1,0 +1,74 @@
+name: Build Linux test artifact
+
+on:
+  push:
+    branches:
+      - linux-port
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build self-contained Linux test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out selected branch
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Lint frontend
+        run: npm run lint
+        working-directory: frontend
+
+      - name: Build Linux test artifacts
+        run: npm run dist:linux
+        working-directory: backend
+
+      - name: Prepare permission-preserving archive and checksums
+        id: artifact
+        shell: bash
+        run: |
+          version="$(node -p "require('./backend/package.json').version")"
+          artifact_dir="release/${version}/linux"
+          archive="${artifact_dir}/Seenary-${version}-linux-unpacked.tar.gz"
+
+          tar -C "${artifact_dir}" -czf "${archive}" linux-unpacked
+          (
+            cd "${artifact_dir}"
+            sha256sum ./*.AppImage ./*.tar.gz > SHA256SUMS
+          )
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "artifact_dir=${artifact_dir}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload downloadable Linux test
+        uses: actions/upload-artifact@v6
+        with:
+          name: seenary-linux-test-${{ steps.artifact.outputs.version }}-${{ github.run_id }}
+          path: |
+            ${{ steps.artifact.outputs.artifact_dir }}/*.AppImage
+            ${{ steps.artifact.outputs.artifact_dir }}/*.tar.gz
+            ${{ steps.artifact.outputs.artifact_dir }}/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0

@@ -2,6 +2,7 @@
   "name": "seenary",
   "version": "0.1.8-dev",
   "description": "Anime and media tracking desktop app.",
+  "desktopName": "seenary",
   "main": "main.js",
   "scripts": {
     "start": "node server.js",
@@ -12,7 +13,9 @@
     "security:check": "node scripts/run-security-smoke.js",
     "release:check": "node scripts/release-readiness.js",
     "pack": "npm run build:frontend && electron-builder --dir",
+    "pack:linux": "npm run build:frontend && electron-builder --linux dir --x64",
     "dist": "node scripts/build-release.js",
+    "dist:linux": "node scripts/build-linux-release.js",
     "generate:icons": "node scripts/generate-icons.js"
   },
   "keywords": [],
@@ -42,6 +45,8 @@
     "files": [
       "desktop-main.js",
       "desktop-preload.js",
+      "bundledFrontend.js",
+      "desktopEnvironment.js",
       "appLifecycle.js",
       "layoutConfig.js",
       "windowState.js",
@@ -54,6 +59,15 @@
       "icon.png",
       "icon.ico",
       "tray.png"
+    ],
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend-dist",
+        "filter": [
+          "**/*"
+        ]
+      }
     ],
     "publish": [
       {
@@ -78,6 +92,28 @@
           ]
         }
       ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "executableName": "seenary",
+      "syncDesktopName": true,
+      "category": "AudioVideo",
+      "synopsis": "Anime and media tracking desktop app",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "desktop": {
+        "entry": {
+          "Name": "Seenary",
+          "Comment": "Track anime, manga, and other media",
+          "Categories": "AudioVideo;Utility;"
+        }
+      }
     },
     "nsis": {
       "oneClick": false,

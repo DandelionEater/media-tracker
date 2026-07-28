@@ -9,6 +9,15 @@ function getLoginItemOptions() {
 }
 
 function getStartupSetting() {
+  if (process.platform === 'linux') {
+    return {
+      ok: true,
+      available: false,
+      openAtLogin: false,
+      message: 'Launch at login is not available in this first Linux test build.',
+    };
+  }
+
   if (!app.isPackaged) {
     return {
       ok: true,
@@ -38,6 +47,15 @@ function getStartupSetting() {
 }
 
 function setStartupSetting(enabled) {
+  if (process.platform === 'linux') {
+    return {
+      ok: false,
+      available: false,
+      openAtLogin: false,
+      message: 'Launch at login is not available in this first Linux test build.',
+    };
+  }
+
   if (!app.isPackaged) {
     return {
       ok: false,

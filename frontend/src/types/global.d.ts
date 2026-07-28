@@ -709,6 +709,7 @@ declare global {
       remindLater: () => Promise<{ ok: boolean }>;
       getState: () => Promise<{
         ok: boolean;
+        available?: boolean;
         checking: boolean;
         downloading: boolean;
         intervalMs: number;
@@ -722,6 +723,8 @@ declare global {
         enabled: boolean;
         accelerator: string;
         defaultAccelerator?: string;
+        registrationMethod?: "native" | "portal";
+        registered?: boolean;
         message?: string;
       }>;
       setHideShowShortcut: (payload: {
@@ -755,6 +758,22 @@ declare global {
         message?: string;
       }>;
     };
+    desktopEnvironment?: {
+      getInfo: () => Promise<{
+        ok: boolean;
+        platform: string;
+        displayBackend: "wayland" | "x11" | "other" | "unknown";
+        desktopEnvironment: string | null;
+        sessionType: string | null;
+        ozonePlatform: string;
+        capabilities: {
+          exactWindowPositioning: boolean;
+          liveWindowResize: "supported" | "verify";
+          globalShortcuts: "native" | "portal";
+          launchAtLogin: boolean;
+        };
+      }>;
+    };
     desktopWindow?: {
       closeApp: () => void;
       onFocusSearch: (callback: () => void) => () => void;
@@ -779,6 +798,10 @@ declare global {
           width: number;
           height: number;
         }>;
+        capabilities?: {
+          exactPositioning: boolean;
+          liveResize: "supported" | "verify";
+        };
       }>;
       setWindowPreset: (preset: "compact" | "balanced" | "cinematic") => Promise<{
         ok: boolean;
