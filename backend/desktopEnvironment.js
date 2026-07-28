@@ -1,10 +1,5 @@
 const { app, ipcMain } = require('electron');
 
-const GLOBAL_SHORTCUTS_PORTAL_FEATURES = [
-  'GlobalShortcutsPortal',
-  'GlobalShortcutsPortalPreferredTrigger',
-];
-
 function normalizeEnvironmentValue(value) {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -67,30 +62,6 @@ function isNativeWayland() {
   return process.platform === 'linux' && getDisplayBackend() === 'wayland';
 }
 
-function enableWaylandGlobalShortcutsPortal() {
-  if (!isNativeWayland()) {
-    return false;
-  }
-
-  const enabledFeatures = app.commandLine
-    .getSwitchValue('enable-features')
-    .split(',')
-    .map((feature) => feature.trim())
-    .filter(Boolean);
-
-  for (const feature of GLOBAL_SHORTCUTS_PORTAL_FEATURES) {
-    if (!enabledFeatures.includes(feature)) {
-      enabledFeatures.push(feature);
-    }
-  }
-
-  if (enabledFeatures.length > 0) {
-    app.commandLine.appendSwitch('enable-features', enabledFeatures.join(','));
-  }
-
-  return true;
-}
-
 function getDesktopEnvironmentInfo() {
   const displayBackend = getDisplayBackend();
   const nativeWayland = displayBackend === 'wayland';
@@ -106,7 +77,7 @@ function getDesktopEnvironmentInfo() {
     capabilities: {
       exactWindowPositioning: !nativeWayland,
       liveWindowResize: nativeWayland ? 'verify' : 'supported',
-      globalShortcuts: nativeWayland ? 'portal' : 'native',
+      globalShortcuts: nativeWayland ? 'unavailable' : 'native',
       launchAtLogin: process.platform !== 'linux',
     },
   };
@@ -119,7 +90,6 @@ function registerDesktopEnvironmentIpc() {
 }
 
 module.exports = {
-  enableWaylandGlobalShortcutsPortal,
   getDesktopEnvironmentInfo,
   getDisplayBackend,
   isNativeWayland,

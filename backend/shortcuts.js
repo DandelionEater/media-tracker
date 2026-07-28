@@ -56,6 +56,19 @@ function writeShortcutSettings(settings) {
 
 function getHideShowShortcutSetting() {
   const settings = readShortcutSettings();
+
+  if (isNativeWayland()) {
+    return {
+      ok: true,
+      enabled: false,
+      accelerator: settings.hideShowAccelerator,
+      defaultAccelerator: DEFAULT_HIDE_SHOW_SHORTCUT,
+      registrationMethod: 'unavailable',
+      registered: false,
+      message: 'Global hide/show shortcuts are unavailable on Wayland in this release.',
+    };
+  }
+
   const registrationPaused = gamingModeEnabled || shortcutRecordingActive;
   const registrationFailed =
     settings.hideShowEnabled && !registrationPaused && lastRegistrationSucceeded === false;
@@ -65,16 +78,14 @@ function getHideShowShortcutSetting() {
     enabled: settings.hideShowEnabled,
     accelerator: settings.hideShowAccelerator,
     defaultAccelerator: DEFAULT_HIDE_SHOW_SHORTCUT,
-    registrationMethod: isNativeWayland() ? 'portal' : 'native',
+    registrationMethod: 'native',
     registered:
       settings.hideShowEnabled && !registrationPaused
         ? isHideShowShortcutRegistered()
         : false,
     ...(registrationFailed
       ? {
-          message: isNativeWayland()
-            ? 'KDE, GNOME, or your Wayland shortcut portal did not allow this global shortcut.'
-            : `Could not register ${settings.hideShowAccelerator}. It may be used by another app.`,
+          message: `Could not register ${settings.hideShowAccelerator}. It may be used by another app.`,
         }
       : {}),
   };
@@ -111,9 +122,7 @@ function registerHideShowShortcut(win, accelerator) {
   if (registered) {
     activeHideShowAccelerator = normalizedAccelerator;
     console.info(
-      `[shortcuts] Registered ${normalizedAccelerator} using ${
-        isNativeWayland() ? 'the Wayland portal' : 'the native shortcut API'
-      }.`
+      `[shortcuts] Registered ${normalizedAccelerator} using the native shortcut API.`
     );
   } else if (accepted) {
     console.warn(
@@ -136,6 +145,11 @@ function unregisterHideShowShortcut() {
 
 function registerShortcuts(win) {
   unregisterHideShowShortcut();
+
+  if (isNativeWayland()) {
+    lastRegistrationSucceeded = null;
+    return;
+  }
 
   const settings = readShortcutSettings();
 
@@ -172,6 +186,15 @@ function getGamingModeEnabled() {
 }
 
 function setShortcutRecordingActive(win, active) {
+  if (isNativeWayland()) {
+    shortcutRecordingActive = false;
+    unregisterHideShowShortcut();
+    return {
+      ok: true,
+      active: false,
+    };
+  }
+
   shortcutRecordingActive = Boolean(active);
 
   if (shortcutRecordingActive) {
@@ -189,6 +212,18 @@ function setShortcutRecordingActive(win, active) {
 function updateHideShowShortcutSetting(win, payload = {}) {
   const enabled = Boolean(payload.enabled);
   const accelerator = normalizeAccelerator(payload.accelerator || DEFAULT_HIDE_SHOW_SHORTCUT);
+
+  if (isNativeWayland()) {
+    shortcutRecordingActive = false;
+    unregisterHideShowShortcut();
+    return {
+      ok: false,
+      enabled: false,
+      accelerator,
+      registered: false,
+      message: 'Global hide/show shortcuts are unavailable on Wayland in this release.',
+    };
+  }
 
   // Saving commits the recorder value. Clear this before registration so a delayed
   // focus/blur IPC cannot make a successful registration immediately look active
@@ -234,9 +269,7 @@ function updateHideShowShortcutSetting(win, payload = {}) {
       enabled: current.hideShowEnabled,
       accelerator: current.hideShowAccelerator,
       registered: isHideShowShortcutRegistered(),
-      message: isNativeWayland()
-        ? `Could not register ${accelerator}. Your Wayland shortcut portal may have declined it or another shortcut may already use it.`
-        : `Could not register ${accelerator}. It may be used by another app.`,
+      message: `Could not register ${accelerator}. It may be used by another app.`,
     };
   }
 
@@ -260,8 +293,6 @@ function updateHideShowShortcutSetting(win, payload = {}) {
       ? `Hide/show shortcut set to ${accelerator}. Gaming mode is still pausing it.`
       : !remainsRegistered
         ? `Could not keep ${accelerator} registered. Try another shortcut.`
-      : isNativeWayland()
-        ? `Hide/show shortcut set to ${accelerator} through the Wayland shortcut portal.`
         : `Hide/show shortcut set to ${accelerator}.`,
   };
 }

@@ -723,7 +723,7 @@ declare global {
         enabled: boolean;
         accelerator: string;
         defaultAccelerator?: string;
-        registrationMethod?: "native" | "portal";
+        registrationMethod?: "native" | "unavailable";
         registered?: boolean;
         message?: string;
       }>;
@@ -770,7 +770,7 @@ declare global {
         capabilities: {
           exactWindowPositioning: boolean;
           liveWindowResize: "supported" | "verify";
-          globalShortcuts: "native" | "portal";
+          globalShortcuts: "native" | "unavailable";
           launchAtLogin: boolean;
         };
       }>;

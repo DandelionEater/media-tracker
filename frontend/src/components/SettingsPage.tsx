@@ -300,7 +300,7 @@ type DesktopEnvironmentState = {
   platform: string;
   displayBackend: "wayland" | "x11" | "other" | "unknown";
   desktopEnvironment: string | null;
-  shortcutMethod: "native" | "portal";
+  shortcutMethod: "native" | "unavailable";
 };
 type WindowPresetId = "compact" | "balanced" | "cinematic" | "custom";
 type SelectableWindowPresetId = Exclude<WindowPresetId, "custom">;
@@ -2385,7 +2385,11 @@ export function SettingsPage({
                   <SectionHeading
                     icon={CommandLineIcon}
                     title="Desktop shortcut"
-                    description="Choose the global shortcut that hides or shows the desktop app."
+                    description={
+                      desktopEnvironment.shortcutMethod === "unavailable"
+                        ? "Global hide/show shortcuts are unavailable on Wayland in this release."
+                        : "Choose the global shortcut that hides or shows the desktop app."
+                    }
                   />
 
                   <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
@@ -2394,15 +2398,18 @@ export function SettingsPage({
                         <p className="font-semibold text-white">Hide/show Seenary</p>
                         <p className="mt-2 max-w-2xl text-sm leading-6 text-white/45">
                           Use Electron accelerator format, such as Control+Shift+Space or Alt+Space.
-                          {desktopEnvironment.shortcutMethod === "portal"
-                            ? " Your Wayland desktop portal decides whether the shortcut can be registered."
+                          {desktopEnvironment.shortcutMethod === "unavailable"
+                            ? " This remains available when Seenary runs through X11."
                             : " Turn it off if the shortcut conflicts with another app."}
                         </p>
                       </div>
 
                       <button
                         type="button"
-                        disabled={desktopShortcut.loading}
+                        disabled={
+                          desktopShortcut.loading ||
+                          desktopEnvironment.shortcutMethod === "unavailable"
+                        }
                         onClick={() => saveDesktopShortcut({ enabled: !desktopShortcut.enabled })}
                         className={`rounded-2xl px-4 py-2.5 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-white/55 ${
                           desktopShortcut.enabled
@@ -2418,7 +2425,11 @@ export function SettingsPage({
                       <div className="relative min-w-0 flex-1">
                         <input
                           value={desktopShortcut.draftAccelerator}
-                          disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                          disabled={
+                            !desktopShortcut.enabled ||
+                            desktopShortcut.loading ||
+                            desktopEnvironment.shortcutMethod === "unavailable"
+                          }
                           onFocus={() => setShortcutRecorderFocused(true)}
                           onBlur={() => setShortcutRecorderFocused(false)}
                           onKeyDown={handleShortcutKeyDown}
@@ -2435,7 +2446,11 @@ export function SettingsPage({
                           <Tooltip content="Clear shortcut" className="absolute right-2 top-1/2 h-8 w-8 -translate-y-1/2" positioned>
                           <button
                             type="button"
-                            disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                            disabled={
+                              !desktopShortcut.enabled ||
+                              desktopShortcut.loading ||
+                              desktopEnvironment.shortcutMethod === "unavailable"
+                            }
                             onMouseDown={(event) => event.preventDefault()}
                             onClick={() => updateDraftShortcut("")}
                             className="flex h-full w-full items-center justify-center rounded-full text-white/45 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
@@ -2448,7 +2463,11 @@ export function SettingsPage({
                       </div>
                       <button
                         type="button"
-                        disabled={!desktopShortcut.enabled || desktopShortcut.loading}
+                        disabled={
+                          !desktopShortcut.enabled ||
+                          desktopShortcut.loading ||
+                          desktopEnvironment.shortcutMethod === "unavailable"
+                        }
                         onClick={() => saveDesktopShortcut({ enabled: true })}
                         className="rounded-2xl border border-white/10 bg-white px-5 py-3 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                       >
@@ -2461,7 +2480,10 @@ export function SettingsPage({
                         <button
                           key={accelerator}
                           type="button"
-                          disabled={desktopShortcut.loading}
+                          disabled={
+                            desktopShortcut.loading ||
+                            desktopEnvironment.shortcutMethod === "unavailable"
+                          }
                           onClick={() => handleShortcutPreset(accelerator)}
                           className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
                             normalizeAcceleratorInput(desktopShortcut.draftAccelerator) === accelerator

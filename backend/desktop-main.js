@@ -19,7 +19,6 @@ const { registerSystemLocaleIpc } = require('./systemLocale');
 const { registerAppLifecycleIpc } = require('./appLifecycle');
 const { registerLayoutConfigIpc } = require('./layoutConfig');
 const {
-  enableWaylandGlobalShortcutsPortal,
   getDesktopEnvironmentInfo,
   registerDesktopEnvironmentIpc,
 } = require('./desktopEnvironment');
@@ -35,7 +34,6 @@ let mainWindow = null;
 
 app.setAppUserModelId(APP_USER_MODEL_ID);
 app.setName('Seenary');
-enableWaylandGlobalShortcutsPortal();
 
 const singleInstanceLock = app.requestSingleInstanceLock();
 
