@@ -277,7 +277,14 @@ function openDb() {
       }
     };
 
-    request.onsuccess = () => resolve(request.result);
+    request.onsuccess = () => {
+      const db = request.result;
+      db.onversionchange = () => {
+        db.close();
+        dbPromise = null;
+      };
+      resolve(db);
+    };
     request.onerror = () => {
       indexedDbUnavailable = true;
       dbPromise = null;
@@ -298,24 +305,38 @@ function runStore<T>(
         const transaction = db.transaction(STATE_STORE, mode);
         const store = transaction.objectStore(STATE_STORE);
         let directResult: T | undefined;
+        let requestResult: T | undefined;
+        let settled = false;
+
+        const rejectOnce = (error: unknown) => {
+          if (settled) return;
+          settled = true;
+          reject(error);
+        };
 
         try {
           const result = operation(store);
 
           if (result instanceof IDBRequest) {
-            result.onsuccess = () => resolve(result.result);
-            result.onerror = () => reject(result.error);
-            return;
+            result.onsuccess = () => {
+              requestResult = result.result;
+            };
+            result.onerror = () => rejectOnce(result.error);
+          } else {
+            directResult = result;
           }
-
-          directResult = result;
         } catch (error) {
-          reject(error);
+          rejectOnce(error);
           return;
         }
 
-        transaction.oncomplete = () => resolve(directResult as T);
-        transaction.onerror = () => reject(transaction.error);
+        transaction.oncomplete = () => {
+          if (settled) return;
+          settled = true;
+          resolve((requestResult ?? directResult) as T);
+        };
+        transaction.onerror = () => rejectOnce(transaction.error);
+        transaction.onabort = () => rejectOnce(transaction.error);
       })
   );
 }
@@ -430,7 +451,11 @@ function markLegacyMigrated(userId: number) {
   }
 }
 
-async function readState(userId: number): Promise<LocalState> {
+const stateCache = new Map<number, LocalState>();
+const stateLoadPromises = new Map<number, Promise<LocalState>>();
+const stateWriteQueues = new Map<number, Promise<void>>();
+
+async function loadState(userId: number): Promise<LocalState> {
   if (!indexedDbUnavailable) {
     try {
       const stored = await runStore<LocalState | undefined>("readonly", (store) =>
@@ -466,22 +491,59 @@ async function readState(userId: number): Promise<LocalState> {
   return state;
 }
 
+function readState(userId: number): Promise<LocalState> {
+  const cached = stateCache.get(userId);
+  if (cached) return Promise.resolve(cached);
+
+  const activeLoad = stateLoadPromises.get(userId);
+  if (activeLoad) return activeLoad;
+
+  const load = loadState(userId)
+    .then((state) => {
+      stateCache.set(userId, state);
+      return state;
+    })
+    .finally(() => {
+      if (stateLoadPromises.get(userId) === load) {
+        stateLoadPromises.delete(userId);
+      }
+    });
+
+  stateLoadPromises.set(userId, load);
+  return load;
+}
+
+function enqueueStateWrite(userId: number, operation: () => Promise<void>) {
+  const previous = stateWriteQueues.get(userId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(operation);
+  stateWriteQueues.set(userId, next);
+
+  return next.finally(() => {
+    if (stateWriteQueues.get(userId) === next) {
+      stateWriteQueues.delete(userId);
+    }
+  });
+}
+
 async function writeState(userId: number, state: LocalState) {
   const normalized = normalizeState(userId, state);
+  stateCache.set(userId, normalized);
 
   if (indexedDbUnavailable) {
     writeFallbackState(userId, normalized);
     return;
   }
 
-  try {
-    await runStore("readwrite", (store) => store.put(normalized));
-  } catch (error) {
-    indexedDbUnavailable = true;
-    dbPromise = null;
-    writeFallbackState(userId, normalized);
-    console.warn("Seenary local database write failed; using browser storage fallback.", error);
-  }
+  await enqueueStateWrite(userId, async () => {
+    try {
+      await runStore("readwrite", (store) => store.put(normalized));
+    } catch (error) {
+      indexedDbUnavailable = true;
+      dbPromise = null;
+      writeFallbackState(userId, normalized);
+      console.warn("Seenary local database write failed; using browser storage fallback.", error);
+    }
+  });
 }
 
 function toDateValue(value: unknown) {
@@ -1277,15 +1339,20 @@ export const localStore = {
   },
 
   async deleteUserData(userId: number) {
-    if (!indexedDbUnavailable) {
-      try {
-        await runStore("readwrite", (store) => store.delete(userId));
-      } catch (error) {
-        indexedDbUnavailable = true;
-        dbPromise = null;
-        console.warn("Seenary local database deletion failed; clearing browser fallback.", error);
+    await enqueueStateWrite(userId, async () => {
+      if (!indexedDbUnavailable) {
+        try {
+          await runStore("readwrite", (store) => store.delete(userId));
+        } catch (error) {
+          indexedDbUnavailable = true;
+          dbPromise = null;
+          console.warn("Seenary local database deletion failed; clearing browser fallback.", error);
+        }
       }
-    }
+    });
+
+    stateCache.delete(userId);
+    stateLoadPromises.delete(userId);
 
     try {
       window.localStorage.removeItem(getLegacyStateKey(userId));

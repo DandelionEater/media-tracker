@@ -13,6 +13,7 @@ const { previewMalMangaPull } = require('./malMangaImport');
 const { previewTextImport, previewPdfImport } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
+  db,
   dbPath,
   getAnimeById,
   getPersonDetails,
@@ -39,6 +40,7 @@ const {
   deleteExpiredWebSessions,
   deleteUser,
 } = require('./db');
+const { startDatabaseBackups } = require('./databaseBackups');
 const { mapDbAnimeForFrontend } = require('./animeMapper');
 const {
   registerUser,
@@ -63,6 +65,13 @@ const PORT = Number(process.env.PORT || 3000);
 const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_RPC_BODY_BYTES = Number(process.env.MAX_RPC_BODY_BYTES || 40 * 1024 * 1024);
+const RPC_RATE_LIMIT_WINDOW_MS = Number(process.env.RPC_RATE_LIMIT_WINDOW_MS || 60 * 1000);
+const RPC_RATE_LIMIT_MAX = Number(process.env.RPC_RATE_LIMIT_MAX || 300);
+const AUTH_RATE_LIMIT_WINDOW_MS = Number(
+  process.env.AUTH_RATE_LIMIT_WINDOW_MS || 15 * 60 * 1000
+);
+const AUTH_RATE_LIMIT_MAX = Number(process.env.AUTH_RATE_LIMIT_MAX || 20);
+const TRUST_PROXY = process.env.TRUST_PROXY === 'true';
 const DEFAULT_WEB_ORIGIN = 'https://web.seenary.app';
 const ALLOWED_ORIGINS = new Set(
   (process.env.WEB_ORIGINS || process.env.WEB_ORIGIN || DEFAULT_WEB_ORIGIN)
@@ -77,9 +86,19 @@ ALLOWED_ORIGINS.add('http://127.0.0.1:5173');
 const SESSION_COOKIE = 'seenary_sid';
 const SESSION_MAX_AGE_SECONDS = 60 * 60 * 24 * 30;
 const SESSION_MAX_AGE_MS = SESSION_MAX_AGE_SECONDS * 1000;
-const ANILIST_CLIENT_ID = process.env.ANILIST_CLIENT_ID || '40156';
-const ANILIST_CLIENT_SECRET =
-  process.env.ANILIST_CLIENT_SECRET || 'V7N4za6ypyjv3k35wSboybL1WY2q6raJwx83oWns';
+
+function requireEnvironmentValue(name) {
+  const value = String(process.env[name] || '').trim();
+
+  if (!value) {
+    throw new Error(`${name} must be configured in backend/.env or the host environment.`);
+  }
+
+  return value;
+}
+
+const ANILIST_CLIENT_ID = requireEnvironmentValue('ANILIST_CLIENT_ID');
+const ANILIST_CLIENT_SECRET = requireEnvironmentValue('ANILIST_CLIENT_SECRET');
 const ANILIST_AUTHORIZE_URL = 'https://anilist.co/api/v2/oauth/authorize';
 const ANILIST_TOKEN_URL = 'https://anilist.co/api/v2/oauth/token';
 const DEFAULT_API_ORIGIN =
@@ -121,18 +140,77 @@ const pendingAniListLinkConflictByUserId = new Map();
 const pendingMalFlows = new Map();
 const pendingMalSignupByFlowId = new Map();
 const pendingMalLinkConflictByUserId = new Map();
+const requestRateLimits = new Map();
+let rateLimitSweepCounter = 0;
 
 function getAllowedOrigin(req) {
   const origin = req.headers.origin;
-  return origin && ALLOWED_ORIGINS.has(origin) ? origin : DEFAULT_WEB_ORIGIN;
+  if (!origin) return DEFAULT_WEB_ORIGIN;
+  return ALLOWED_ORIGINS.has(origin) ? origin : null;
 }
 
 function setCorsHeaders(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', getAllowedOrigin(req));
+  const allowedOrigin = getAllowedOrigin(req);
+  if (allowedOrigin) {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  }
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Vary', 'Origin');
+}
+
+function setSecurityHeaders(res) {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+
+  if (process.env.NODE_ENV === 'production') {
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+}
+
+function getClientAddress(req) {
+  if (TRUST_PROXY) {
+    const forwardedFor = String(req.headers['x-forwarded-for'] || '')
+      .split(',')[0]
+      .trim();
+    if (forwardedFor) return forwardedFor;
+  }
+
+  return req.socket.remoteAddress || 'unknown';
+}
+
+function consumeRateLimit(key, maxRequests, windowMs, now = Date.now()) {
+  rateLimitSweepCounter += 1;
+  if (rateLimitSweepCounter >= 1000) {
+    rateLimitSweepCounter = 0;
+    for (const [entryKey, entry] of requestRateLimits) {
+      if (entry.resetAt <= now) requestRateLimits.delete(entryKey);
+    }
+  }
+
+  const current = requestRateLimits.get(key);
+  if (!current || current.resetAt <= now) {
+    requestRateLimits.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+
+  current.count += 1;
+  return {
+    allowed: current.count <= maxRequests,
+    retryAfterSeconds: Math.max(1, Math.ceil((current.resetAt - now) / 1000)),
+  };
+}
+
+function sendRateLimitResponse(req, res, result) {
+  res.setHeader('Retry-After', result.retryAfterSeconds);
+  sendJson(req, res, 429, {
+    ok: false,
+    message: 'Too many requests. Please try again shortly.',
+  });
 }
 
 function parseCookies(req) {
@@ -651,31 +729,43 @@ function sendDesktopUpdateFile(req, res) {
 
 function readJson(req) {
   return new Promise((resolve, reject) => {
-    let body = '';
+    const declaredLength = Number(req.headers['content-length'] || 0);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_RPC_BODY_BYTES) {
+      reject(Object.assign(new Error('Request body is too large.'), { statusCode: 413 }));
+      req.resume();
+      return;
+    }
+
+    const chunks = [];
+    let bodyBytes = 0;
     let bodyTooLarge = false;
     req.on('data', (chunk) => {
       if (bodyTooLarge) {
         return;
       }
 
-      body += chunk;
-      if (body.length > MAX_RPC_BODY_BYTES) {
+      bodyBytes += chunk.length;
+      if (bodyBytes > MAX_RPC_BODY_BYTES) {
         bodyTooLarge = true;
-        body = '';
+        chunks.length = 0;
         reject(
-          new Error(
+          Object.assign(new Error(
             `Request body is too large. Import files must stay under ${Math.floor(
               MAX_RPC_BODY_BYTES / 1024 / 1024
             )} MB.`
-          )
+          ), { statusCode: 413 })
         );
+        return;
       }
+
+      chunks.push(chunk);
     });
     req.on('end', () => {
       if (bodyTooLarge) {
         return;
       }
 
+      const body = Buffer.concat(chunks).toString('utf8');
       if (!body) {
         resolve({});
         return;
@@ -684,7 +774,7 @@ function readJson(req) {
       try {
         resolve(JSON.parse(body));
       } catch {
-        reject(new Error('Invalid JSON body.'));
+        reject(Object.assign(new Error('Invalid JSON body.'), { statusCode: 400 }));
       }
     });
     req.on('error', reject);
@@ -2570,6 +2660,13 @@ async function handleMalCallback(req, res) {
 }
 
 const server = http.createServer(async (req, res) => {
+  setSecurityHeaders(res);
+
+  if (req.headers.origin && !getAllowedOrigin(req)) {
+    sendJson(req, res, 403, { ok: false, message: 'Origin is not allowed.' });
+    return;
+  }
+
   if (req.method === 'OPTIONS') {
     setCorsHeaders(req, res);
     res.writeHead(204);
@@ -2622,20 +2719,79 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const contentType = String(req.headers['content-type'] || '').toLowerCase();
+  if (!contentType.startsWith('application/json')) {
+    sendJson(req, res, 415, {
+      ok: false,
+      message: 'Content-Type must be application/json.',
+    });
+    return;
+  }
+
+  const clientAddress = getClientAddress(req);
+  const rpcRateLimit = consumeRateLimit(
+    `rpc:${clientAddress}`,
+    RPC_RATE_LIMIT_MAX,
+    RPC_RATE_LIMIT_WINDOW_MS
+  );
+  if (!rpcRateLimit.allowed) {
+    sendRateLimitResponse(req, res, rpcRateLimit);
+    return;
+  }
+
   try {
     const body = await readJson(req);
-    const result = await handleRpc(body.method, Array.isArray(body.args) ? body.args : [], req, res);
+    const method = typeof body.method === 'string' ? body.method : '';
+    if (!method) {
+      sendJson(req, res, 400, { ok: false, message: 'A valid RPC method is required.' });
+      return;
+    }
+
+    if (method === 'login' || method === 'register') {
+      const authRateLimit = consumeRateLimit(
+        `auth:${clientAddress}`,
+        AUTH_RATE_LIMIT_MAX,
+        AUTH_RATE_LIMIT_WINDOW_MS
+      );
+      if (!authRateLimit.allowed) {
+        sendRateLimitResponse(req, res, authRateLimit);
+        return;
+      }
+    }
+
+    const result = await handleRpc(method, Array.isArray(body.args) ? body.args : [], req, res);
     sendJson(req, res, 200, result);
   } catch (error) {
     console.error('API error:', error);
-    sendJson(req, res, 500, {
+    const statusCode = Number(error.statusCode) || 500;
+    sendJson(req, res, statusCode, {
       ok: false,
-      message: error.message || 'Internal server error.',
+      message:
+        statusCode < 500 || process.env.NODE_ENV !== 'production'
+          ? error.message || 'Request failed.'
+          : 'Internal server error.',
     });
   }
 });
 
-server.listen(PORT, () => {
-  deleteExpiredWebSessions();
-  console.log(`Seenary API listening on port ${PORT}`);
-});
+function startServer(port = PORT, options = {}) {
+  return server.listen(port, () => {
+    deleteExpiredWebSessions();
+    if (options.startBackups !== false) {
+      startDatabaseBackups(db, dbPath);
+    }
+    const address = server.address();
+    const listeningPort =
+      address && typeof address === 'object' ? address.port : port;
+    console.log(`Seenary API listening on port ${listeningPort}`);
+  });
+}
+
+if (require.main === module) {
+  startServer();
+}
+
+module.exports = {
+  server,
+  startServer,
+};

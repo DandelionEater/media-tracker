@@ -3,9 +3,18 @@ const http = require('http');
 const fetch = require('node-fetch');
 const { shell } = require('electron');
 
-const CLIENT_ID = process.env.ANILIST_CLIENT_ID || '40156';
-const CLIENT_SECRET =
-  process.env.ANILIST_CLIENT_SECRET || 'V7N4za6ypyjv3k35wSboybL1WY2q6raJwx83oWns';
+function requireEnvironmentValue(name) {
+  const value = String(process.env[name] || '').trim();
+
+  if (!value) {
+    throw new Error(`${name} must be configured in backend/.env.`);
+  }
+
+  return value;
+}
+
+const CLIENT_ID = requireEnvironmentValue('ANILIST_CLIENT_ID');
+const CLIENT_SECRET = requireEnvironmentValue('ANILIST_CLIENT_SECRET');
 const CALLBACK_PORT = 37645;
 const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}/auth/anilist/callback`;
 const AUTHORIZE_URL = 'https://anilist.co/api/v2/oauth/authorize';

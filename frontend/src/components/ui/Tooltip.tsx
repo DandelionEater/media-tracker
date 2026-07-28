@@ -1,4 +1,9 @@
-import type { ElementType, ReactNode } from "react";
+import {
+  useState,
+  type ElementType,
+  type FocusEvent,
+  type ReactNode,
+} from "react";
 
 type TooltipProps = {
   content: ReactNode;
@@ -12,9 +17,9 @@ type TooltipProps = {
 };
 
 const PLACEMENT_CLASSES = {
-  top: "bottom-[calc(100%+0.5rem)] translate-y-1 group-hover/tooltip:translate-y-0 group-focus-within/tooltip:translate-y-0",
+  top: "bottom-[calc(100%+0.5rem)] translate-y-1 group-hover/tooltip:translate-y-0",
   bottom:
-    "top-[calc(100%+0.5rem)] -translate-y-1 group-hover/tooltip:translate-y-0 group-focus-within/tooltip:translate-y-0",
+    "top-[calc(100%+0.5rem)] -translate-y-1 group-hover/tooltip:translate-y-0",
 };
 
 const ALIGNMENT_CLASSES = {
@@ -33,15 +38,25 @@ export function Tooltip({
   focusable = false,
   positioned = false,
 }: TooltipProps) {
+  const [hasKeyboardFocus, setHasKeyboardFocus] = useState(false);
+
   return (
     <Wrapper
       className={`group/tooltip inline-flex ${positioned ? "" : "relative"} ${className}`}
       tabIndex={focusable ? 0 : undefined}
+      onFocusCapture={(event: FocusEvent<HTMLElement>) => {
+        setHasKeyboardFocus(
+          event.target instanceof HTMLElement &&
+            event.target.matches(":focus-visible"),
+        );
+      }}
+      onBlurCapture={() => setHasKeyboardFocus(false)}
+      onPointerDownCapture={() => setHasKeyboardFocus(false)}
     >
       {children}
       <span
         role="tooltip"
-        className={`pointer-events-none absolute z-50 w-max max-w-72 rounded-xl border border-white/15 bg-[#171717] px-3 py-2 text-center text-xs font-medium normal-case leading-4 tracking-normal text-white/85 opacity-0 shadow-2xl transition duration-150 group-hover/tooltip:opacity-100 group-focus-within/tooltip:opacity-100 ${PLACEMENT_CLASSES[placement]} ${ALIGNMENT_CLASSES[align]}`}
+        className={`pointer-events-none absolute z-50 w-max max-w-72 rounded-xl border border-white/15 bg-[#171717] px-3 py-2 text-center text-xs font-medium normal-case leading-4 tracking-normal text-white/85 opacity-0 shadow-2xl transition duration-150 group-hover/tooltip:opacity-100 ${hasKeyboardFocus ? "!translate-y-0 !opacity-100" : ""} ${PLACEMENT_CLASSES[placement]} ${ALIGNMENT_CLASSES[align]}`}
       >
         {content}
       </span>

@@ -1,6 +1,6 @@
 {
   "name": "seenary",
-  "version": "0.1.7-beta",
+  "version": "0.1.8-dev",
   "description": "Anime and media tracking desktop app.",
   "main": "main.js",
   "scripts": {
@@ -9,6 +9,7 @@
     "rebuild:node": "npm rebuild better-sqlite3 argon2",
     "rebuild:electron": "electron-rebuild -f",
     "build:frontend": "npm --prefix ../frontend run build",
+    "security:check": "node scripts/run-security-smoke.js",
     "release:check": "node scripts/release-readiness.js",
     "pack": "npm run build:frontend && electron-builder --dir",
     "dist": "node scripts/build-release.js",
@@ -21,14 +22,14 @@
   "dependencies": {
     "argon2": "^0.41.1",
     "better-sqlite3": "^12.8.0",
-    "electron-updater": "^6.8.3",
+    "electron-updater": "^6.8.9",
     "node-fetch": "^2.7.0",
     "pdfjs-dist": "^5.7.284"
   },
   "devDependencies": {
-    "electron": "^41.0.3",
-    "electron-builder": "^26.0.12",
-    "electron-rebuild": "^3.2.9"
+    "@electron/rebuild": "^4.2.0",
+    "electron": "^41.10.3",
+    "electron-builder": "^26.15.3"
   },
   "build": {
     "appId": "app.seenary.desktop",
@@ -63,7 +64,7 @@
     "extraMetadata": {
       "main": "desktop-main.js",
       "dependencies": {
-        "electron-updater": "^6.8.3"
+        "electron-updater": "^6.8.9"
       }
     },
     "win": {

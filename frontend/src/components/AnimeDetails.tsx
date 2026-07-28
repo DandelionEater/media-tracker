@@ -1657,7 +1657,7 @@ function ExpandableNotes({ notes }: { notes: string }) {
         >
           <p
             ref={textRef}
-            className="whitespace-pre-wrap break-words text-sm leading-6 text-white/60 [overflow-wrap:anywhere]"
+            className="whitespace-pre-wrap break-words text-sm leading-6 text-white/60"
           >
             {notes}
           </p>
@@ -1760,9 +1760,10 @@ function StoryAndTaxonomy({
               }`}
             >
               <div
-                className="text-sm leading-7 text-white/72 [&_br]:block"
-                dangerouslySetInnerHTML={{ __html: description }}
-              />
+                className="whitespace-pre-line text-sm leading-7 text-white/72"
+              >
+                {getSafeDescriptionText(description)}
+              </div>
             </div>
 
             {hasMore && !expanded && (
@@ -3585,6 +3586,20 @@ function getPlainText(html: string) {
     .replace(/&(?:nbsp|amp|quot|apos|lt|gt);/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function getSafeDescriptionText(html: string) {
+  if (typeof window === "undefined") return getPlainText(html);
+
+  const parsed = new window.DOMParser().parseFromString(html, "text/html");
+  for (const breakElement of parsed.querySelectorAll("br")) {
+    breakElement.replaceWith("\n");
+  }
+  for (const blockElement of parsed.querySelectorAll("p, div")) {
+    blockElement.append("\n");
+  }
+
+  return (parsed.body.textContent || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function formatRuntime(totalMinutes: number) {

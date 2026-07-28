@@ -1,6 +1,13 @@
+require('./env');
+
 const Database = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
+const {
+  decryptSecret,
+  encryptSecret,
+  isEncryptedSecret,
+} = require('./secretCrypto');
 
 const HOSTED_PRODUCTION_DB_PATH = '/home/u145628270/domains/api.seenary.app/data/media.db';
 
@@ -26,6 +33,16 @@ fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 
 db.pragma('journal_mode = WAL');
+db.pragma('foreign_keys = ON');
+db.pragma('synchronous = NORMAL');
+db.pragma('busy_timeout = 5000');
+db.pragma('wal_autocheckpoint = 1000');
+
+const integrityResult = db.pragma('quick_check(1)', { simple: true });
+if (integrityResult !== 'ok') {
+  db.close();
+  throw new Error(`SQLite integrity check failed: ${integrityResult}`);
+}
 
 db.prepare(
   `
@@ -1049,6 +1066,51 @@ const upsertMalAccountStmt = db.prepare(`
     updated_at = CURRENT_TIMESTAMP
 `);
 
+const getAniListTokensForEncryptionStmt = db.prepare(`
+  SELECT user_id, access_token
+  FROM anilist_accounts
+`);
+
+const updateAniListEncryptedTokenStmt = db.prepare(`
+  UPDATE anilist_accounts
+  SET access_token = ?
+  WHERE user_id = ?
+`);
+
+const getMalTokensForEncryptionStmt = db.prepare(`
+  SELECT user_id, access_token, refresh_token
+  FROM mal_accounts
+`);
+
+const updateMalEncryptedTokensStmt = db.prepare(`
+  UPDATE mal_accounts
+  SET access_token = ?, refresh_token = ?
+  WHERE user_id = ?
+`);
+
+const encryptStoredOAuthTokens = db.transaction(() => {
+  for (const account of getAniListTokensForEncryptionStmt.all()) {
+    if (isEncryptedSecret(account.access_token)) continue;
+    const encryptedAccessToken = encryptSecret(account.access_token);
+    if (encryptedAccessToken !== account.access_token) {
+      updateAniListEncryptedTokenStmt.run(encryptedAccessToken, account.user_id);
+    }
+  }
+
+  for (const account of getMalTokensForEncryptionStmt.all()) {
+    const accessToken = encryptSecret(account.access_token);
+    const refreshToken = encryptSecret(account.refresh_token);
+    if (
+      accessToken !== account.access_token ||
+      refreshToken !== account.refresh_token
+    ) {
+      updateMalEncryptedTokensStmt.run(accessToken, refreshToken, account.user_id);
+    }
+  }
+});
+
+encryptStoredOAuthTokens();
+
 const updateAniListAccountImportTimeStmt = db.prepare(`
   UPDATE anilist_accounts
   SET
@@ -2052,12 +2114,31 @@ function deleteExpiredWebSessions(now = Date.now()) {
   deleteExpiredWebSessionsStmt.run(now);
 }
 
+function decryptAniListAccount(account) {
+  return account
+    ? {
+        ...account,
+        access_token: decryptSecret(account.access_token),
+      }
+    : account;
+}
+
+function decryptMalAccount(account) {
+  return account
+    ? {
+        ...account,
+        access_token: decryptSecret(account.access_token),
+        refresh_token: decryptSecret(account.refresh_token),
+      }
+    : account;
+}
+
 function getAniListAccountByAniListUserId(anilistUserId) {
-  return getAniListAccountByAniListUserIdStmt.get(anilistUserId);
+  return decryptAniListAccount(getAniListAccountByAniListUserIdStmt.get(anilistUserId));
 }
 
 function getAniListAccountByUserId(userId) {
-  return getAniListAccountByUserIdStmt.get(userId);
+  return decryptAniListAccount(getAniListAccountByUserIdStmt.get(userId));
 }
 
 function deleteAniListAccountByUserId(userId) {
@@ -2065,11 +2146,11 @@ function deleteAniListAccountByUserId(userId) {
 }
 
 function getMalAccountByMalUserId(malUserId) {
-  return getMalAccountByMalUserIdStmt.get(malUserId);
+  return decryptMalAccount(getMalAccountByMalUserIdStmt.get(malUserId));
 }
 
 function getMalAccountByUserId(userId) {
-  return getMalAccountByUserIdStmt.get(userId);
+  return decryptMalAccount(getMalAccountByUserIdStmt.get(userId));
 }
 
 function deleteMalAccountByUserId(userId) {
@@ -2129,7 +2210,7 @@ function upsertAniListAccount({
     anilistUserId,
     anilistUsername,
     originalAniListUsername,
-    accessToken
+    encryptSecret(accessToken)
   );
 }
 
@@ -2151,8 +2232,8 @@ function upsertMalAccount({
     malUserId,
     malUsername,
     originalMalUsername,
-    accessToken,
-    refreshToken ?? null,
+    encryptSecret(accessToken),
+    encryptSecret(refreshToken ?? null),
     tokenExpiresAt ?? null
   );
 }

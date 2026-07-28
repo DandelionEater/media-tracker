@@ -318,13 +318,13 @@ export function TopNavbar({
         isFloating
           ? "inset-x-3 top-3 h-14 rounded-2xl border border-white/10 bg-[#111111]/62 px-3 shadow-[0_18px_50px_rgba(0,0,0,0.32)] backdrop-blur-xl"
           : "inset-x-0 top-0 h-16 px-4"
-      }`}
+      } max-sm:inset-x-0 max-sm:top-0 max-sm:h-16 max-sm:rounded-none max-sm:border-x-0 max-sm:border-t-0 max-sm:bg-[#111111]/92 max-sm:px-2 max-sm:shadow-lg`}
     >
       {!isFloating && !isMinimal && (
         <div className="absolute inset-0 bg-[#0f0f0f]/45 backdrop-blur-md" />
       )}
 
-      <div className="relative flex w-full items-center justify-center">
+      <div className="relative flex w-full items-center justify-center max-sm:gap-1">
         <div
           className={`absolute left-0 flex items-center transition-all duration-200 ${
             hideMyListShortcut ? "gap-0" : "gap-2"
@@ -334,7 +334,7 @@ export function TopNavbar({
                 ? "rounded-xl bg-[#111111]/82 shadow-xl backdrop-blur-xl"
                 : "h-12 rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
               : ""
-          }`}
+          } max-sm:static max-sm:shrink-0 max-sm:gap-0`}
         >
           <Tooltip content="Open home" placement="bottom" align="start">
           <button
@@ -357,7 +357,7 @@ export function TopNavbar({
             className={`no-drag flex items-center gap-2 overflow-hidden rounded-xl border py-2 text-sm whitespace-nowrap transition-all duration-200 ease-out active:scale-95 ${
               hideMyListShortcut
                 ? "pointer-events-none max-w-0 border-transparent px-0 opacity-0"
-                : "max-w-32 px-3 opacity-100"
+                : "max-w-32 px-3 opacity-100 max-sm:max-w-10 max-sm:px-2"
             } ${
               !hideMyListShortcut && currentView === "list"
                 ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
@@ -365,12 +365,12 @@ export function TopNavbar({
             }`}
           >
             <BookmarkIcon className="h-5 w-5" />
-            <span>My List</span>
+            <span className="max-sm:hidden">My List</span>
           </button>
         </div>
 
         <div
-          className={`no-drag mx-auto flex w-full items-center gap-2 rounded-2xl border px-3 py-2 shadow-lg transition-[max-width,border-color,background-color,box-shadow] duration-300 ${
+          className={`no-drag mx-auto flex w-full items-center gap-2 rounded-2xl border px-3 py-2 shadow-lg transition-[max-width,border-color,background-color,box-shadow] duration-300 max-sm:mx-1 max-sm:min-w-0 max-sm:flex-1 max-sm:px-2 ${
             isFloating ? "max-w-lg" : "max-w-xl"
           } ${isMinimal ? "h-12" : ""} ${
             isSearchFocused
@@ -444,7 +444,7 @@ export function TopNavbar({
             isMinimal
               ? "h-12 rounded-2xl border border-white/10 bg-[#111111]/62 p-1 shadow-xl backdrop-blur-xl"
               : ""
-          }`}
+          } max-sm:static max-sm:h-auto max-sm:shrink-0 max-sm:gap-0 max-sm:border-0 max-sm:bg-transparent max-sm:p-0 max-sm:shadow-none`}
         >
           <div
             ref={notificationsRef}
@@ -470,7 +470,12 @@ export function TopNavbar({
             </button>
             </Tooltip>
 
-            <FloatingMenu open={isNotificationsOpen} widthClass="w-80" role="dialog" className="" >
+            <FloatingMenu
+              open={isNotificationsOpen}
+              widthClass="w-80 max-sm:w-auto"
+              role="dialog"
+              className="max-sm:fixed max-sm:left-2 max-sm:right-2 max-sm:top-16 max-sm:mt-2"
+            >
               <div onMouseEnter={openNotifications}>
               <div className="flex items-center justify-between gap-3 px-2 pb-2 pt-1">
                 <p className="text-sm font-semibold text-white">Notifications</p>
@@ -568,13 +573,13 @@ export function TopNavbar({
                 currentView === "settings"
                   ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white"
                   : "border-transparent text-white/70 hover:bg-white/10 hover:text-white"
-              }`}
+              } max-sm:px-2`}
               aria-label={username}
             >
               <UserCircleIcon className="h-6 w-6" />
-              <span className="max-w-30 truncate text-sm">{username}</span>
+              <span className="max-w-30 truncate text-sm max-sm:hidden">{username}</span>
               <ChevronDownIcon
-                className={`h-4 w-4 text-white/45 transition-transform duration-200 ${
+                className={`h-4 w-4 text-white/45 transition-transform duration-200 max-sm:hidden ${
                   isAccountMenuOpen ? "rotate-180" : ""
                 }`}
               />

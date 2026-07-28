@@ -1308,8 +1308,8 @@ function App() {
 
   if (checkingSession) {
     return (
-      <div className="w-screen h-screen bg-transparent">
-        <div className="flex h-full w-full items-center justify-center rounded-3xl bg-[#0f0f0f] text-white">
+      <div className="h-screen w-screen bg-transparent max-sm:h-dvh">
+        <div className="flex h-full w-full items-center justify-center rounded-3xl bg-[#0f0f0f] text-white max-sm:rounded-none">
           Loading...
         </div>
       </div>
@@ -1318,7 +1318,7 @@ function App() {
 
   return (
     <div
-      className="w-screen h-screen bg-transparent"
+      className="h-screen w-screen bg-transparent max-sm:h-dvh"
       style={
         {
           "--app-accent": getThemeAccent(settings.themeAccent, settings.customAccentColor),
@@ -1328,7 +1328,7 @@ function App() {
     >
       <div
         data-browse-card-style={settings.browseCardStyle}
-        className={`relative flex h-full w-full flex-col overflow-hidden rounded-3xl shadow-2xl ${getOverlayBackgroundClass(
+        className={`relative flex h-full w-full flex-col overflow-hidden rounded-3xl shadow-2xl max-sm:rounded-none max-sm:shadow-none ${getOverlayBackgroundClass(
           settings.overlayBackground
         )} ${getAnimationLevelClass(settings.animationLevel)} ${
           settings.compactMode ? "app-compact" : ""

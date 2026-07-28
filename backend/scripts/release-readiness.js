@@ -227,6 +227,23 @@ function runDataSmoke(mode) {
   }
 }
 
+function runSecuritySmoke() {
+  const electronBinary = require('electron');
+  return runCommand(
+    'Security smoke test',
+    electronBinary,
+    [path.join(__dirname, 'security-smoke.js')],
+    {
+      cwd: backendDir,
+      shell: false,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+    }
+  );
+}
+
 function printManualChecks() {
   printHeading('Manual release checks still required');
   const checks = [
@@ -251,6 +268,7 @@ function main() {
   runNpm('Frontend production build', ['run', 'build'], frontendDir);
   runDataSmoke('fresh');
   runDataSmoke('legacy');
+  runSecuritySmoke();
   runCommand('Whitespace and patch integrity', 'git', ['diff', '--check'], { shell: false });
 
   const status = spawnSync('git', ['status', '--porcelain', '--untracked-files=no'], {

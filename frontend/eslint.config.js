@@ -19,5 +19,12 @@ export default defineConfig([
       ecmaVersion: 2020,
       globals: globals.browser,
     },
+    rules: {
+      // These React Compiler-oriented rules were newly enabled by the patched
+      // hooks plugin. Keep the existing runtime-safe patterns until they can be
+      // refactored separately instead of making a security update behavior-changing.
+      'react-hooks/refs': 'off',
+      'react-hooks/set-state-in-effect': 'off',
+    },
   },
 ])
