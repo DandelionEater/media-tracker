@@ -734,6 +734,7 @@ declare global {
         ok: boolean;
         enabled: boolean;
         accelerator: string;
+        registered?: boolean;
         message?: string;
       }>;
       setShortcutRecordingActive: (active: boolean) => Promise<{

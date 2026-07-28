@@ -1285,6 +1285,11 @@ export function SettingsPage({
     setDesktopShortcut((current) => ({ ...current, loading: true }));
 
     try {
+      // Finish shortcut capture before saving. Awaiting this IPC prevents the
+      // recorder's unregister operation from racing the new registration.
+      setIsShortcutRecorderFocused(false);
+      await window.desktopShortcuts.setShortcutRecordingActive(false);
+
       const result = await window.desktopShortcuts.setHideShowShortcut({
         enabled,
         accelerator,

@@ -1,6 +1,9 @@
 const { app, ipcMain } = require('electron');
 
-const GLOBAL_SHORTCUTS_PORTAL_FEATURE = 'GlobalShortcutsPortal';
+const GLOBAL_SHORTCUTS_PORTAL_FEATURES = [
+  'GlobalShortcutsPortal',
+  'GlobalShortcutsPortalPreferredTrigger',
+];
 
 function normalizeEnvironmentValue(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -75,8 +78,13 @@ function enableWaylandGlobalShortcutsPortal() {
     .map((feature) => feature.trim())
     .filter(Boolean);
 
-  if (!enabledFeatures.includes(GLOBAL_SHORTCUTS_PORTAL_FEATURE)) {
-    enabledFeatures.push(GLOBAL_SHORTCUTS_PORTAL_FEATURE);
+  for (const feature of GLOBAL_SHORTCUTS_PORTAL_FEATURES) {
+    if (!enabledFeatures.includes(feature)) {
+      enabledFeatures.push(feature);
+    }
+  }
+
+  if (enabledFeatures.length > 0) {
     app.commandLine.appendSwitch('enable-features', enabledFeatures.join(','));
   }
 
