@@ -1886,13 +1886,11 @@ function getOverlayReadabilityStyle(
   switch (background) {
     case "glass":
       return {
-        background:
-          `linear-gradient(180deg, rgba(12, 12, 12, ${glassTop.toFixed(2)}), rgba(12, 12, 12, ${glassBottom.toFixed(2)})), radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.08), transparent 42%)`,
+        background: `linear-gradient(180deg, rgba(12, 12, 12, ${glassTop.toFixed(2)}), rgba(12, 12, 12, ${glassBottom.toFixed(2)}))`,
       };
     case "transparent":
       return {
-        background:
-          `linear-gradient(180deg, rgba(12, 12, 12, ${lightTop.toFixed(2)}), rgba(12, 12, 12, ${lightBottom.toFixed(2)})), radial-gradient(circle at 50% 35%, rgba(255, 255, 255, 0.06), transparent 38%)`,
+        background: `linear-gradient(180deg, rgba(12, 12, 12, ${lightTop.toFixed(2)}), rgba(12, 12, 12, ${lightBottom.toFixed(2)}))`,
       };
     default:
       return {};
