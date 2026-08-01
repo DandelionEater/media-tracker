@@ -5,7 +5,6 @@
 
   **A focused home for tracking, discovering, and enjoying Anime and Manga.**
 
-  [Open Seenary on the web](https://web.seenary.app) ·
   [Download Seenary](https://github.com/DandelionEater/Seenary/releases) ·
   [Report an issue](https://github.com/DandelionEater/Seenary/issues)
 
@@ -21,14 +20,15 @@
 
 ## What is Seenary?
 
-Seenary is a personal Anime and Manga tracker available on the web and as a desktop overlay for
-Windows and Linux. It combines local-first library management with discovery, detailed media
-information, provider synchronization, portable backups, and an interface designed to stay useful
-without taking over the desktop.
+Seenary is a personal Anime and Manga tracker built as a desktop overlay for Windows and Linux. It
+combines local-first library management with discovery, detailed media information, provider
+synchronization, portable backups, and an interface designed to stay useful without taking over
+the desktop.
 
 The hosted Seenary API provides accounts, metadata, imports, and provider integration. Personal
-library state remains responsive in local browser storage and can be synchronized with one linked
-AniList or MyAnimeList account.
+library state remains responsive in local device storage and can be synchronized with one linked
+AniList or MyAnimeList account. Seenary's hosted renderer is an internal delivery surface for the
+installed desktop clients, not a public web application.
 
 ## Highlights
 
@@ -42,17 +42,13 @@ AniList or MyAnimeList account.
 - **AniList and MyAnimeList integration** — import public lists, link an account, pull changes,
   and manually or automatically synchronize a chosen provider.
 - **Flexible imports and backups** — import AniList, MyAnimeList, text, or PDF lists and move
-  versioned backups between the web, Windows, and Linux.
+  versioned backups between Windows and Linux.
 - **Desktop integration** — a transparent frameless overlay, tray controls, remembered window
   sizes, launch at login, configurable shortcuts, and custom Windows installation and removal.
 - **Linux-aware behavior** — AppImage, Flatpak, and archive builds with X11, Xwayland, and native
   Wayland fallbacks.
 
 ## Download and use
-
-### Web
-
-Open [web.seenary.app](https://web.seenary.app) in a modern browser.
 
 ### Windows
 
@@ -90,7 +86,7 @@ encrypted at rest.
 
 | Area | Technology | Responsibility |
 | --- | --- | --- |
-| Web interface | React, TypeScript, Vite | Navigation, local-first lists, discovery, settings, and synchronization UX |
+| Desktop renderer | React, TypeScript, Vite | Navigation, local-first lists, discovery, settings, and synchronization UX |
 | Desktop clients | Electron | Windows/Linux shell, tray, window behavior, startup, shortcuts, and updates |
 | Hosted API | Node.js, HTTP JSON-RPC | Accounts, sessions, provider OAuth, imports, metadata, and synchronization |
 | Data | SQLite and IndexedDB | Hosted account/provider state plus responsive per-device library storage |
@@ -130,7 +126,7 @@ node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"
 
 Keep that key private and stable for any database containing encrypted provider tokens.
 
-### Run the web client and API
+### Run the renderer and API
 
 Start the API:
 
@@ -144,8 +140,10 @@ In another terminal, start Vite:
 npm run dev --prefix frontend
 ```
 
-The development frontend runs at `http://localhost:5173` and uses
-`http://localhost:3000` by default. Set `VITE_API_BASE_URL` to use another API.
+The local development renderer runs at `http://localhost:5173` and uses
+`http://localhost:3000` by default. Browser access is supported only for local development; the
+production renderer is reserved for installed Seenary desktop clients. Set `VITE_API_BASE_URL`
+to use another development API.
 
 ### Run the Electron development client
 
@@ -205,4 +203,3 @@ details, and focused suggestions are welcome through
 
 Before proposing a large change, open an issue so its fit, platform impact, data migration, and
 maintenance cost can be discussed first.
-
