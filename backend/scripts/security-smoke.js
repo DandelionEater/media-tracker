@@ -119,10 +119,13 @@ async function main() {
 
   process.env.RPC_RATE_LIMIT_MAX = '3';
   process.env.RPC_RATE_LIMIT_WINDOW_MS = '60000';
-  const { server, startServer } = require('../server');
+  process.env.PORT = '0';
+  process.env.DB_BACKUP_INTERVAL_HOURS = '0';
+  const { server } = require('../server');
   apiServer = server;
-  startServer(0, { startBackups: false });
-  await new Promise((resolve) => server.once('listening', resolve));
+  if (!server.listening) {
+    await new Promise((resolve) => server.once('listening', resolve));
+  }
   const address = server.address();
   const apiOrigin = `http://127.0.0.1:${address.port}`;
 

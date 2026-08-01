@@ -2822,9 +2822,11 @@ function startServer(port = PORT, options = {}) {
   });
 }
 
-if (require.main === module) {
-  startServer();
-}
+// Hostinger loads the configured entry file through its own Node.js wrapper,
+// so `require.main === module` is false even though this is the application
+// entry point. Start during module evaluation so the hosting runtime observes
+// listen() within its startup deadline.
+startServer();
 
 module.exports = {
   server,
