@@ -148,7 +148,7 @@ async function searchMedia(search, options = {}) {
   const hideAdultContent = options.hideAdultContent !== false;
   const query = `
     query ($search: String, $isAdult: Boolean) {
-      Page(perPage: 20) {
+      mediaPage: Page(perPage: 20) {
         media(search: $search, isAdult: $isAdult) {
           id
           type
@@ -171,6 +171,73 @@ async function searchMedia(search, options = {}) {
           seasonYear
         }
       }
+      characterPage: Page(perPage: 8) {
+        characters(search: $search) {
+          id
+          name {
+            full
+            native
+            userPreferred
+          }
+          image {
+            large
+          }
+          media(perPage: 6, sort: [POPULARITY_DESC]) {
+            nodes {
+              id
+              type
+              isAdult
+              title {
+                romaji
+                english
+                userPreferred
+              }
+              coverImage {
+                large
+              }
+              episodes
+              chapters
+              volumes
+              format
+              duration
+              averageScore
+              season
+              seasonYear
+            }
+          }
+        }
+      }
+      studioPage: Page(perPage: 6) {
+        studios(search: $search) {
+          id
+          name
+          isAnimationStudio
+          media(perPage: 6, sort: [POPULARITY_DESC]) {
+            edges {
+              isMainStudio
+              node {
+                id
+                type
+                isAdult
+                title {
+                  romaji
+                  english
+                  userPreferred
+                }
+                coverImage {
+                  large
+                }
+                episodes
+                format
+                duration
+                averageScore
+                season
+                seasonYear
+              }
+            }
+          }
+        }
+      }
     }
   `;
 
@@ -178,11 +245,135 @@ async function searchMedia(search, options = {}) {
     search,
     isAdult: hideAdultContent ? false : undefined,
   });
-  const media = data.data?.Page?.media ?? [];
+  const media = data.data?.mediaPage?.media ?? [];
+  const characters = (data.data?.characterPage?.characters ?? []).flatMap((character) =>
+    (character?.media?.nodes ?? [])
+      .filter(
+        (item) =>
+          item?.id &&
+          (item.type === 'ANIME' || item.type === 'MANGA') &&
+          (!hideAdultContent || item.isAdult !== true)
+      )
+      .map((item) => ({
+        character: {
+          id: character.id,
+          name: character.name,
+          image: character.image,
+        },
+        media: item,
+      }))
+  );
+  const studios = (data.data?.studioPage?.studios ?? [])
+    .filter((studio) => studio?.isAnimationStudio === true)
+    .flatMap((studio) =>
+      (studio?.media?.edges ?? [])
+        .filter(
+          (edge) =>
+            edge?.node?.id &&
+            edge.node.type === 'ANIME' &&
+            (!hideAdultContent || edge.node.isAdult !== true)
+        )
+        .map((edge) => ({
+          studio: {
+            id: studio.id,
+            name: studio.name,
+          },
+          media: edge.node,
+          isMainStudio: edge.isMainStudio === true,
+        }))
+    );
 
   return {
     anime: media.filter((item) => item?.type === 'ANIME'),
     manga: media.filter((item) => item?.type === 'MANGA'),
+    characters,
+    studios,
+  };
+}
+
+async function getStudioMedia(studioId, page = 1, options = {}) {
+  const normalizedStudioId = Number(studioId);
+  const normalizedPage = Math.max(1, Number(page) || 1);
+  const hideAdultContent = options.hideAdultContent !== false;
+
+  if (!Number.isInteger(normalizedStudioId) || normalizedStudioId <= 0) {
+    throw new Error('Invalid AniList studio ID.');
+  }
+
+  const query = `
+    query ($studioId: Int!, $page: Int!) {
+      Studio(id: $studioId) {
+        id
+        name
+        isAnimationStudio
+        media(page: $page, perPage: 20, sort: [POPULARITY_DESC]) {
+          pageInfo {
+            currentPage
+            hasNextPage
+          }
+          edges {
+            isMainStudio
+            node {
+              id
+              type
+              isAdult
+              title {
+                romaji
+                english
+                userPreferred
+              }
+              coverImage {
+                large
+              }
+              episodes
+              format
+              duration
+              averageScore
+              season
+              seasonYear
+            }
+          }
+        }
+      }
+    }
+  `;
+  const data = await anilistRequestWithRetry(query, {
+    studioId: normalizedStudioId,
+    page: normalizedPage,
+  });
+  const studio = data.data?.Studio;
+
+  if (!studio?.id) {
+    throw new Error('AniList studio not found.');
+  }
+
+  const items = (studio.media?.edges ?? [])
+    .filter(
+      (edge) =>
+        edge?.node?.id &&
+        edge.node.type === 'ANIME' &&
+        (!hideAdultContent || edge.node.isAdult !== true)
+    )
+    .map((edge) => ({
+      studio: {
+        id: studio.id,
+        name: studio.name,
+      },
+      media: edge.node,
+      isMainStudio: edge.isMainStudio === true,
+    }));
+
+  return {
+    studio: {
+      id: studio.id,
+      name: studio.name,
+      isAnimationStudio: studio.isAnimationStudio === true,
+    },
+    items,
+    pageInfo: {
+      currentPage: studio.media?.pageInfo?.currentPage ?? normalizedPage,
+      hasNextPage: studio.media?.pageInfo?.hasNextPage === true,
+    },
   };
 }
 
@@ -688,6 +879,7 @@ async function getUserMediaCollection(userName, mediaType) {
           status
           entries {
             status
+            updatedAt
             progress
             progressVolumes
             repeat
@@ -757,7 +949,9 @@ async function getUserMediaCollection(userName, mediaType) {
               }
               studios {
                 nodes {
+                  id
                   name
+                  isAnimationStudio
                 }
               }
             }
@@ -814,6 +1008,7 @@ async function getViewerMediaCollection(accessToken, userId, mediaType) {
           status
           entries {
             status
+            updatedAt
             progress
             progressVolumes
             repeat
@@ -883,7 +1078,9 @@ async function getViewerMediaCollection(accessToken, userId, mediaType) {
               }
               studios {
                 nodes {
+                  id
                   name
+                  isAnimationStudio
                 }
               }
             }
@@ -943,7 +1140,7 @@ async function getAnimeDetails(id) {
         genres
         synonyms
         nextAiringEpisode { episode airingAt }
-        studios { nodes { name } }
+        studios { nodes { id name isAnimationStudio } }
         tags { id name description rank isMediaSpoiler isGeneralSpoiler }
         characters(perPage: 20) {
           edges {
@@ -1160,6 +1357,55 @@ async function getAnimeListMetadata(animeIds) {
       }
     `;
     const data = await anilistRequestWithRetry(query, { ids: batch });
+    results.push(...(data?.data?.Page?.media ?? []));
+  }
+
+  return results;
+}
+
+async function getAnimeSearchMediaByIds(animeIds, options = {}) {
+  const ids = [...new Set((animeIds || []).map(Number))].filter(
+    (id) => Number.isInteger(id) && id > 0
+  );
+
+  if (!ids.length) {
+    return [];
+  }
+
+  const hideAdultContent = options.hideAdultContent !== false;
+  const results = [];
+
+  for (let index = 0; index < ids.length; index += 50) {
+    const batch = ids.slice(index, index + 50);
+    const query = `
+      query ($ids: [Int], $isAdult: Boolean) {
+        Page(page: 1, perPage: 50) {
+          media(id_in: $ids, type: ANIME, isAdult: $isAdult) {
+            id
+            type
+            isAdult
+            title {
+              romaji
+              english
+              userPreferred
+            }
+            coverImage {
+              large
+            }
+            episodes
+            format
+            duration
+            averageScore
+            season
+            seasonYear
+          }
+        }
+      }
+    `;
+    const data = await anilistRequestWithRetry(query, {
+      ids: batch,
+      isAdult: hideAdultContent ? false : undefined,
+    });
     results.push(...(data?.data?.Page?.media ?? []));
   }
 
@@ -1436,6 +1682,7 @@ async function deleteMediaListEntry(accessToken, payload) {
 
 module.exports = {
   searchMedia,
+  getStudioMedia,
   searchAnime,
   searchAnimeBatch,
   searchMangaBatch,
@@ -1450,6 +1697,7 @@ module.exports = {
   getMangaDetails,
   getMangaDetailsByMalId,
   getAnimeListMetadata,
+  getAnimeSearchMediaByIds,
   getAnimeAdultFlags,
   getCharacterDetails,
   getStaffDetails,

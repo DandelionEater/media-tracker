@@ -13,9 +13,16 @@ import {
   XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { formatLocalDateTime } from "../utils/dateFormat";
+import type { SearchMatchType } from "../types/domain";
 import type { NavbarStyle } from "./SettingsPage";
 import { FloatingMenu } from "./ui/FloatingMenu";
 import { Tooltip } from "./ui/Tooltip";
+
+export type ResolvedSearchTerm = {
+  id: string;
+  query: string;
+  matchTypes: SearchMatchType[];
+};
 
 type NotificationItem = {
   id: number;
@@ -29,6 +36,11 @@ type NotificationItem = {
 type TopNavbarProps = {
   query: string;
   onSearch: (query: string) => void;
+  resolvedSearchTerms: ResolvedSearchTerm[];
+  activeSearchMatchTypes: SearchMatchType[];
+  onCommitSearchTerm: (matchTypes: SearchMatchType[]) => void;
+  onEditSearchTerm: (id: string) => void;
+  onRemoveSearchTerm: (id: string) => void;
   onClear: () => void;
   onDismissSearchResults: () => void;
   onRestoreSearchResults: () => void;
@@ -38,7 +50,7 @@ type TopNavbarProps = {
   onDismissNotification: (id: number) => void;
   onClearNotifications: () => void;
   onLogout: () => void;
-  currentView: "home" | "list" | "details" | "settings";
+  currentView: "home" | "list" | "details" | "studio" | "artist" | "settings";
   onOpenHome: () => void;
   onOpenMyList: () => void;
   onOpenSettings: () => void;
@@ -50,6 +62,11 @@ type TopNavbarProps = {
 export function TopNavbar({
   query,
   onSearch,
+  resolvedSearchTerms,
+  activeSearchMatchTypes,
+  onCommitSearchTerm,
+  onEditSearchTerm,
+  onRemoveSearchTerm,
   onClear,
   onDismissSearchResults,
   onRestoreSearchResults,
@@ -70,6 +87,7 @@ export function TopNavbar({
   const [isAccountMenuOpen, setIsAccountMenuOpen] = useState(false);
   const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
+  const [selectedSearchResolutionIndex, setSelectedSearchResolutionIndex] = useState(0);
   const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const notificationsRef = useRef<HTMLDivElement | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -80,6 +98,20 @@ export function TopNavbar({
   const unreadCount = notifications.filter((notification) => !notification.read).length;
   const isFloating = navbarStyle === "floating";
   const isMinimal = navbarStyle === "minimal";
+  const hasSearch = Boolean(query.trim() || resolvedSearchTerms.length);
+  const canCommitSearchTerm = Boolean(query.trim() && activeSearchMatchTypes.length);
+  const searchResolutionOptions =
+    activeSearchMatchTypes.length > 1
+      ? [activeSearchMatchTypes, ...activeSearchMatchTypes.map((matchType) => [matchType])]
+      : activeSearchMatchTypes.length
+        ? [activeSearchMatchTypes]
+        : [];
+  const selectedSearchResolution =
+    searchResolutionOptions[selectedSearchResolutionIndex] ?? activeSearchMatchTypes;
+
+  useEffect(() => {
+    setSelectedSearchResolutionIndex(0);
+  }, [query, activeSearchMatchTypes]);
 
   const clearAccountCloseTimer = useCallback(() => {
     if (accountCloseTimerRef.current !== null) {
@@ -172,12 +204,19 @@ export function TopNavbar({
   };
 
   const handleSearchCloseOrClear = () => {
-    if (query.trim()) {
+    if (hasSearch) {
       handleClearSearch();
       return;
     }
 
     searchInputRef.current?.blur();
+  };
+
+  const handleEditResolvedSearchTerm = (id: string) => {
+    onEditSearchTerm(id);
+    window.requestAnimationFrame(() => {
+      focusSearchInput(false);
+    });
   };
 
   useEffect(() => {
@@ -265,7 +304,7 @@ export function TopNavbar({
 
         if (
           !input ||
-          !query.trim() ||
+          !hasSearch ||
           (!isSearchInput && isKeyboardInputTarget(target)) ||
           hasOpenModalSurface()
         ) {
@@ -299,7 +338,7 @@ export function TopNavbar({
 
     document.addEventListener("keydown", handleGlobalSearchFocus);
     return () => document.removeEventListener("keydown", handleGlobalSearchFocus);
-  }, [focusSearchInput, onClear, onSearch, query]);
+  }, [focusSearchInput, hasSearch, onClear, onSearch]);
 
   return (
     <div
@@ -370,7 +409,7 @@ export function TopNavbar({
         </div>
 
         <div
-          className={`no-drag mx-auto flex w-full items-center gap-2 rounded-2xl border px-3 py-2 shadow-lg transition-[max-width,border-color,background-color,box-shadow] duration-300 max-sm:mx-1 max-sm:min-w-0 max-sm:flex-1 max-sm:px-2 ${
+          className={`no-drag relative mx-auto flex w-full items-center gap-2 rounded-2xl border px-3 py-2 shadow-lg transition-[max-width,border-color,background-color,box-shadow] duration-300 max-sm:mx-1 max-sm:min-w-0 max-sm:flex-1 max-sm:px-2 ${
             isFloating ? "max-w-lg" : "max-w-xl"
           } ${isMinimal ? "h-12" : ""} ${
             isSearchFocused
@@ -382,60 +421,184 @@ export function TopNavbar({
         >
           <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-white/45" />
 
-          <input
-            ref={searchInputRef}
-            type="text"
-            value={query}
-            placeholder="Search Anime and Manga..."
-            onChange={(e) => onSearch(e.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") {
-                event.preventDefault();
-                onDismissSearchResults();
-                event.currentTarget.blur();
-              }
-            }}
-            onFocus={(event) => {
-              const shouldSelectExistingText = selectSearchTextOnFocusRef.current;
-              setIsSearchFocused(true);
-              if (event.currentTarget.value) {
-                if (shouldSelectExistingText) {
-                  onRestoreSearchResults();
-                  event.currentTarget.select();
-                }
-              }
-            }}
-            onBlur={() => setIsSearchFocused(false)}
-            className="w-full bg-transparent text-sm text-white outline-none placeholder:text-white/35"
-          />
+          <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {resolvedSearchTerms.map((term) => (
+              <div
+                key={term.id}
+                className="flex shrink-0 items-center overflow-hidden rounded-lg border border-[var(--app-accent)]/55 bg-[var(--app-accent-soft)] text-white shadow-[0_0_18px_rgba(0,0,0,0.12)]"
+              >
+                <button
+                  type="button"
+                  onClick={() => handleEditResolvedSearchTerm(term.id)}
+                  className="flex min-w-0 items-center gap-1.5 py-1 pl-2 pr-1 text-xs transition hover:bg-white/5"
+                  aria-label={`Edit resolved search ${term.query}`}
+                >
+                  <span className="flex items-center gap-1">
+                    {term.matchTypes.map((matchType) => (
+                      <span
+                        key={matchType}
+                        className="rounded bg-black/20 px-1 py-0.5 text-[8px] font-semibold uppercase tracking-wide text-white/60"
+                      >
+                        {getSearchMatchTypeLabel(matchType)}
+                      </span>
+                    ))}
+                  </span>
+                  <span className="max-w-28 truncate font-medium">{term.query}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onRemoveSearchTerm(term.id)}
+                  className="mr-0.5 rounded p-1 text-white/45 transition hover:bg-white/10 hover:text-white"
+                  aria-label={`Remove ${term.query} from search`}
+                >
+                  <XMarkIcon className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
 
-          {!query.trim() && !isSearchFocused && (
+            <input
+              ref={searchInputRef}
+              type="text"
+              value={query}
+              placeholder={
+                resolvedSearchTerms.length
+                  ? "Add another..."
+                  : "Search titles, characters, studios, or music..."
+              }
+              onChange={(e) => onSearch(e.target.value)}
+              onKeyDown={(event) => {
+                const caretIsAtEnd =
+                  event.currentTarget.selectionStart === event.currentTarget.value.length &&
+                  event.currentTarget.selectionEnd === event.currentTarget.value.length;
+
+                if (
+                  canCommitSearchTerm &&
+                  (event.key === "ArrowDown" || event.key === "ArrowUp")
+                ) {
+                  event.preventDefault();
+                  setSelectedSearchResolutionIndex((current) => {
+                    const direction = event.key === "ArrowDown" ? 1 : -1;
+                    return (
+                      current + direction + searchResolutionOptions.length
+                    ) % searchResolutionOptions.length;
+                  });
+                  return;
+                }
+
+                if (
+                  canCommitSearchTerm &&
+                  (event.key === "Tab" || (event.key === "ArrowRight" && caretIsAtEnd))
+                ) {
+                  event.preventDefault();
+                  onCommitSearchTerm(selectedSearchResolution);
+                  return;
+                }
+
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  onDismissSearchResults();
+                  event.currentTarget.blur();
+                }
+              }}
+              onFocus={(event) => {
+                const shouldSelectExistingText = selectSearchTextOnFocusRef.current;
+                setIsSearchFocused(true);
+                if (hasSearch) {
+                  onRestoreSearchResults();
+                  if (event.currentTarget.value && shouldSelectExistingText) {
+                    event.currentTarget.select();
+                  }
+                }
+              }}
+              onBlur={() => setIsSearchFocused(false)}
+              className="min-w-28 flex-1 bg-transparent text-sm text-white outline-none placeholder:text-white/35"
+            />
+          </div>
+
+          {!hasSearch && !isSearchFocused && (
             <kbd className="hidden shrink-0 items-center rounded-lg border border-white/10 bg-white/[0.06] px-2 py-1 text-[10px] font-medium tracking-wide text-white/38 sm:inline-flex">
               Enter
             </kbd>
           )}
 
-          {(query.trim() || isSearchFocused) && (
+          {(hasSearch || isSearchFocused) && (
             <>
               <kbd
                 className={`hidden shrink-0 items-center rounded-lg border border-white/10 bg-white/[0.06] px-2 py-1 text-[10px] font-medium tracking-wide sm:inline-flex ${
-                  query.trim() ? "text-white/38" : "text-white/25"
+                  hasSearch ? "text-white/38" : "text-white/25"
                 }`}
               >
                 Del
               </kbd>
-              <Tooltip content={query.trim() ? "Clear search" : "Unfocus search"} placement="bottom">
+              <Tooltip content={hasSearch ? "Clear search" : "Unfocus search"} placement="bottom">
               <button
                 type="button"
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={handleSearchCloseOrClear}
                 className="no-drag rounded-full p-1 text-white/45 transition-all duration-200 ease-out hover:scale-105 hover:bg-white/10 hover:text-white active:scale-95"
-                aria-label={query.trim() ? "Clear search" : "Unfocus search"}
+                aria-label={hasSearch ? "Clear search" : "Unfocus search"}
               >
                 <XMarkIcon className="h-4 w-4" />
               </button>
               </Tooltip>
             </>
+          )}
+
+          {isSearchFocused && canCommitSearchTerm && (
+            <div
+              role="listbox"
+              aria-label={`Choose how to resolve ${query.trim()}`}
+              className="absolute left-8 right-8 top-[calc(100%+0.45rem)] overflow-hidden rounded-xl border border-white/10 bg-[#171717]/96 p-1.5 shadow-2xl backdrop-blur-xl"
+            >
+              {searchResolutionOptions.map((matchTypes, index) => {
+                const isAllOption = matchTypes.length > 1;
+                const optionLabel = isAllOption
+                  ? matchTypes.map(getSearchMatchTypeLabel).join(" + ")
+                  : `${getSearchMatchTypeLabel(matchTypes[0])} only`;
+                const isSelected = index === selectedSearchResolutionIndex;
+
+                return (
+                  <button
+                    key={matchTypes.join("-")}
+                    type="button"
+                    role="option"
+                    aria-selected={isSelected}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onMouseEnter={() => setSelectedSearchResolutionIndex(index)}
+                    onClick={() => onCommitSearchTerm(matchTypes)}
+                    className={`flex w-full items-center justify-between gap-3 rounded-lg px-3 py-2 text-left transition ${
+                      isSelected
+                        ? "bg-white/10 text-white"
+                        : "text-white/55 hover:bg-white/[0.06] hover:text-white/80"
+                    }`}
+                  >
+                    <span className="min-w-0 truncate text-xs">
+                      {isAllOption ? (
+                        <>
+                          Resolve <span className="font-semibold text-white">“{query.trim()}”</span>
+                        </>
+                      ) : (
+                        <span className="font-medium">{optionLabel}</span>
+                      )}
+                      {isAllOption && (
+                        <span className="ml-2 text-white/40">{optionLabel}</span>
+                      )}
+                    </span>
+                    {isSelected && (
+                      <span className="flex shrink-0 items-center gap-1 text-[9px] text-white/35">
+                        <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5">
+                          Tab
+                        </kbd>
+                        <span>or</span>
+                        <kbd className="rounded border border-white/10 bg-white/5 px-1.5 py-0.5">
+                          →
+                        </kbd>
+                      </span>
+                    )}
+                  </button>
+                );
+              })}
+            </div>
           )}
         </div>
 
@@ -633,6 +796,15 @@ export function TopNavbar({
       </div>
     </div>
   );
+}
+
+function getSearchMatchTypeLabel(matchType: SearchMatchType) {
+  if (matchType === "ANIME") return "Anime";
+  if (matchType === "MANGA") return "Manga";
+  if (matchType === "CHARACTER") return "Character";
+  if (matchType === "STUDIO") return "Studio";
+  if (matchType === "ARTIST") return "Artist";
+  return "Song";
 }
 
 function shouldFocusSearchFromKey(event: KeyboardEvent, lastNavigationWasPointer: boolean) {

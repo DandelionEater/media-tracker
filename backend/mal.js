@@ -266,7 +266,7 @@ async function getUserMangaList(username, options = {}) {
     'media_type',
     'status',
     'genres',
-    'list_status{status,score,num_chapters_read,num_volumes_read,is_rereading,num_times_reread,start_date,finish_date,comments}',
+    'list_status{status,score,num_chapters_read,num_volumes_read,is_rereading,num_times_reread,start_date,finish_date,comments,updated_at}',
   ].join(',');
   const data = [];
   let nextUrl = null;
@@ -305,7 +305,7 @@ async function getUserAnimeList(username, options = {}) {
     'media_type',
     'status',
     'genres',
-    'list_status{status,score,num_episodes_watched,is_rewatching,num_times_rewatched,start_date,finish_date,comments}',
+    'list_status{status,score,num_episodes_watched,is_rewatching,num_times_rewatched,start_date,finish_date,comments,updated_at}',
   ].join(',');
   const data = [];
   let nextUrl = null;

@@ -1,4 +1,4 @@
-name: Build Linux test artifact
+name: Build Linux release artifacts
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   build-linux:
-    name: Build self-contained Linux test
+    name: Build Linux installers
     runs-on: ubuntu-24.04
     timeout-minutes: 30
 
@@ -36,11 +36,22 @@ jobs:
         run: npm ci
         working-directory: backend
 
+      - name: Install Flatpak build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
+
       - name: Lint frontend
         run: npm run lint
         working-directory: frontend
 
-      - name: Build Linux test artifacts
+      - name: Build Linux release artifacts
         run: npm run dist:linux
         working-directory: backend
 
@@ -55,18 +66,19 @@ jobs:
           tar -C "${artifact_dir}" -czf "${archive}" linux-unpacked
           (
             cd "${artifact_dir}"
-            sha256sum ./*.AppImage ./*.tar.gz > SHA256SUMS
+            sha256sum ./*.AppImage ./*.flatpak ./*.tar.gz > SHA256SUMS
           )
 
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "artifact_dir=${artifact_dir}" >> "$GITHUB_OUTPUT"
 
-      - name: Upload downloadable Linux test
+      - name: Upload Linux release bundle
         uses: actions/upload-artifact@v6
         with:
-          name: seenary-linux-test-${{ steps.artifact.outputs.version }}-${{ github.run_id }}
+          name: seenary-linux-release-${{ steps.artifact.outputs.version }}-${{ github.run_id }}
           path: |
             ${{ steps.artifact.outputs.artifact_dir }}/*.AppImage
+            ${{ steps.artifact.outputs.artifact_dir }}/*.flatpak
             ${{ steps.artifact.outputs.artifact_dir }}/*.tar.gz
             ${{ steps.artifact.outputs.artifact_dir }}/SHA256SUMS
           if-no-files-found: error

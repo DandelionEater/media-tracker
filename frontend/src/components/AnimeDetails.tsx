@@ -33,11 +33,13 @@ import { HeartIcon as HeartIconSolid } from "@heroicons/react/24/solid";
 import { ListEntryModal } from "./ListEntryModal";
 import { ModalShell } from "./ui/ModalShell";
 import { Tooltip } from "./ui/Tooltip";
+import { ThemeMusicSection } from "./ThemeMusicSection";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { formatLocalDate } from "../utils/dateFormat";
 import { formatEnum, formatNumber, getListStatusLabel } from "../utils/mediaFormatting";
 import type {
   AnimeMedia,
+  AnimeThemeMusicItem,
   EditableListEntry,
   ExternalLink,
   MediaType,
@@ -53,6 +55,7 @@ type AnimeDetailsProps = {
   mediaType: MediaType;
   onBack: () => void;
   onSelectMedia?: (mediaId: number, mediaType: MediaType) => void;
+  onOpenStudio?: (studio: { id: number; name: string }) => void;
   onListChanged?: () => void | Promise<void>;
   onNotify?: (kind: "success" | "error" | "warning", title: string, message: string) => void;
   titleLanguage: TitleLanguage;
@@ -120,6 +123,7 @@ export default function MediaDetails({
   mediaType,
   onBack,
   onSelectMedia,
+  onOpenStudio,
   onListChanged,
   onNotify,
   titleLanguage,
@@ -135,6 +139,8 @@ export default function MediaDetails({
   const [selectedPerson, setSelectedPerson] = useState<PeopleModalItem | null>(null);
   const [expandedArtwork, setExpandedArtwork] = useState<ExpandedArtwork | null>(null);
   const [retryKey, setRetryKey] = useState(0);
+  const [themeMusic, setThemeMusic] = useState<AnimeThemeMusicItem[]>([]);
+  const [themeMusicLoading, setThemeMusicLoading] = useState(false);
 
   function notifyListChange(title: string, message: string) {
     onNotify?.("success", title, message);
@@ -187,6 +193,42 @@ export default function MediaDetails({
       mounted = false;
     };
   }, [loadListEntry, mediaId, mediaType, retryKey]);
+
+  useEffect(() => {
+    let cancelled = false;
+    if (!anime || mediaType !== "ANIME") {
+      setThemeMusic([]);
+      setThemeMusicLoading(false);
+      return;
+    }
+
+    const titles = [
+      anime.title?.userPreferred,
+      anime.title?.english,
+      anime.title?.romaji,
+      anime.title?.native,
+      ...(anime.synonyms ?? []),
+    ].filter((value): value is string => Boolean(value?.trim()));
+
+    setThemeMusic([]);
+    setThemeMusicLoading(true);
+    void window.api
+      .getAnimeThemeMusic(mediaId, titles)
+      .then((items) => {
+        if (!cancelled) setThemeMusic(items);
+      })
+      .catch((themeError) => {
+        console.warn("Failed to load AnimeThemes details:", themeError);
+        if (!cancelled) setThemeMusic([]);
+      })
+      .finally(() => {
+        if (!cancelled) setThemeMusicLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [anime, mediaId, mediaType]);
 
   async function handleAddToList() {
     if (listBusy) return;
@@ -450,8 +492,7 @@ export default function MediaDetails({
   const title = getPreferredTitle(anime.title, titleLanguage);
   const isManga = mediaType === "MANGA";
 
-  const studios =
-    anime.studios?.nodes?.map((studio) => studio.name).join(", ") || null;
+  const studios = anime.studios?.nodes?.filter((studio) => studio?.name) ?? [];
 
   const safeTags = (anime.tags ?? [])
     .filter((tag) => !tag.isMediaSpoiler && !tag.isGeneralSpoiler)
@@ -634,7 +675,12 @@ export default function MediaDetails({
                         value={formatFuzzyDate(anime.endDate)}
                       />
                     )}
-                    {!isManga && studios && <HeroDetail label="Made by" value={studios} wide />}
+                    {!isManga && studios.length > 0 && (
+                      <StudioHeroDetail
+                        studios={studios}
+                        onOpenStudio={onOpenStudio}
+                      />
+                    )}
                   </div>
 
                   {primaryLinks.length > 0 && (
@@ -700,6 +746,13 @@ export default function MediaDetails({
                     kind="staff"
                     edges={staffEdges}
                     onSelect={setSelectedPerson}
+                  />
+                )}
+
+                {!isManga && (
+                  <ThemeMusicSection
+                    items={themeMusic}
+                    loading={themeMusicLoading}
                   />
                 )}
 
@@ -996,6 +1049,47 @@ function HeroDetail({
       </p>
       <Tooltip content={value} as="div" className="mt-1 block" focusable>
         <p className="line-clamp-2 text-sm leading-5 text-white/68">{value}</p>
+      </Tooltip>
+    </div>
+  );
+}
+
+function StudioHeroDetail({
+  studios,
+  onOpenStudio,
+}: {
+  studios: Array<{ id?: number; name: string }>;
+  onOpenStudio?: (studio: { id: number; name: string }) => void;
+}) {
+  const studioNames = studios.map((studio) => studio.name).join(", ");
+
+  return (
+    <div className="min-w-0 sm:col-span-2 xl:col-span-2">
+      <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-white/28">
+        Made by
+      </p>
+      <Tooltip content={`${studioNames} - Open studio catalog`} as="div" className="mt-1 block">
+        <div className="flex flex-wrap gap-x-2 gap-y-1">
+          {studios.map((studio, index) =>
+            studio.id && onOpenStudio ? (
+              <button
+                key={studio.id}
+                type="button"
+                onClick={() => onOpenStudio({ id: studio.id!, name: studio.name })}
+                className="text-left text-sm leading-5 text-white/68 decoration-white/30 underline-offset-4 transition hover:text-white hover:underline focus:outline-none focus:text-white focus:underline"
+                aria-label={`View all Anime from ${studio.name}`}
+              >
+                {studio.name}
+                {index < studios.length - 1 ? "," : ""}
+              </button>
+            ) : (
+              <span key={`${studio.name}-${index}`} className="text-sm leading-5 text-white/68">
+                {studio.name}
+                {index < studios.length - 1 ? "," : ""}
+              </span>
+            )
+          )}
+        </div>
       </Tooltip>
     </div>
   );

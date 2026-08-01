@@ -25,10 +25,13 @@ const {
 } = require('./shortcuts');
 const { registerStartupIpc } = require('./startup');
 const { registerSystemLocaleIpc } = require('./systemLocale');
+const { registerDesktopEnvironmentIpc } = require('./desktopEnvironment');
 const { registerAppLifecycleIpc } = require('./appLifecycle');
 const { registerLayoutConfigIpc, deleteLayoutOrders } = require('./layoutConfig');
 
 const anilist = require('./anilist');
+const searchOrchestrator = require('./searchOrchestrator');
+const animethemes = require('./animethemes');
 const anilistOAuth = require('./anilistOAuth');
 const mal = require('./mal');
 const { previewMalImport, importMalEntries } = require('./malImport');
@@ -454,6 +457,7 @@ function buildAniListImportPreview(collection, mediaType = 'ANIME') {
         mangaId: normalizedMediaType === 'MANGA' ? media.id : undefined,
         mediaId: media.id,
         mediaType: normalizedMediaType,
+        providerUpdatedAt: entry.updatedAt ?? null,
         status,
         progress: entry.progress ?? 0,
         score: entry.score ?? null,
@@ -890,7 +894,7 @@ ipcMain.handle('anilist:search-media', async (_event, payload) => {
   const hideAdultContent =
     typeof payload === 'object' && payload !== null ? payload.hideAdultContent : undefined;
 
-  return await anilist.searchMedia(query, { hideAdultContent });
+  return await searchOrchestrator.searchMedia(query, { hideAdultContent });
 });
 
 ipcMain.handle('anilist:discover-media', async (_event, payload) => {
@@ -907,6 +911,22 @@ ipcMain.handle('anilist:discover-shelf', async (_event, payload) => {
     hideAdultContent: payload?.hideAdultContent,
     mediaType: payload?.mediaType,
   });
+});
+
+ipcMain.handle('anilist:studio-media', async (_event, payload) => {
+  return await anilist.getStudioMedia(payload?.studioId, payload?.page, {
+    hideAdultContent: payload?.hideAdultContent,
+  });
+});
+
+ipcMain.handle('animethemes:artist-media', async (_event, payload) => {
+  return await searchOrchestrator.getArtistMedia(payload?.artistSlug, payload?.page, {
+    hideAdultContent: payload?.hideAdultContent,
+  });
+});
+
+ipcMain.handle('animethemes:anime-music', async (_event, payload) => {
+  return await animethemes.getAnimeThemeMusic(payload?.anilistId, payload?.titles);
 });
 
 ipcMain.handle('anilist:preview-import', async (_event, payload) => {
@@ -1590,7 +1610,9 @@ async function fetchAnimeDetailsFromAniList(id) {
 
         studios {
           nodes {
+            id
             name
+            isAnimationStudio
           }
         }
 
@@ -1750,6 +1772,7 @@ async function fetchAnimeDetailsFromAniList(id) {
 function hasFreshAnimeDetailsCache(row) {
   if (!row) return false;
   if (row.is_adult === null || row.is_adult === undefined) return false;
+  if (!hasCachedStudioIds(row.studios)) return false;
 
   const hasFullDetails =
     Boolean(row.site_url) ||
@@ -1763,6 +1786,24 @@ function hasFreshAnimeDetailsCache(row) {
 
   const cachedAt = Date.parse(row.cached_at);
   return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
+}
+
+function hasCachedStudioIds(value) {
+  try {
+    const studios = JSON.parse(value || '[]');
+    return (
+      !studios.length ||
+      studios.every(
+        (studio) =>
+          studio &&
+          typeof studio === 'object' &&
+          Number.isInteger(Number(studio.id)) &&
+          Number(studio.id) > 0
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function getAnimeDetails(id) {
@@ -2642,6 +2683,7 @@ ipcMain.handle('backup:import', async (_event, backup) => {
 });
 
 registerSystemLocaleIpc();
+registerDesktopEnvironmentIpc();
 
 function getTrayOptions(win) {
   return {

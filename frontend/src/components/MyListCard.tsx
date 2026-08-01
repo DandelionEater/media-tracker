@@ -19,6 +19,7 @@ type MyListEntry = {
   notes: string | null;
   updated_at?: string | null;
   local_updated_at?: string | null;
+  provider_updated_at?: string | null;
   title_romaji?: string | null;
   title_english?: string | null;
   title_native?: string | null;
@@ -160,7 +161,10 @@ export const MyListCard = memo(function MyListCard({
     : null;
   const airingStatus = getAiringStatusLabel(entry.anime_status, isManga);
   const airingStatusStyle = getAiringStatusStyle(entry.anime_status);
-  const updatedLabel = formatUpdatedLabel(entry.local_updated_at || entry.updated_at, nowMs);
+  const updatedLabel = formatUpdatedLabel(
+    getLatestActivityTimestamp(entry.local_updated_at, entry.provider_updated_at),
+    nowMs
+  );
   const nextEpisodeLabel = String(entry.anime_status || "").toUpperCase() === "RELEASING"
     ? formatNextEpisodeLabel(entry.next_airing_episode, entry.next_airing_at, nowMs)
     : null;
@@ -533,6 +537,18 @@ function formatUpdatedLabel(value: string | null | undefined, nowMs: number) {
     day: "numeric",
     year: new Date(timestamp).getFullYear() === new Date(nowMs).getFullYear() ? undefined : "numeric",
   }).format(new Date(timestamp))}`;
+}
+
+function getLatestActivityTimestamp(
+  localUpdatedAt?: string | null,
+  providerUpdatedAt?: string | null
+) {
+  const candidates = [localUpdatedAt, providerUpdatedAt]
+    .map((value) => ({ value, timestamp: value ? Date.parse(value) : Number.NaN }))
+    .filter((candidate) => Number.isFinite(candidate.timestamp))
+    .sort((left, right) => right.timestamp - left.timestamp);
+
+  return candidates[0]?.value ?? null;
 }
 
 function formatNextEpisodeLabel(

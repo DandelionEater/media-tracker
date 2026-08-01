@@ -99,6 +99,13 @@ if (result.stderr) {
   process.stderr.write(result.stderr);
 }
 if (result.status !== 0) {
+  if (result.error) {
+    console.error(`Custom installer compiler failed: ${result.error.message}`);
+  } else if (result.signal) {
+    console.error(`Custom installer compiler stopped with signal ${result.signal}.`);
+  } else {
+    console.error(`Custom installer compiler exited with status ${result.status}.`);
+  }
   fs.rmSync(versionSourcePath, { force: true });
   fs.renameSync(coreInstallerPath, installerPath);
   process.exit(result.status || 1);
@@ -107,45 +114,43 @@ if (result.status !== 0) {
 fs.rmSync(versionSourcePath, { force: true });
 fs.rmSync(coreInstallerPath, { force: true });
 
-const appBuilder = path.join(
-  backendDir,
-  'node_modules',
-  'app-builder-bin',
-  'win',
-  'x64',
-  'app-builder.exe',
+const { buildBlockMap } = require(
+  path.join(
+    backendDir,
+    'node_modules',
+    'app-builder-lib',
+    'out',
+    'targets',
+    'blockmap',
+    'blockmap.js',
+  ),
 );
 const blockmapPath = `${installerPath}.blockmap`;
-const blockmapResult = spawnSync(
-  appBuilder,
-  ['blockmap', '--input', installerPath, '--output', blockmapPath],
-  {
-    cwd: backendDir,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-  },
-);
 
-if (blockmapResult.status !== 0) {
-  process.stderr.write(blockmapResult.stderr || blockmapResult.stdout || '');
-  process.exit(blockmapResult.status || 1);
-}
+async function finalizeInstaller() {
+  await buildBlockMap(installerPath, 'gzip', blockmapPath);
 
-const installer = fs.readFileSync(installerPath);
-const sha512 = crypto.createHash('sha512').update(installer).digest('base64');
-const size = installer.length;
+  const installer = fs.readFileSync(installerPath);
+  const sha512 = crypto.createHash('sha512').update(installer).digest('base64');
+  const size = installer.length;
 
-for (const name of ['dev.yml', 'beta.yml', 'alpha.yml', 'latest.yml']) {
-  const metadataPath = path.join(releaseDir, name);
-  if (!fs.existsSync(metadataPath)) {
-    continue;
+  for (const name of ['dev.yml', 'beta.yml', 'alpha.yml', 'latest.yml']) {
+    const metadataPath = path.join(releaseDir, name);
+    if (!fs.existsSync(metadataPath)) {
+      continue;
+    }
+
+    const current = fs.readFileSync(metadataPath, 'utf8');
+    const next = current
+      .replace(/(\n\s*sha512:\s*)[^\r\n]+/g, `$1${sha512}`)
+      .replace(/(\n\s*size:\s*)\d+/g, `$1${size}`);
+    fs.writeFileSync(metadataPath, next);
   }
 
-  const current = fs.readFileSync(metadataPath, 'utf8');
-  const next = current
-    .replace(/(\n\s*sha512:\s*)[^\r\n]+/g, `$1${sha512}`)
-    .replace(/(\n\s*size:\s*)\d+/g, `$1${size}`);
-  fs.writeFileSync(metadataPath, next);
+  console.log(`Built custom Seenary installer: ${installerPath}`);
 }
 
-console.log(`Built custom Seenary installer: ${installerPath}`);
+finalizeInstaller().catch((error) => {
+  console.error(`Failed to finalize custom Seenary installer: ${error.message}`);
+  process.exitCode = 1;
+});

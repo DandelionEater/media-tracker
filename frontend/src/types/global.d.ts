@@ -1,7 +1,10 @@
 import type {
   AnimeMedia,
+  AnimeThemeMusicItem,
   DiscoverMediaResult,
   DiscoverShelfResult,
+  StudioCatalogResult,
+  ArtistCatalogResult,
   ImportPayload,
   ImportPreviewItem,
   MediaSearchResults,
@@ -143,6 +146,20 @@ declare global {
         hideAdultContent?: boolean,
         mediaType?: "ANIME" | "MANGA"
       ) => Promise<DiscoverShelfResult>;
+      getStudioMedia: (
+        studioId: number,
+        page?: number,
+        hideAdultContent?: boolean
+      ) => Promise<StudioCatalogResult>;
+      getArtistMedia: (
+        artistSlug: string,
+        page?: number,
+        hideAdultContent?: boolean
+      ) => Promise<ArtistCatalogResult>;
+      getAnimeThemeMusic: (
+        anilistId: number,
+        titles?: string[]
+      ) => Promise<AnimeThemeMusicItem[]>;
       previewAniListImport: (username: string) => Promise<{
         ok: boolean;
         message?: string;
@@ -763,6 +780,7 @@ declare global {
       getInfo: () => Promise<{
         ok: boolean;
         platform: string;
+        architecture: string;
         displayBackend: "wayland" | "x11" | "other" | "unknown";
         desktopEnvironment: string | null;
         sessionType: string | null;

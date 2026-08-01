@@ -40,7 +40,18 @@ function mapAnimeForDb(media) {
     next_airing_episode: media.nextAiringEpisode?.episode ?? null,
     next_airing_at: media.nextAiringEpisode?.airingAt ?? null,
 
-    studios: JSON.stringify(media.studios?.nodes?.map((studio) => studio.name) ?? []),
+    studios: JSON.stringify(
+      media.studios?.nodes
+        ?.filter((studio) => studio?.name)
+        .map((studio) => ({
+          id: Number(studio.id) || null,
+          name: studio.name,
+          isAnimationStudio:
+            studio.isAnimationStudio === null || studio.isAnimationStudio === undefined
+              ? null
+              : studio.isAnimationStudio === true,
+        })) ?? []
+    ),
 
     tags: mapTagsForDb(media.tags),
     staff: mapStaffForDb(media.staff?.edges),
@@ -104,7 +115,21 @@ function mapDbAnimeForFrontend(row) {
           }
         : null,
     studios: {
-      nodes: JSON.parse(row.studios || '[]').map((name) => ({ name })),
+      nodes: JSON.parse(row.studios || '[]')
+        .map((studio) =>
+          typeof studio === 'string'
+            ? { name: studio }
+            : {
+                id: Number(studio?.id) || undefined,
+                name: studio?.name,
+                isAnimationStudio:
+                  studio?.isAnimationStudio === null ||
+                  studio?.isAnimationStudio === undefined
+                    ? undefined
+                    : studio.isAnimationStudio === true,
+              }
+        )
+        .filter((studio) => studio.name),
     },
     tags: row.tags ?? [],
     staff: {

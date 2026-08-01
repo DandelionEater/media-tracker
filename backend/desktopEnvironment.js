@@ -69,6 +69,7 @@ function getDesktopEnvironmentInfo() {
   return {
     ok: true,
     platform: process.platform,
+    architecture: process.arch,
     displayBackend,
     desktopEnvironment: getDesktopEnvironment(),
     sessionType: normalizeEnvironmentValue(process.env.XDG_SESSION_TYPE) || null,
@@ -78,7 +79,7 @@ function getDesktopEnvironmentInfo() {
       exactWindowPositioning: !nativeWayland,
       liveWindowResize: nativeWayland ? 'verify' : 'supported',
       globalShortcuts: nativeWayland ? 'unavailable' : 'native',
-      launchAtLogin: process.platform !== 'linux',
+      launchAtLogin: true,
     },
   };
 }

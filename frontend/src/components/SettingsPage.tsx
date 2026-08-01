@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type KeyboardEvent as ReactKeyboardEvent, type ReactNode, type SVGProps } from "react";
 import {
+  ArrowTopRightOnSquareIcon,
   ArrowPathIcon,
   BookmarkIcon,
+  BugAntIcon,
   CheckIcon,
   CheckCircleIcon,
   ChevronDownIcon,
   CloudArrowDownIcon,
   CommandLineIcon,
+  ClipboardDocumentIcon,
   DocumentTextIcon,
   ExclamationTriangleIcon,
   EyeSlashIcon,
@@ -298,6 +301,7 @@ type DesktopStartupState = {
 type DesktopEnvironmentState = {
   loading: boolean;
   platform: string;
+  architecture: string;
   displayBackend: "wayland" | "x11" | "other" | "unknown";
   desktopEnvironment: string | null;
   shortcutMethod: "native" | "unavailable";
@@ -590,6 +594,7 @@ const SHORTCUT_PRESETS = [
 ];
 
 const APP_VERSION = __APP_VERSION__;
+const GITHUB_ISSUES_URL = "https://github.com/DandelionEater/Seenary/issues";
 const SETTINGS_OPEN_SECTION_KEY = "seenary.settings.open-section";
 const SETTINGS_OPEN_SECTION_LEGACY_KEY = "media-tracker.settings.open-section";
 const SETTINGS_SECTION_SCROLL_OFFSET = 88;
@@ -732,10 +737,15 @@ export function SettingsPage({
   const [desktopEnvironment, setDesktopEnvironment] = useState<DesktopEnvironmentState>({
     loading: Boolean(window.desktopEnvironment),
     platform: "",
+    architecture: "",
     displayBackend: "unknown",
     desktopEnvironment: null,
     shortcutMethod: "native",
   });
+  const [bugReportCopyState, setBugReportCopyState] = useState<
+    "idle" | "copied" | "error"
+  >("idle");
+  const bugReportCopyResetRef = useRef<number | null>(null);
   const [desktopWindow, setDesktopWindow] = useState<DesktopWindowState>({
     available: Boolean(window.desktopWindow),
     loading: Boolean(window.desktopWindow),
@@ -752,6 +762,9 @@ export function SettingsPage({
   useEffect(() => {
     return () => {
       void window.desktopShortcuts?.setShortcutRecordingActive(false);
+      if (bugReportCopyResetRef.current !== null) {
+        window.clearTimeout(bugReportCopyResetRef.current);
+      }
     };
   }, []);
   const [syncActivity, setSyncActivity] = useState<{
@@ -1194,6 +1207,7 @@ export function SettingsPage({
       setDesktopEnvironment({
         loading: false,
         platform: result.platform,
+        architecture: result.architecture,
         displayBackend: result.displayBackend,
         desktopEnvironment: result.desktopEnvironment,
         shortcutMethod: result.capabilities.globalShortcuts,
@@ -1201,6 +1215,38 @@ export function SettingsPage({
     } catch {
       setDesktopEnvironment((current) => ({ ...current, loading: false }));
     }
+  }
+
+  async function copyBugReportInfo() {
+    const platform = formatDesktopPlatform(desktopEnvironment.platform);
+    const lines = [
+      "Seenary diagnostics",
+      `Version: ${APP_VERSION}`,
+      `Platform: ${platform}`,
+      `Architecture: ${formatArchitecture(desktopEnvironment.architecture)}`,
+    ];
+
+    if (desktopEnvironment.platform === "linux") {
+      lines.push(
+        `Desktop: ${desktopEnvironment.desktopEnvironment || "Unknown"}`,
+        `Display system: ${formatDisplayBackend(desktopEnvironment.displayBackend)}`
+      );
+    }
+
+    try {
+      await navigator.clipboard.writeText(lines.join("\n"));
+      setBugReportCopyState("copied");
+    } catch {
+      setBugReportCopyState("error");
+    }
+
+    if (bugReportCopyResetRef.current !== null) {
+      window.clearTimeout(bugReportCopyResetRef.current);
+    }
+    bugReportCopyResetRef.current = window.setTimeout(() => {
+      setBugReportCopyState("idle");
+      bugReportCopyResetRef.current = null;
+    }, 2400);
   }
 
   async function saveDesktopStartup(openAtLogin: boolean) {
@@ -2318,6 +2364,18 @@ export function SettingsPage({
                 <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                   <InfoCard label="Version" value={APP_VERSION} />
                   <InfoCard label="Profile" value={username} />
+                  {desktopEnvironment.platform && (
+                    <>
+                      <InfoCard
+                        label="Platform"
+                        value={formatDesktopPlatform(desktopEnvironment.platform)}
+                      />
+                      <InfoCard
+                        label="Architecture"
+                        value={formatArchitecture(desktopEnvironment.architecture)}
+                      />
+                    </>
+                  )}
                   {desktopEnvironment.platform === "linux" && (
                     <>
                       <InfoCard
@@ -2329,16 +2387,44 @@ export function SettingsPage({
                         value={
                           desktopEnvironment.loading
                             ? "Detecting..."
-                            : desktopEnvironment.displayBackend === "wayland"
-                              ? "Wayland (native)"
-                              : desktopEnvironment.displayBackend === "x11"
-                                ? "X11 / Xwayland"
-                                : "Unknown"
+                            : formatDisplayBackend(desktopEnvironment.displayBackend)
                         }
                       />
                     </>
                   )}
                 </div>
+
+                {desktopEnvironment.platform && (
+                  <div className="mt-4 flex flex-col gap-3 rounded-3xl border border-white/10 bg-white/[0.025] p-4 sm:flex-row sm:items-center sm:justify-between">
+                    <button
+                      type="button"
+                      onClick={() => void copyBugReportInfo()}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-4 py-2.5 text-sm font-medium text-white/70 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/55"
+                    >
+                      {bugReportCopyState === "copied" ? (
+                        <CheckIcon className="h-4 w-4 text-emerald-300" />
+                      ) : (
+                        <ClipboardDocumentIcon className="h-4 w-4" />
+                      )}
+                      {bugReportCopyState === "copied"
+                        ? "Information copied"
+                        : bugReportCopyState === "error"
+                          ? "Copy failed"
+                          : "Copy app & system information"}
+                    </button>
+
+                    <a
+                      href={GITHUB_ISSUES_URL}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl border border-[var(--app-accent)]/30 bg-[var(--app-accent-soft)] px-4 py-2.5 text-sm font-medium text-white/85 transition hover:border-[var(--app-accent)]/50 hover:bg-[var(--app-accent-soft)]/80 hover:text-white focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55"
+                    >
+                      <BugAntIcon className="h-4 w-4" />
+                      Report on GitHub
+                      <ArrowTopRightOnSquareIcon className="h-4 w-4" />
+                    </a>
+                  </div>
+                )}
               </div>
 
               {window.desktopStartup && (
@@ -2356,9 +2442,7 @@ export function SettingsPage({
                       description={
                         desktopStartup.available
                           ? "Open the desktop app automatically after you sign in to your computer."
-                          : desktopEnvironment.platform === "linux"
-                            ? "Linux launch-at-login integration will follow after the first test build."
-                            : "This option is available after installing the desktop app."
+                          : "This option is available after installing the desktop app."
                       }
                       checked={desktopStartup.openAtLogin}
                       disabled={!desktopStartup.available || desktopStartup.loading}
@@ -4955,6 +5039,29 @@ function ActionCard({
       </button>
     </div>
   );
+}
+
+function formatDesktopPlatform(platform: string) {
+  if (platform === "win32") return "Windows";
+  if (platform === "linux") return "Linux";
+  if (platform === "darwin") return "macOS";
+  return platform || "Unknown";
+}
+
+function formatArchitecture(architecture: string) {
+  if (architecture === "x64") return "x64";
+  if (architecture === "ia32") return "x32";
+  if (architecture === "arm64") return "ARM64";
+  if (architecture === "arm") return "ARM32";
+  return architecture || "Unknown";
+}
+
+function formatDisplayBackend(
+  displayBackend: DesktopEnvironmentState["displayBackend"]
+) {
+  if (displayBackend === "wayland") return "Wayland (native)";
+  if (displayBackend === "x11") return "X11 / Xwayland";
+  return "Unknown";
 }
 
 function InfoCard({ label, value }: { label: string; value: string }) {

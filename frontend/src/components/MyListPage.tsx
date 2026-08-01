@@ -35,6 +35,7 @@ type MyListEntry = {
   notes: string | null;
   updated_at?: string | null;
   local_updated_at?: string | null;
+  provider_updated_at?: string | null;
   title_romaji?: string | null;
   title_english?: string | null;
   title_native?: string | null;
@@ -687,7 +688,7 @@ export function MyListPage({
       if (releaseSeason !== "all" && entry.season !== releaseSeason) return false;
 
       if (activityFilter !== "all") {
-        const activityTime = parseActivityTimestamp(entry.local_updated_at || entry.updated_at);
+        const activityTime = getLatestActivityTimestamp(entry);
         if (activityTime === null || !matchesActivityWindow(activityTime, activityFilter, nowMs)) return false;
       }
 
@@ -1866,6 +1867,15 @@ function parseActivityTimestamp(value?: string | null) {
     : value;
   const timestamp = Date.parse(normalized);
   return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function getLatestActivityTimestamp(entry: MyListEntry) {
+  const localTimestamp = parseActivityTimestamp(entry.local_updated_at);
+  const providerTimestamp = parseActivityTimestamp(entry.provider_updated_at);
+
+  if (localTimestamp === null) return providerTimestamp;
+  if (providerTimestamp === null) return localTimestamp;
+  return Math.max(localTimestamp, providerTimestamp);
 }
 
 function matchesActivityWindow(timestamp: number, filter: ActivityFilter, now: number) {

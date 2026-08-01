@@ -481,6 +481,12 @@ export function installApiClient() {
     getDiscoverMedia: (hideAdultContent = true) => rpc("getDiscoverMedia", [hideAdultContent]),
     getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = "ANIME") =>
       rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent, mediaType]),
+    getStudioMedia: (studioId, page = 1, hideAdultContent = true) =>
+      rpc("getStudioMedia", [studioId, page, hideAdultContent]),
+    getArtistMedia: (artistSlug, page = 1, hideAdultContent = true) =>
+      rpc("getArtistMedia", [artistSlug, page, hideAdultContent]),
+    getAnimeThemeMusic: (anilistId, titles = []) =>
+      rpc("getAnimeThemeMusic", [anilistId, titles]),
     previewAniListImport: (username) => rpc("previewAniListImport", [username]),
     importAniList: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {

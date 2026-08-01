@@ -13,10 +13,14 @@ import {
   ArrowPathIcon,
   ExclamationTriangleIcon,
   MagnifyingGlassIcon,
+  SpeakerWaveIcon,
+  SpeakerXMarkIcon,
 } from "@heroicons/react/24/outline";
 import { ResultsGrid } from "./components/ResultsGrid";
+import { CharacterSearchCard } from "./components/CharacterSearchCard";
+import { StudioSearchCard } from "./components/StudioSearchCard";
 import { searchMedia } from "./services/anilist";
-import { TopNavbar } from "./components/TopNavbar";
+import { TopNavbar, type ResolvedSearchTerm } from "./components/TopNavbar";
 import { HomePage } from "./components/HomePage";
 import { AuthScreen } from "./components/AuthScreen";
 import { MyListPage } from "./components/MyListPage";
@@ -29,10 +33,15 @@ import { GlobalScrollToTop } from "./components/GlobalScrollToTop";
 import type { LibraryDestination } from "./components/LibraryLens";
 import type {
   ImportPreviewItem,
+  ArtistSearchResult,
+  CharacterSearchResult,
   MediaSearchResults,
   MediaType,
+  SearchMatchType,
   SearchAnime,
   SearchMedia,
+  SongSearchResult,
+  StudioSearchResult,
   TrackedAnimeEntry,
   TrackedMediaEntry,
   TrackedMangaEntry,
@@ -44,11 +53,35 @@ import {
 } from "./utils/portablePreferences";
 
 const MediaDetails = lazy(() => import("./components/AnimeDetails"));
+const SongSearchCard = lazy(() =>
+  import("./components/SongSearchCard").then((module) => ({
+    default: module.SongSearchCard,
+  }))
+);
+const StudioCatalogPage = lazy(() =>
+  import("./components/StudioCatalogPage").then((module) => ({
+    default: module.StudioCatalogPage,
+  }))
+);
+const ArtistCatalogPage = lazy(() =>
+  import("./components/ArtistCatalogPage").then((module) => ({
+    default: module.ArtistCatalogPage,
+  }))
+);
 const SettingsPage = lazy(() =>
   import("./components/SettingsPage").then((module) => ({ default: module.SettingsPage }))
 );
 
-const EMPTY_MEDIA_SEARCH_RESULTS: MediaSearchResults = { anime: [], manga: [] };
+const EMPTY_MEDIA_SEARCH_RESULTS: MediaSearchResults = {
+  anime: [],
+  manga: [],
+  characters: [],
+  studios: [],
+  songs: [],
+  artists: [],
+  warnings: [],
+};
+const SONG_PREVIEW_VOLUME_STORAGE_KEY = "seenary:song-preview-volume";
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   themeAccent: "violet",
@@ -126,7 +159,7 @@ type ImportOptions = {
   signal?: AbortSignal;
 };
 
-type AppView = "home" | "list" | "details" | "settings";
+type AppView = "home" | "list" | "details" | "studio" | "artist" | "settings";
 type HomeMode = Exclude<LibraryDestination, "list">;
 
 const LIBRARY_MEDIA_STORAGE_KEY = "seenary.library-lens.media";
@@ -257,7 +290,13 @@ function redactAdultListEntry(entry: TrackedAnimeEntry): TrackedAnimeEntry {
 
 function App() {
   const [results, setResults] = useState<MediaSearchResults>(EMPTY_MEDIA_SEARCH_RESULTS);
+  const [songPreviewVolume, setSongPreviewVolume] = useState(readSongPreviewVolume);
   const [searchQuery, setSearchQuery] = useState("");
+  const [resolvedSearchTerms, setResolvedSearchTerms] = useState<ResolvedSearchTerm[]>([]);
+  const [activeSearchResolution, setActiveSearchResolution] = useState<{
+    query: string;
+    matchTypes: SearchMatchType[];
+  } | null>(null);
   const [searchResultsVisible, setSearchResultsVisible] = useState(false);
   const [selectedAnimeId, setSelectedAnimeId] = useState<number | null>(null);
   const [selectedMediaType, setSelectedMediaType] = useState<MediaType>("ANIME");
@@ -275,6 +314,15 @@ function App() {
   const [previousMediaType, setPreviousMediaType] = useState<MediaType>("ANIME");
   const [detailsReturnView, setDetailsReturnView] = useState<AppView>("home");
   const [detailsHistory, setDetailsHistory] = useState<MediaReference[]>([]);
+  const [selectedStudio, setSelectedStudio] = useState<{ id: number; name: string } | null>(
+    null
+  );
+  const [studioReturnView, setStudioReturnView] = useState<AppView>("home");
+  const [studioReturnMedia, setStudioReturnMedia] = useState<MediaReference | null>(null);
+  const [selectedArtist, setSelectedArtist] = useState<ArtistSearchResult["artist"] | null>(
+    null
+  );
+  const [artistReturnView, setArtistReturnView] = useState<AppView>("home");
   const [showTutorial, setShowTutorial] = useState(false);
   const [settings, setSettings] = useState<AppSettings>(DEFAULT_APP_SETTINGS);
   const [syncToast, setSyncToast] = useState<SyncToastState>(null);
@@ -294,6 +342,18 @@ function App() {
   const listScrollTopRef = useRef(0);
   const listScrollElementRef = useRef<HTMLDivElement | null>(null);
   const searchRequestIdRef = useRef(0);
+  const searchResultCacheRef = useRef(new Map<string, MediaSearchResults>());
+  const handleSongPreviewVolumeChange = useCallback((volume: number) => {
+    setSongPreviewVolume(volume);
+    try {
+      window.localStorage.setItem(
+        SONG_PREVIEW_VOLUME_STORAGE_KEY,
+        String(volume)
+      );
+    } catch {
+      // The in-memory preference still works when storage is unavailable.
+    }
+  }, []);
 
   const privacySafeTrackedEntries = useMemo(
     () =>
@@ -330,18 +390,70 @@ function App() {
     [settings.hideAdultContent, trackedMangaEntries]
   );
   const privacySafeResults = useMemo(
-    () =>
-      settings.hideAdultContent
+    () => {
+      const characterResults = results.characters ?? [];
+      const studioResults = results.studios ?? [];
+      const songResults = results.songs ?? [];
+      const artistResults = results.artists ?? [];
+      const warnings = results.warnings ?? [];
+      return settings.hideAdultContent
         ? {
             anime: results.anime.filter((media) => !media.isAdult),
             manga: results.manga.filter((media) => !media.isAdult),
+            characters: characterResults.filter((result) => !result.media.isAdult),
+            studios: studioResults.filter((result) => !result.media.isAdult),
+            songs: songResults.filter((result) => !result.media.isAdult),
+            artists: artistResults.filter((result) => !result.media.isAdult),
+            warnings,
           }
-        : results,
+        : {
+            ...results,
+            characters: characterResults,
+            studios: studioResults,
+            songs: songResults,
+            artists: artistResults,
+            warnings,
+          };
+    },
     [results, settings.hideAdultContent]
   );
   const visibleSearchResultCount =
-    privacySafeResults.anime.length + privacySafeResults.manga.length;
-  const searchResultCount = results.anime.length + results.manga.length;
+    privacySafeResults.anime.length +
+    privacySafeResults.manga.length +
+    privacySafeResults.characters.length +
+    privacySafeResults.studios.length +
+    privacySafeResults.songs.length +
+    privacySafeResults.artists.length;
+  const searchResultCount =
+    results.anime.length +
+    results.manga.length +
+    (results.characters?.length ?? 0) +
+    (results.studios?.length ?? 0) +
+    (results.songs?.length ?? 0) +
+    (results.artists?.length ?? 0);
+  const hasSearch = Boolean(searchQuery.trim() || resolvedSearchTerms.length);
+  const searchDisplayQuery = [
+    ...resolvedSearchTerms.map((term) => term.query),
+    searchQuery.trim(),
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const activeSearchMatchTypes =
+    activeSearchResolution &&
+    normalizeSearchTerm(activeSearchResolution.query) === normalizeSearchTerm(searchQuery)
+      ? activeSearchResolution.matchTypes
+      : [];
+  const visibleSearchMatchTypes = new Set<SearchMatchType>([
+    ...resolvedSearchTerms.flatMap((term) => term.matchTypes),
+    ...activeSearchMatchTypes,
+  ]);
+  const hasExplicitSearchMatchFilter = visibleSearchMatchTypes.size > 0;
+  const showAnimeSearchSection =
+    !hasExplicitSearchMatchFilter || visibleSearchMatchTypes.has("ANIME");
+  const showMangaSearchSection =
+    !hasExplicitSearchMatchFilter || visibleSearchMatchTypes.has("MANGA");
+  const studioCatalogTarget = getSingleStudioTarget(privacySafeResults.studios);
+  const artistCatalogTarget = getSingleArtistTarget(privacySafeResults.artists);
 
   const showSyncToast = useCallback((
     kind: "success" | "error" | "warning",
@@ -874,8 +986,11 @@ function App() {
     setAuthUser(null);
     setShowTutorial(false);
     setSearchQuery("");
+    setResolvedSearchTerms([]);
+    setActiveSearchResolution(null);
     setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
+    setSelectedStudio(null);
     setCurrentView("home");
     setTrackedEntries([]);
     setTrackedMangaEntries([]);
@@ -997,8 +1112,11 @@ function App() {
     }
 
     setSearchQuery("");
+    setResolvedSearchTerms([]);
+    setActiveSearchResolution(null);
     setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
+    setSelectedStudio(null);
     setCurrentView("home");
     setPreviousView("home");
     setPreviousAnimeId(null);
@@ -1007,17 +1125,29 @@ function App() {
     setShowTutorial(true);
   };
 
-  const handleSearch = async (query: string) => {
+  const runResolvedSearch = async (
+    rawQueries: string[],
+    activeQuery = "",
+    filteredTerms = resolvedSearchTerms
+  ) => {
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
     captureHomeScrollTop();
-    setSearchQuery(query);
+    const queries = Array.from(
+      new Map(
+        rawQueries
+          .map((query) => query.trim())
+          .filter(Boolean)
+          .map((query) => [normalizeSearchTerm(query), query])
+      ).values()
+    );
 
-    if (!query.trim()) {
+    if (!queries.length) {
       setSearchResultsVisible(false);
       setSearchError(null);
       setIsSearching(false);
       setResults(EMPTY_MEDIA_SEARCH_RESULTS);
+      setActiveSearchResolution(null);
       if (selectedAnimeId === null) {
         setCurrentView("home");
       }
@@ -1029,17 +1159,73 @@ function App() {
     setSearchError(null);
 
     try {
-      const data = await searchMedia(query, settings.hideAdultContent);
+      const queryResults = await Promise.all(
+        queries.map(async (query) => {
+          const cacheKey = `music-v2:${settings.hideAdultContent ? "safe" : "all"}:${normalizeSearchTerm(query)}`;
+          const cachedResults = searchResultCacheRef.current.get(cacheKey);
+          if (cachedResults) return cachedResults;
+
+          const nextResults = await searchMedia(query, settings.hideAdultContent);
+          if (searchResultCacheRef.current.size >= 60) {
+            const oldestKey = searchResultCacheRef.current.keys().next().value;
+            if (oldestKey) searchResultCacheRef.current.delete(oldestKey);
+          }
+          searchResultCacheRef.current.set(cacheKey, nextResults);
+          return nextResults;
+        })
+      );
 
       if (searchRequestIdRef.current !== requestId) {
         return;
       }
 
-      setResults(data);
+      const matchTypeFilters = new Map(
+        filteredTerms.map((term) => [normalizeSearchTerm(term.query), term.matchTypes])
+      );
+      const filteredQueryResults = queryResults.map((result, index) => {
+        const matchTypes = matchTypeFilters.get(normalizeSearchTerm(queries[index]));
+        if (!matchTypes) return result;
+
+        return {
+          anime: matchTypes.includes("ANIME") ? result.anime : [],
+          manga: matchTypes.includes("MANGA") ? result.manga : [],
+          characters: matchTypes.includes("CHARACTER") ? result.characters ?? [] : [],
+          studios: matchTypes.includes("STUDIO") ? result.studios ?? [] : [],
+          songs: matchTypes.includes("SONG") ? result.songs ?? [] : [],
+          artists: matchTypes.includes("ARTIST") ? result.artists ?? [] : [],
+          warnings:
+            matchTypes.includes("SONG") || matchTypes.includes("ARTIST")
+              ? result.warnings ?? []
+              : [],
+        };
+      });
+
+      setResults(mergeMediaSearchResults(filteredQueryResults));
+      const normalizedActiveQuery = normalizeSearchTerm(activeQuery);
+      const activeQueryIndex = normalizedActiveQuery
+        ? queries.findIndex((query) => normalizeSearchTerm(query) === normalizedActiveQuery)
+        : -1;
+
+      if (activeQueryIndex >= 0) {
+        const activeResults = queryResults[activeQueryIndex];
+        const matchTypes: SearchMatchType[] = [];
+        if (activeResults.anime.length) matchTypes.push("ANIME");
+        if (activeResults.manga.length) matchTypes.push("MANGA");
+        if (activeResults.characters?.length) matchTypes.push("CHARACTER");
+        if (activeResults.studios?.length) matchTypes.push("STUDIO");
+        if (activeResults.songs?.length) matchTypes.push("SONG");
+        if (activeResults.artists?.length) matchTypes.push("ARTIST");
+        setActiveSearchResolution({
+          query: activeQuery.trim(),
+          matchTypes,
+        });
+      } else {
+        setActiveSearchResolution(null);
+      }
       setSelectedAnimeId(null);
       setCurrentView("home");
     } catch (error) {
-      console.error("Failed to search AniList:", error);
+      console.error("Failed to search Seenary providers:", error);
 
       if (searchRequestIdRef.current !== requestId) {
         return;
@@ -1051,7 +1237,7 @@ function App() {
       setSearchError(
         error instanceof Error && error.message
           ? error.message
-          : "There was a problem searching AniList."
+          : "There was a problem searching Seenary."
       );
     } finally {
       if (searchRequestIdRef.current === requestId) {
@@ -1060,9 +1246,88 @@ function App() {
     }
   };
 
+  const handleSearch = (query: string) => {
+    setSearchQuery(query);
+    setActiveSearchResolution(null);
+    void runResolvedSearch(
+      [...resolvedSearchTerms.map((term) => term.query), query],
+      query
+    );
+  };
+
+  const handleCommitSearchTerm = (selectedMatchTypes: SearchMatchType[]) => {
+    const query = searchQuery.trim();
+    if (
+      !query ||
+      !activeSearchResolution ||
+      normalizeSearchTerm(activeSearchResolution.query) !== normalizeSearchTerm(query) ||
+      !activeSearchResolution.matchTypes.length ||
+      !selectedMatchTypes.length
+    ) {
+      return;
+    }
+
+    const normalizedQuery = normalizeSearchTerm(query);
+    const existingTerm = resolvedSearchTerms.find(
+      (term) => normalizeSearchTerm(term.query) === normalizedQuery
+    );
+    const nextTerms = existingTerm
+      ? resolvedSearchTerms.map((term) =>
+          term.id === existingTerm.id
+            ? {
+                ...term,
+                matchTypes: selectedMatchTypes,
+              }
+            : term
+        )
+      : [
+          ...resolvedSearchTerms,
+          {
+            id: `search-term-${Date.now()}-${resolvedSearchTerms.length}`,
+            query,
+            matchTypes: selectedMatchTypes,
+          },
+        ];
+
+    setResolvedSearchTerms(nextTerms);
+    setSearchQuery("");
+    setActiveSearchResolution(null);
+    void runResolvedSearch(nextTerms.map((term) => term.query), "", nextTerms);
+  };
+
+  const handleEditSearchTerm = (id: string) => {
+    const term = resolvedSearchTerms.find((candidate) => candidate.id === id);
+    if (!term) return;
+
+    const nextTerms = resolvedSearchTerms.filter((candidate) => candidate.id !== id);
+    setResolvedSearchTerms(nextTerms);
+    setSearchQuery(term.query);
+    setActiveSearchResolution({
+      query: term.query,
+      matchTypes: term.matchTypes,
+    });
+    void runResolvedSearch(
+      [...nextTerms.map((candidate) => candidate.query), term.query],
+      term.query,
+      nextTerms
+    );
+  };
+
+  const handleRemoveSearchTerm = (id: string) => {
+    const nextTerms = resolvedSearchTerms.filter((term) => term.id !== id);
+    setResolvedSearchTerms(nextTerms);
+    setActiveSearchResolution(null);
+    void runResolvedSearch(
+      [...nextTerms.map((term) => term.query), searchQuery],
+      searchQuery,
+      nextTerms
+    );
+  };
+
   const handleRetrySearch = () => {
-    if (!searchQuery.trim()) return;
-    void handleSearch(searchQuery);
+    const queries = [...resolvedSearchTerms.map((term) => term.query), searchQuery];
+    if (!queries.some((query) => query.trim())) return;
+    void runResolvedSearch(queries, searchQuery);
   };
 
   const handleDismissSearchResults = () => {
@@ -1070,11 +1335,12 @@ function App() {
   };
 
   const handleRestoreSearchResults = () => {
-    if (!searchQuery.trim()) return;
+    const queries = [...resolvedSearchTerms.map((term) => term.query), searchQuery];
+    if (!queries.some((query) => query.trim())) return;
 
     setSelectedAnimeId(null);
     setCurrentView("home");
-    void handleSearch(searchQuery);
+    void runResolvedSearch(queries, searchQuery);
   };
 
   const handleQuickAddToList = async (media: SearchMedia | SearchAnime) => {
@@ -1121,8 +1387,11 @@ function App() {
     setAuthUser(null);
     setShowTutorial(false);
     setSearchQuery("");
+    setResolvedSearchTerms([]);
+    setActiveSearchResolution(null);
     setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
+    setSelectedStudio(null);
     setCurrentView("home");
     setTrackedEntries([]);
     setTrackedMangaEntries([]);
@@ -1187,6 +1456,54 @@ function App() {
     handleOpenMediaDetails(animeId, "ANIME");
   };
 
+  const handleOpenStudioCatalog = (studio: { id: number; name: string }) => {
+    if (!studio.id) return;
+
+    captureHomeScrollTop();
+    captureListScrollTop();
+    setStudioReturnView(currentView === "studio" ? "home" : currentView);
+    setStudioReturnMedia(
+      currentView === "details" && selectedAnimeId !== null
+        ? { id: selectedAnimeId, type: selectedMediaType }
+        : null
+    );
+    setSelectedStudio(studio);
+    setCurrentView("studio");
+  };
+
+  const handleBackFromStudioCatalog = () => {
+    if (studioReturnView === "details" && studioReturnMedia) {
+      setSelectedAnimeId(studioReturnMedia.id);
+      setSelectedMediaType(studioReturnMedia.type);
+      setCurrentView("details");
+      return;
+    }
+
+    setSelectedAnimeId(null);
+    setCurrentView(
+      studioReturnView === "studio" || studioReturnView === "details"
+        ? "home"
+        : studioReturnView
+    );
+  };
+
+  const handleOpenArtistCatalog = (artist: ArtistSearchResult["artist"]) => {
+    if (!artist.slug) return;
+    captureHomeScrollTop();
+    setArtistReturnView(currentView === "artist" ? "home" : currentView);
+    setSelectedArtist(artist);
+    setCurrentView("artist");
+  };
+
+  const handleBackFromArtistCatalog = () => {
+    setSelectedArtist(null);
+    setCurrentView(
+      artistReturnView === "artist" || artistReturnView === "details"
+        ? "home"
+        : artistReturnView
+    );
+  };
+
   const handleOpenMyList = () => {
     if (currentView === "list") {
       if (previousView === "details") {
@@ -1213,8 +1530,11 @@ function App() {
 
   const handleOpenHome = () => {
     setSearchQuery("");
+    setResolvedSearchTerms([]);
+    setActiveSearchResolution(null);
     setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSelectedAnimeId(null);
+    setSelectedStudio(null);
     setCurrentView("home");
     setPreviousView("home");
     setPreviousAnimeId(null);
@@ -1245,6 +1565,8 @@ function App() {
     window.localStorage.setItem(HOME_MODE_STORAGE_KEY, destination);
     setHomeMode(destination);
     setSearchQuery("");
+    setResolvedSearchTerms([]);
+    setActiveSearchResolution(null);
     setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSearchResultsVisible(false);
     setSelectedAnimeId(null);
@@ -1286,6 +1608,13 @@ function App() {
 
     setDetailsHistory([]);
 
+    if (detailsReturnView === "studio" && selectedStudio) {
+      setCurrentView("studio");
+      setSelectedAnimeId(null);
+      await loadTrackedEntries();
+      return;
+    }
+
     if (detailsReturnView === "list") {
       setCurrentView("list");
       setSelectedAnimeId(null);
@@ -1296,13 +1625,15 @@ function App() {
     setSelectedAnimeId(null);
     await loadTrackedEntries();
 
-    if (searchQuery.trim()) {
+    if (hasSearch) {
       setCurrentView("home");
       return;
     }
 
     setResults(EMPTY_MEDIA_SEARCH_RESULTS);
     setSearchQuery("");
+    setResolvedSearchTerms([]);
+    setActiveSearchResolution(null);
     setCurrentView("home");
   };
 
@@ -1353,9 +1684,16 @@ function App() {
               <TopNavbar
                 query={searchQuery}
                 onSearch={handleSearch}
+                resolvedSearchTerms={resolvedSearchTerms}
+                activeSearchMatchTypes={activeSearchMatchTypes}
+                onCommitSearchTerm={handleCommitSearchTerm}
+                onEditSearchTerm={handleEditSearchTerm}
+                onRemoveSearchTerm={handleRemoveSearchTerm}
                 onClear={() => {
                   searchRequestIdRef.current += 1;
                   setSearchQuery("");
+                  setResolvedSearchTerms([]);
+                  setActiveSearchResolution(null);
                   setResults(EMPTY_MEDIA_SEARCH_RESULTS);
                   setSearchError(null);
                   setIsSearching(false);
@@ -1389,12 +1727,34 @@ function App() {
 
               <div className="min-h-0 flex-1">
                 <Suspense fallback={<PageLoadingFallback />}>
-                  {currentView === "details" && selectedAnimeId !== null ? (
+                  {currentView === "artist" && selectedArtist ? (
+                    <ArtistCatalogPage
+                      artist={selectedArtist}
+                      hideAdultContent={settings.hideAdultContent}
+                      titleLanguage={settings.titleLanguage}
+                      previewVolume={songPreviewVolume}
+                      onPreviewVolumeChange={handleSongPreviewVolumeChange}
+                      onBack={handleBackFromArtistCatalog}
+                      onSelectMedia={handleOpenMediaDetails}
+                    />
+                  ) : currentView === "studio" && selectedStudio ? (
+                    <StudioCatalogPage
+                      studio={selectedStudio}
+                      hideAdultContent={settings.hideAdultContent}
+                      trackedEntries={privacySafeTrackedEntries}
+                      titleLanguage={settings.titleLanguage}
+                      onBack={handleBackFromStudioCatalog}
+                      onSelectMedia={handleOpenAnimeDetails}
+                      onQuickAdd={handleQuickAddToList}
+                      onEditEntry={setEditingListEntry}
+                    />
+                  ) : currentView === "details" && selectedAnimeId !== null ? (
                     <MediaDetails
                     mediaId={selectedAnimeId}
                     mediaType={selectedMediaType}
                     onBack={handleBackFromDetails}
                     onSelectMedia={handleOpenMediaDetails}
+                    onOpenStudio={handleOpenStudioCatalog}
                     onListChanged={loadTrackedEntries}
                     onNotify={showSyncToast}
                     titleLanguage={settings.titleLanguage}
@@ -1444,7 +1804,7 @@ function App() {
                     userId={authUser.id}
                     hasResults={
                       searchResultsVisible &&
-                      (Boolean(searchQuery.trim()) || Boolean(searchError) || isSearching)
+                      (hasSearch || Boolean(searchError) || isSearching)
                     }
                     showTutorial={showTutorial}
                     onDismissTutorial={handleDismissTutorial}
@@ -1482,53 +1842,198 @@ function App() {
                         <div className="flex min-h-72 items-center justify-center text-white/55">
                           <div className="flex items-center gap-3 rounded-2xl border border-white/10 bg-white/[0.04] px-5 py-4">
                             <ArrowPathIcon className="h-5 w-5 animate-spin" />
-                            <span className="text-sm">Searching AniList...</span>
+                            <span className="text-sm">Searching titles and connections...</span>
                           </div>
                         </div>
-                      ) : searchQuery.trim() && !visibleSearchResultCount ? (
+                      ) : hasSearch && !visibleSearchResultCount ? (
                         <SearchEmptyPanel
-                          query={searchQuery.trim()}
+                          query={searchDisplayQuery}
                           filteredByAdultContent={
                             settings.hideAdultContent && searchResultCount > 0
                           }
                         />
                       ) : (
                         <div className="flex flex-col gap-12 px-10 pb-10 pt-10">
-                          <div className={libraryMediaType === "MANGA" ? "order-2" : "order-1"}>
-                            <SearchResultSection
-                              title="Anime results"
-                              emptyMessage="No anime matches"
-                              results={privacySafeResults.anime}
+                          {privacySafeResults.warnings.map((warning) => (
+                            <div
+                              key={`${warning.provider}:${warning.message}`}
+                              className="rounded-2xl border border-amber-300/15 bg-amber-300/[0.06] px-4 py-3 text-sm text-amber-100/70"
                             >
-                              <ResultsGrid
-                                results={privacySafeResults.anime}
-                                onSelectMedia={handleOpenAnimeDetails}
-                                trackedEntries={privacySafeTrackedEntries}
-                                onQuickAdd={handleQuickAddToList}
-                                onEditEntry={setEditingListEntry}
-                                titleLanguage={settings.titleLanguage}
-                              />
-                            </SearchResultSection>
-                          </div>
+                              {warning.message} Title, character, and studio results are
+                              still available.
+                            </div>
+                          ))}
 
-                          <div className={libraryMediaType === "MANGA" ? "order-1" : "order-2"}>
-                            <SearchResultSection
-                              title="Manga results"
-                              emptyMessage="No manga matches"
-                              results={privacySafeResults.manga}
-                            >
-                              <ResultsGrid
-                                results={privacySafeResults.manga}
-                                onSelectMedia={(mediaId) =>
-                                  handleOpenMediaDetails(mediaId, "MANGA")
+                          {privacySafeResults.characters.length > 0 && (
+                            <div className="order-3">
+                              <SearchResultSection
+                                title="Character matches"
+                                emptyMessage="No character matches"
+                                description="Each card opens the Anime or Manga shown as its destination."
+                                results={privacySafeResults.characters}
+                              >
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                                  {privacySafeResults.characters.map((result) => (
+                                    <CharacterSearchCard
+                                      key={`${result.character.id}:${result.media.type}:${result.media.id}`}
+                                      result={result}
+                                      onSelectMedia={handleOpenMediaDetails}
+                                      titleLanguage={settings.titleLanguage}
+                                    />
+                                  ))}
+                                </div>
+                              </SearchResultSection>
+                            </div>
+                          )}
+
+                          {privacySafeResults.studios.length > 0 && (
+                            <div className="order-4">
+                              <SearchResultSection
+                                title="Studio matches"
+                                emptyMessage="No studio matches"
+                                description="Each card opens an Anime credited to the matching studio."
+                                results={privacySafeResults.studios}
+                                action={
+                                  studioCatalogTarget ? (
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleOpenStudioCatalog(studioCatalogTarget)
+                                      }
+                                      className="inline-flex items-center justify-center rounded-xl border border-emerald-300/20 bg-emerald-400/10 px-4 py-2 text-xs font-semibold text-emerald-100 transition hover:border-emerald-200/35 hover:bg-emerald-400/20 focus:outline-none focus:ring-2 focus:ring-emerald-100/50"
+                                    >
+                                      See all of {formatPossessive(studioCatalogTarget.name)} work
+                                    </button>
+                                  ) : undefined
                                 }
-                                trackedEntries={privacySafeTrackedMangaEntries}
-                                onQuickAdd={handleQuickAddToList}
-                                onEditEntry={setEditingListEntry}
-                                titleLanguage={settings.titleLanguage}
-                              />
-                            </SearchResultSection>
-                          </div>
+                              >
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                                  {privacySafeResults.studios.map((result) => (
+                                    <StudioSearchCard
+                                      key={`${result.studio.id}:${result.media.id}`}
+                                      result={result}
+                                      onSelectMedia={handleOpenMediaDetails}
+                                      titleLanguage={settings.titleLanguage}
+                                    />
+                                  ))}
+                                </div>
+                              </SearchResultSection>
+                            </div>
+                          )}
+
+                          {privacySafeResults.songs.length > 0 && (
+                            <div className="order-5">
+                              <SearchResultSection
+                                title="Theme song matches"
+                                emptyMessage="No theme song matches"
+                                description="Each card opens the Anime connected to the matching opening or ending song."
+                                results={privacySafeResults.songs}
+                                action={
+                                  <SongPreviewHeaderActions
+                                    volume={songPreviewVolume}
+                                    onVolumeChange={handleSongPreviewVolumeChange}
+                                  />
+                                }
+                              >
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                                  {privacySafeResults.songs.map((result) => (
+                                    <SongSearchCard
+                                      key={`${result.song.id}:${result.theme.id}:${result.media.id}`}
+                                      result={result}
+                                      onSelectMedia={handleOpenMediaDetails}
+                                      titleLanguage={settings.titleLanguage}
+                                      previewVolume={songPreviewVolume}
+                                    />
+                                  ))}
+                                </div>
+                              </SearchResultSection>
+                            </div>
+                          )}
+
+                          {privacySafeResults.artists.length > 0 && (
+                            <div className="order-6">
+                              <SearchResultSection
+                                title="Theme artist matches"
+                                emptyMessage="No theme artist matches"
+                                description="Each card shows a theme performance and opens its Anime."
+                                results={privacySafeResults.artists}
+                                action={
+                                  <div className="flex flex-wrap items-center justify-end gap-3">
+                                    {privacySafeResults.songs.length === 0 && (
+                                      <SongPreviewHeaderActions
+                                        volume={songPreviewVolume}
+                                        onVolumeChange={handleSongPreviewVolumeChange}
+                                      />
+                                    )}
+                                    {artistCatalogTarget && (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleOpenArtistCatalog(artistCatalogTarget)
+                                        }
+                                        className="inline-flex items-center justify-center rounded-xl border border-fuchsia-300/20 bg-fuchsia-400/10 px-4 py-2 text-xs font-semibold text-fuchsia-100 transition hover:border-fuchsia-200/35 hover:bg-fuchsia-400/20 focus:outline-none focus:ring-2 focus:ring-fuchsia-100/50"
+                                      >
+                                        See all themes by {artistCatalogTarget.name}
+                                      </button>
+                                    )}
+                                  </div>
+                                }
+                              >
+                                <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6">
+                                  {privacySafeResults.artists.map((result) => (
+                                    <SongSearchCard
+                                      key={`${result.artist.id}:${result.song.id}:${result.theme.id}:${result.media.id}`}
+                                      result={result}
+                                      matchKind="artist"
+                                      onSelectMedia={handleOpenMediaDetails}
+                                      titleLanguage={settings.titleLanguage}
+                                      previewVolume={songPreviewVolume}
+                                    />
+                                  ))}
+                                </div>
+                              </SearchResultSection>
+                            </div>
+                          )}
+
+                          {showAnimeSearchSection && (
+                            <div className={libraryMediaType === "MANGA" ? "order-2" : "order-1"}>
+                              <SearchResultSection
+                                title="Anime results"
+                                emptyMessage="No anime matches"
+                                results={privacySafeResults.anime}
+                              >
+                                <ResultsGrid
+                                  results={privacySafeResults.anime}
+                                  onSelectMedia={handleOpenAnimeDetails}
+                                  trackedEntries={privacySafeTrackedEntries}
+                                  onQuickAdd={handleQuickAddToList}
+                                  onEditEntry={setEditingListEntry}
+                                  titleLanguage={settings.titleLanguage}
+                                />
+                              </SearchResultSection>
+                            </div>
+                          )}
+
+                          {showMangaSearchSection && (
+                            <div className={libraryMediaType === "MANGA" ? "order-1" : "order-2"}>
+                              <SearchResultSection
+                                title="Manga results"
+                                emptyMessage="No manga matches"
+                                results={privacySafeResults.manga}
+                              >
+                                <ResultsGrid
+                                  results={privacySafeResults.manga}
+                                  onSelectMedia={(mediaId) =>
+                                    handleOpenMediaDetails(mediaId, "MANGA")
+                                  }
+                                  trackedEntries={privacySafeTrackedMangaEntries}
+                                  onQuickAdd={handleQuickAddToList}
+                                  onEditEntry={setEditingListEntry}
+                                  titleLanguage={settings.titleLanguage}
+                                />
+                              </SearchResultSection>
+                            </div>
+                          )}
                         </div>
                       )}
                     </div>
@@ -1538,7 +2043,7 @@ function App() {
               </div>
 
               <GlobalScrollToTop
-                viewKey={`${currentView}:${selectedMediaType}:${selectedAnimeId ?? "none"}:${homeMode}:${libraryMediaType}`}
+                viewKey={`${currentView}:${selectedMediaType}:${selectedAnimeId ?? "none"}:${selectedStudio?.id ?? "no-studio"}:${homeMode}:${libraryMediaType}`}
               />
 
               {editingListEntry && (
@@ -1614,17 +2119,63 @@ function App() {
 
 export default App;
 
+function SongPreviewHeaderActions({
+  volume,
+  onVolumeChange,
+}: {
+  volume: number;
+  onVolumeChange: (volume: number) => void;
+}) {
+  const percentage = Math.round(volume * 100);
+  const VolumeIcon = percentage === 0 ? SpeakerXMarkIcon : SpeakerWaveIcon;
+
+  return (
+    <div className="flex flex-wrap items-center justify-end gap-3">
+      <label className="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-white/55">
+        <VolumeIcon className="h-4 w-4 shrink-0" />
+        <span className="sr-only">Theme preview volume</span>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="5"
+          value={percentage}
+          onChange={(event) =>
+            onVolumeChange(Math.min(1, Math.max(0, Number(event.target.value) / 100)))
+          }
+          className="h-1 w-20 cursor-pointer accent-fuchsia-300"
+          aria-label="Theme preview volume"
+        />
+        <span className="w-8 text-right text-[10px] font-semibold tabular-nums">
+          {percentage}%
+        </span>
+      </label>
+
+      <a
+        href="https://animethemes.moe"
+        target="_blank"
+        rel="noreferrer"
+        className="text-xs font-medium text-fuchsia-100/55 transition hover:text-fuchsia-100 focus:outline-none focus:ring-2 focus:ring-fuchsia-100/50"
+      >
+        Music data by AnimeThemes
+      </a>
+    </div>
+  );
+}
+
 function SearchResultSection({
   title,
   emptyMessage,
   description,
+  action,
   results,
   children,
 }: {
   title: string;
   emptyMessage: string;
   description?: string;
-  results: SearchMedia[];
+  action?: ReactNode;
+  results: readonly unknown[];
   children: ReactNode;
 }) {
   return (
@@ -1644,6 +2195,7 @@ function SearchResultSection({
           </div>
           {description && <p className="mt-1.5 text-xs text-white/40">{description}</p>}
         </div>
+        {action}
       </div>
 
       {results.length ? (
@@ -1666,7 +2218,7 @@ function SearchErrorPanel({
   isRetrying: boolean;
   onRetry: () => void;
 }) {
-  return <AsyncStatePanel icon={ExclamationTriangleIcon} title="There was a problem searching AniList." message={message} busy={isRetrying} actionLabel={isRetrying ? "Retrying..." : "Retry"} onAction={onRetry} />;
+  return <AsyncStatePanel icon={ExclamationTriangleIcon} title="There was a problem searching Seenary." message={message} busy={isRetrying} actionLabel={isRetrying ? "Retrying..." : "Retry"} onAction={onRetry} />;
 }
 
 function SearchEmptyPanel({
@@ -1685,7 +2237,7 @@ function SearchEmptyPanel({
         <h2 className="mt-5 text-lg font-semibold">
           {filteredByAdultContent
             ? "Results hidden by the 18+ filter"
-            : "No anime or manga found"}
+            : "No matches found"}
         </h2>
         <p className="mt-2 text-sm leading-6 text-white/55">
           {filteredByAdultContent
@@ -1695,11 +2247,103 @@ function SearchEmptyPanel({
         <p className="mt-4 text-xs text-white/35">
           {filteredByAdultContent
             ? "You can change the 18+ filter in Settings."
-            : "Try an English, Romaji, or alternate title."}
+            : "Try a title, character, studio, opening, or ending song."}
         </p>
       </section>
     </div>
   );
+}
+
+function normalizeSearchTerm(value: string) {
+  return value.trim().normalize("NFKC").toLocaleLowerCase();
+}
+
+function readSongPreviewVolume() {
+  try {
+    const storedValue = window.localStorage.getItem(
+      SONG_PREVIEW_VOLUME_STORAGE_KEY
+    );
+    if (storedValue !== null) {
+      const storedVolume = Number(storedValue);
+      if (Number.isFinite(storedVolume)) {
+        return Math.min(1, Math.max(0, storedVolume));
+      }
+    }
+  } catch {
+    // Use the default when local storage is unavailable.
+  }
+
+  return 0.7;
+}
+
+function getSingleStudioTarget(results: StudioSearchResult[]) {
+  const studios = new Map(
+    results.map((result) => [result.studio.id, result.studio])
+  );
+  return studios.size === 1 ? studios.values().next().value ?? null : null;
+}
+
+function getSingleArtistTarget(results: ArtistSearchResult[]) {
+  const artists = new Map(
+    results.map((result) => [result.artist.id, result.artist])
+  );
+  return artists.size === 1 ? artists.values().next().value ?? null : null;
+}
+
+function formatPossessive(value: string) {
+  return `${value}${/s$/i.test(value) ? "'" : "'s"}`;
+}
+
+function mergeMediaSearchResults(
+  resultSets: MediaSearchResults[]
+): MediaSearchResults {
+  const anime = new Map<number, SearchMedia>();
+  const manga = new Map<number, SearchMedia>();
+  const characters = new Map<string, CharacterSearchResult>();
+  const studios = new Map<string, StudioSearchResult>();
+  const songs = new Map<string, SongSearchResult>();
+  const artists = new Map<string, ArtistSearchResult>();
+  const warnings = new Map<string, NonNullable<MediaSearchResults["warnings"]>[number]>();
+
+  for (const resultSet of resultSets) {
+    for (const media of resultSet.anime) {
+      anime.set(media.id, media);
+    }
+    for (const media of resultSet.manga) {
+      manga.set(media.id, media);
+    }
+    for (const result of resultSet.characters ?? []) {
+      characters.set(
+        `${result.character.id}:${result.media.type}:${result.media.id}`,
+        result
+      );
+    }
+    for (const result of resultSet.studios ?? []) {
+      studios.set(`${result.studio.id}:${result.media.id}`, result);
+    }
+    for (const result of resultSet.songs ?? []) {
+      songs.set(`${result.song.id}:${result.theme.id}:${result.media.id}`, result);
+    }
+    for (const result of resultSet.artists ?? []) {
+      artists.set(
+        `${result.artist.id}:${result.song.id}:${result.theme.id}:${result.media.id}`,
+        result
+      );
+    }
+    for (const warning of resultSet.warnings ?? []) {
+      warnings.set(`${warning.provider}:${warning.message}`, warning);
+    }
+  }
+
+  return {
+    anime: Array.from(anime.values()),
+    manga: Array.from(manga.values()),
+    characters: Array.from(characters.values()),
+    studios: Array.from(studios.values()),
+    songs: Array.from(songs.values()),
+    artists: Array.from(artists.values()),
+    warnings: Array.from(warnings.values()),
+  };
 }
 
 function getThemeAccent(themeAccent: AppSettings["themeAccent"], customAccentColor?: string) {

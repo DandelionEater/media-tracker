@@ -26,6 +26,7 @@ function run(command, args, options = {}) {
 }
 
 run(npmCommand, ['run', 'build:frontend']);
+run(process.execPath, ['scripts/build-custom-uninstaller.js'], { shell: false });
 run(builderCommand, [
   '--win',
   'nsis',

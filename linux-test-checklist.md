@@ -65,7 +65,8 @@ plasmashell --version
 - External links and account authorization open in the default browser.
 - Fractional display scaling does not blur content or break resize edges.
 - No automatic-update error appears in this first Linux test build.
-- Launch at login is visible but clearly marked unavailable.
+- Launch at login creates the correct package-aware autostart entry, starts Seenary
+  quietly in the tray after signing in again, and removes the entry when disabled.
 - Settings changes from `linux-port` are present even though the hosted frontend was not deployed.
 
 ## Useful failure report

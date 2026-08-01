@@ -30,6 +30,8 @@ const {
 
 const APP_URL = process.env.SEENARY_APP_URL || 'https://web.seenary.app';
 const APP_USER_MODEL_ID = 'app.seenary.desktop';
+const shouldStartHidden =
+  process.platform === 'linux' && process.argv.includes('--hidden');
 let mainWindow = null;
 
 app.setAppUserModelId(APP_USER_MODEL_ID);
@@ -73,6 +75,7 @@ function createWindow() {
   const initialWindowOptions = getInitialWindowOptions();
   const win = new BrowserWindow({
     ...initialWindowOptions,
+    show: !shouldStartHidden,
     minWidth: 900,
     minHeight: 600,
     frame: false,

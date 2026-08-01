@@ -7,6 +7,8 @@ const fs = require('fs');
 const path = require('path');
 
 const anilist = require('./anilist');
+const searchOrchestrator = require('./searchOrchestrator');
+const animethemes = require('./animethemes');
 const mal = require('./mal');
 const { previewMalImport } = require('./malImport');
 const { previewMalMangaPull } = require('./malMangaImport');
@@ -841,6 +843,7 @@ function buildAniListImportPreview(collection, mediaType = 'ANIME') {
         mangaId: normalizedMediaType === 'MANGA' ? media.id : undefined,
         mediaId: media.id,
         mediaType: normalizedMediaType,
+        providerUpdatedAt: entry.updatedAt ?? null,
         status,
         progress: entry.progress ?? 0,
         score: entry.score ?? null,
@@ -949,6 +952,7 @@ function buildAniListMangaPullEntries(collection) {
       entries.push({
         mangaId: media.id,
         mediaType: 'MANGA',
+        providerUpdatedAt: entry.updatedAt ?? null,
         status,
         progress: entry.progress ?? 0,
         volumeProgress: entry.progressVolumes ?? 0,
@@ -1532,6 +1536,7 @@ async function fetchAnimeDetailsFromAniList(id) {
 function hasFreshAnimeDetailsCache(row) {
   if (!row) return false;
   if (row.is_adult === null || row.is_adult === undefined) return false;
+  if (!hasCachedStudioIds(row.studios)) return false;
 
   const hasFullDetails =
     Boolean(row.site_url) ||
@@ -1545,6 +1550,24 @@ function hasFreshAnimeDetailsCache(row) {
 
   const cachedAt = Date.parse(row.cached_at);
   return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
+}
+
+function hasCachedStudioIds(value) {
+  try {
+    const studios = JSON.parse(value || '[]');
+    return (
+      !studios.length ||
+      studios.every(
+        (studio) =>
+          studio &&
+          typeof studio === 'object' &&
+          Number.isInteger(Number(studio.id)) &&
+          Number(studio.id) > 0
+      )
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function getAnimeDetails(id) {
@@ -1620,7 +1643,7 @@ async function fetchAnimeDetailsFallback(id) {
         genres
         synonyms
         nextAiringEpisode { episode airingAt }
-        studios { nodes { name } }
+        studios { nodes { id name isAnimationStudio } }
         tags { id name description rank isMediaSpoiler isGeneralSpoiler }
         characters(perPage: 20) {
           edges {
@@ -1723,7 +1746,9 @@ async function handleRpc(method, args, req, res) {
       throw new Error('Unsupported media type.');
     }
     case 'searchMedia':
-      return await anilist.searchMedia(args[0], { hideAdultContent: args[1] });
+      return await searchOrchestrator.searchMedia(args[0], {
+        hideAdultContent: args[1],
+      });
     case 'getDiscoverMedia':
       return await anilist.getDiscoverMedia({ hideAdultContent: args[0] });
     case 'getDiscoverShelfAnime':
@@ -1733,6 +1758,16 @@ async function handleRpc(method, args, req, res) {
         hideAdultContent: args[2],
         mediaType: args[3],
       });
+    case 'getStudioMedia':
+      return await anilist.getStudioMedia(args[0], args[1], {
+        hideAdultContent: args[2],
+      });
+    case 'getArtistMedia':
+      return await searchOrchestrator.getArtistMedia(args[0], args[1], {
+        hideAdultContent: args[2],
+      });
+    case 'getAnimeThemeMusic':
+      return await animethemes.getAnimeThemeMusic(args[0], args[1]);
     case 'previewAniListImport': {
       const username = String(args[0] || '').trim();
       if (!username) return { ok: false, message: 'Enter an AniList username first.' };

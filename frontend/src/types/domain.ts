@@ -1,5 +1,6 @@
 export type ListStatus = "planned" | "watching" | "completed" | "paused" | "dropped";
 export type MediaType = "ANIME" | "MANGA";
+export type SearchMatchType = MediaType | "CHARACTER" | "STUDIO" | "SONG" | "ARTIST";
 export type ThemeAccent = "violet" | "rose" | "amber" | "emerald" | "custom";
 export type TitleLanguage = "userPreferred" | "english" | "romaji" | "native";
 export type CardDensity = "comfortable" | "balanced" | "compact";
@@ -128,7 +129,13 @@ export type AnimeMedia = {
   description?: string | null;
   genres?: string[] | null;
   synonyms?: string[] | null;
-  studios?: { nodes?: Array<{ id?: number; name: string }> | null } | null;
+  studios?: {
+    nodes?: Array<{
+      id?: number;
+      name: string;
+      isAnimationStudio?: boolean;
+    }> | null;
+  } | null;
   tags?: AnimeTag[] | null;
   staff?: { edges?: PersonEdge[] | null } | null;
   characters?: { edges?: PersonEdge[] | null } | null;
@@ -148,9 +155,96 @@ export type SearchMedia = Omit<SearchAnime, "type"> & {
   type: MediaType;
 };
 
+export type CharacterSearchResult = {
+  character: {
+    id: number;
+    name?: {
+      full?: string | null;
+      native?: string | null;
+      userPreferred?: string | null;
+    } | null;
+    image?: {
+      large?: string | null;
+    } | null;
+  };
+  media: SearchMedia;
+};
+
+export type StudioSearchResult = {
+  studio: {
+    id: number;
+    name: string;
+  };
+  media: SearchMedia;
+  isMainStudio: boolean;
+};
+
+export type SongSearchResult = {
+  song: {
+    id: number;
+    title: {
+      romaji?: string | null;
+      native?: string | null;
+    };
+    artists: Array<{
+      id: number;
+      name: string;
+    }>;
+  };
+  theme: {
+    id: number;
+    type: "OP" | "ED";
+    sequence: number | null;
+  };
+  media: SearchMedia;
+  previewUrl?: string | null;
+};
+
+export type ArtistSearchResult = SongSearchResult & {
+  artist: {
+    id: number;
+    slug: string;
+    name: string;
+    nativeName?: string | null;
+  };
+  creditedAs?: string | null;
+};
+
+export type AnimeThemeMusicItem = Omit<SongSearchResult, "media">;
+
+export type ArtistCatalogResult = {
+  artist: ArtistSearchResult["artist"];
+  items: ArtistSearchResult[];
+  pageInfo: {
+    currentPage: number;
+    hasNextPage: boolean;
+  };
+};
+
+export type StudioCatalogResult = {
+  studio: {
+    id: number;
+    name: string;
+    isAnimationStudio: boolean;
+  };
+  items: StudioSearchResult[];
+  pageInfo: {
+    currentPage: number;
+    hasNextPage: boolean;
+  };
+};
+
 export type MediaSearchResults = {
   anime: SearchMedia[];
   manga: SearchMedia[];
+  characters?: CharacterSearchResult[];
+  studios?: StudioSearchResult[];
+  songs?: SongSearchResult[];
+  artists?: ArtistSearchResult[];
+  warnings?: Array<{
+    provider: "anilist" | "animethemes";
+    message: string;
+  }>;
 };
 
 export type DiscoverShelfResult = {
@@ -239,6 +333,7 @@ export type LocalListEntry = {
   created_at?: string | null;
   updated_at?: string | null;
   local_updated_at?: string | null;
+  provider_updated_at?: string | null;
 };
 
 export type EditableListEntry = Omit<LocalListEntry, "anime_id"> & {
@@ -288,6 +383,7 @@ export type LocalMangaListEntry = {
   created_at?: string | null;
   updated_at?: string | null;
   local_updated_at?: string | null;
+  provider_updated_at?: string | null;
 };
 
 export type TrackedMangaEntry = LocalMangaListEntry & {
@@ -376,6 +472,7 @@ export type ImportPreviewItem = {
   notes: string | null;
   startedAt?: string | null;
   completedAt?: string | null;
+  providerUpdatedAt?: number | string | null;
   repeatCount?: number;
   title: AnimeTitle;
   coverImage?: AnimeImage | null;
@@ -405,6 +502,7 @@ export type MangaImportItem = {
   notes: string | null;
   startedAt?: string | PersonDate | null;
   completedAt?: string | PersonDate | null;
+  providerUpdatedAt?: number | string | null;
   repeatCount?: number;
   isRereading?: boolean;
   title: AnimeTitle;

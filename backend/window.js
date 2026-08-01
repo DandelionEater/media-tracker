@@ -43,6 +43,10 @@ function createWindow() {
     console.error('Renderer process gone:', details);
   });
 
+  win.webContents.on('did-create-window', (childWindow) => {
+    childWindow.setIcon(iconPath);
+  });
+
   // DevTools shortcut (CTRL+SHIFT+I)
   globalShortcut.register('CommandOrControl+Shift+I', () => {
     if (win) {

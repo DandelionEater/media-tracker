@@ -565,6 +565,18 @@ function toDateValue(value: unknown) {
   return Number.isNaN(date.getTime()) ? null : date.toISOString().slice(0, 10);
 }
 
+function toProviderTimestamp(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
+
+  const numericValue = Number(value);
+  const date =
+    Number.isFinite(numericValue) && numericValue > 0
+      ? new Date(numericValue < 1_000_000_000_000 ? numericValue * 1000 : numericValue)
+      : new Date(String(value));
+
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function todayDate() {
   return new Date().toISOString().slice(0, 10);
 }
@@ -815,6 +827,7 @@ function buildMangaEntry(
     created_at: base.created_at,
     updated_at: base.updated_at,
     local_updated_at: base.local_updated_at,
+    provider_updated_at: existing?.provider_updated_at ?? null,
   };
 }
 
@@ -1590,8 +1603,14 @@ export const localStore = {
       // convenient default dates for local edits, but a remote null is not "today".
       nextEntry.started_at = toDateValue(item.startedAt);
       nextEntry.completed_at = toDateValue(item.completedAt);
+      const providerUpdatedAt = toProviderTimestamp(item.providerUpdatedAt);
+      nextEntry.provider_updated_at =
+        providerUpdatedAt ?? existing?.provider_updated_at ?? null;
 
       if (existing && entriesMatch(existing, nextEntry)) {
+        if (providerUpdatedAt) {
+          existing.provider_updated_at = providerUpdatedAt;
+        }
         unchanged += 1;
         delete state.dirtyEntries[key];
         delete state.deletedEntries[key];
@@ -1647,8 +1666,14 @@ export const localStore = {
       );
       nextEntry.started_at = toDateValue(item.startedAt);
       nextEntry.completed_at = toDateValue(item.completedAt);
+      const providerUpdatedAt = toProviderTimestamp(item.providerUpdatedAt);
+      nextEntry.provider_updated_at =
+        providerUpdatedAt ?? existing?.provider_updated_at ?? null;
 
       if (existing && mangaEntriesMatch(existing, nextEntry)) {
+        if (providerUpdatedAt) {
+          existing.provider_updated_at = providerUpdatedAt;
+        }
         unchanged += 1;
         delete state.dirtyMangaEntries[key];
         delete state.deletedMangaEntries[key];

@@ -215,6 +215,7 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
       repeat: listStatus.num_times_rewatched ?? 0,
       startedAt: mapMalDate(listStatus.start_date),
       completedAt: mapMalDate(listStatus.finish_date),
+      updatedAt: listStatus.updated_at ?? null,
       media,
       malAnimeId: node.id,
       malTitle: node.title,

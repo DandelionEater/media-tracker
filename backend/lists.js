@@ -770,6 +770,18 @@ function mapAniListDate(date) {
   return `${date.year}-${month}-${day}`;
 }
 
+function normalizeProviderUpdatedAt(value) {
+  if (value === null || value === undefined || value === '') return null;
+
+  const numericValue = Number(value);
+  const date =
+    Number.isFinite(numericValue) && numericValue > 0
+      ? new Date(numericValue < 1_000_000_000_000 ? numericValue * 1000 : numericValue)
+      : new Date(String(value));
+
+  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+}
+
 function parseJsonArray(value) {
   if (!value) {
     return [];
@@ -913,6 +925,7 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
     const repeatCount = sanitizeRepeatCount(entry.repeat);
     const startedAt = mapAniListDate(entry.startedAt);
     const completedAt = mapAniListDate(entry.completedAt);
+    const providerUpdatedAt = normalizeProviderUpdatedAt(entry.updatedAt);
     const existingEntry = getUserAnimeEntry(auth.user.id, animeId);
     const nextEntry = {
       status,
@@ -939,6 +952,7 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
         notes,
         startedAt,
         completedAt,
+        localUpdatedAt: providerUpdatedAt,
       });
       created += 1;
       changes.push({
@@ -959,6 +973,22 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
       const storedEntry = buildStoredImportEntry(existingEntry, nextEntry);
 
       if (!entryDiffersFromAniList(existingEntry, nextEntry)) {
+        if (providerUpdatedAt) {
+          updateUserAnimeEntry({
+            userId: auth.user.id,
+            animeId,
+            status: storedEntry.status,
+            isFavorite: Boolean(existingEntry.is_favorite),
+            repeatCount: storedEntry.repeatCount,
+            isRewatching: Boolean(existingEntry.is_rewatching),
+            progress: storedEntry.progress,
+            score: storedEntry.score,
+            notes: storedEntry.notes,
+            startedAt: storedEntry.startedAt,
+            completedAt: storedEntry.completedAt,
+            localUpdatedAt: providerUpdatedAt,
+          });
+        }
         skipped += 1;
         reportImportProgress(media, animeId);
         continue;
@@ -986,6 +1016,7 @@ function importAniListEntries(currentSession, collection, sourceUsername, option
         notes: storedEntry.notes,
         startedAt: storedEntry.startedAt,
         completedAt: storedEntry.completedAt,
+        localUpdatedAt: providerUpdatedAt,
       });
       updated += 1;
       changes.push({
@@ -1098,6 +1129,7 @@ function importAniListMangaEntries(currentSession, collection, sourceUsername, o
 
     saveManga(media);
     const existingEntry = getUserMangaEntry(auth.user.id, mangaId);
+    const providerUpdatedAt = normalizeProviderUpdatedAt(entry.updatedAt);
     const nextEntry = {
       status,
       progress: sanitizeProgress(entry.progress),
@@ -1113,6 +1145,23 @@ function importAniListMangaEntries(currentSession, collection, sourceUsername, o
     clearPulledMangaSyncJobs(auth.user.id, mangaId, options.sourceProvider);
 
     if (!entryDiffersFromManga(existingEntry, nextEntry)) {
+      if (existingEntry && providerUpdatedAt) {
+        updateUserMangaEntry({
+          userId: auth.user.id,
+          mangaId,
+          status: nextEntry.status,
+          isFavorite: Boolean(existingEntry.is_favorite),
+          repeatCount: nextEntry.repeatCount,
+          isRereading: nextEntry.isRereading,
+          progress: nextEntry.progress,
+          volumeProgress: nextEntry.volumeProgress,
+          score: nextEntry.score,
+          notes: nextEntry.notes,
+          startedAt: nextEntry.startedAt,
+          completedAt: nextEntry.completedAt,
+          localUpdatedAt: providerUpdatedAt,
+        });
+      }
       skipped += 1;
       emitProgress({ current: index + 1, total: allEntries.length, entryTitle });
       continue;
@@ -1154,6 +1203,7 @@ function importAniListMangaEntries(currentSession, collection, sourceUsername, o
       notes: nextEntry.notes,
       startedAt: nextEntry.startedAt,
       completedAt: nextEntry.completedAt,
+      localUpdatedAt: providerUpdatedAt,
     };
     if (existingEntry) {
       updateUserMangaEntry(payload);

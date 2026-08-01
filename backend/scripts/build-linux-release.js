@@ -25,11 +25,11 @@ function run(command, args) {
 }
 
 run(npmCommand, ['run', 'build:frontend']);
-const linuxTargets = process.platform === 'linux' ? ['dir', 'AppImage'] : ['dir'];
+const linuxTargets = process.platform === 'linux' ? ['dir', 'AppImage', 'flatpak'] : ['dir'];
 
 if (process.platform !== 'linux') {
   console.log(
-    'AppImage creation requires a Linux build host. Creating the unpacked Linux test bundle only.'
+    'AppImage and Flatpak creation require a Linux build host. Creating the unpacked Linux bundle only.'
   );
 }
 

@@ -44,6 +44,7 @@ const HOME_DISCOVER_LAYOUT_STORAGE_KEY = "seenary.discover-layout-order";
 const HOME_DISCOVER_LAYOUT_LEGACY_STORAGE_KEY = "media-tracker.discover-layout-order";
 const TRENDING_CYCLE_MS = 6500;
 const HOME_DISCOVER_CACHE_TTL_MS = 20 * 60 * 1000;
+const RECENT_ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVER_CAROUSEL_LAYOUT_ID = "carousel";
 const DEFAULT_DISCOVER_LAYOUT_ORDER = [
   DISCOVER_CAROUSEL_LAYOUT_ID,
@@ -71,7 +72,7 @@ const PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = 
   continue: "Continue Watching",
   planned: "Planned Picks",
   sinceLiked: "Since You Liked",
-  recent: "Recently Updated in Seenary",
+  recent: "Recently Updated",
 };
 
 const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
@@ -80,7 +81,7 @@ const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, stri
   continue: "Continue Reading",
   planned: "Plan to Read",
   sinceLiked: "Since You Liked",
-  recent: "Recently Updated in Seenary",
+  recent: "Recently Updated",
 };
 
 const DISCOVER_DENSITY_STYLES: Record<
@@ -213,6 +214,7 @@ type TrackedAnimeEntry = {
   season_year?: number | null;
   updated_at?: string | null;
   local_updated_at?: string | null;
+  provider_updated_at?: string | null;
   recommendations?: RecommendationEntry[];
 };
 
@@ -1613,17 +1615,18 @@ export function HomePage({
     sinceLiked: (
       <SinceYouLikedSection
         entries={favoriteBasedRecommendations}
-        onSelectAnime={handleSelectAnimeFromHome}
+        onSelectMedia={handleSelectAnimeFromHome}
         titleLanguage={titleLanguage}
+        mediaType="ANIME"
       />
     ),
     recent: (
       <section>
         <HomeShelf
-          title="Recently Updated in Seenary"
+          title="Recently Updated"
           icon={CalendarDaysIcon}
           entries={recentlyUpdated}
-          emptyText="Titles you update directly in Seenary will collect here."
+          emptyText="Your latest activity from Seenary and connected lists will collect here."
           onSelectAnime={handleSelectAnimeFromHome}
           variant="gridCompact"
           density={homeDensity}
@@ -1710,7 +1713,7 @@ export function HomePage({
               {activeHomeTab === "personal"
                 ? mediaType === "MANGA"
                   ? "Manga overview"
-                  : "Personal overview"
+                  : "Anime overview"
                 : mediaType === "MANGA"
                   ? "Discover manga"
                   : "Discover anime"}
@@ -2027,24 +2030,19 @@ function MangaHomePreview({
       />
     ),
     sinceLiked: (
-      <HomeShelf
-        title="Since You Liked"
-        icon={HeartIcon}
+      <SinceYouLikedSection
         entries={recommendations}
-        emptyText="Favorite and score more Manga to build recommendations."
-        onSelectAnime={onSelectManga}
-        variant="medium"
-        density={density}
+        onSelectMedia={onSelectManga}
         titleLanguage={titleLanguage}
-        mode="recommendations"
+        mediaType="MANGA"
       />
     ),
     recent: (
       <MangaHomeShelf
-        title="Recently Updated in Seenary"
+        title="Recently Updated"
         icon={CalendarDaysIcon}
         entries={recentlyUpdated}
-        emptyText="Manga you update directly in Seenary will collect here."
+        emptyText="Your latest Manga activity from Seenary and connected lists will collect here."
         onSelectManga={onSelectManga}
         density={density}
         titleLanguage={titleLanguage}
@@ -2285,7 +2283,9 @@ function MangaHomeCard({
         <div className={densityStyles.mediumMetaClass}>
           {entry.format && <SmallInfoPill icon={BookOpenIcon}>{formatEnum(entry.format)}</SmallInfoPill>}
           {score && <SmallInfoPill icon={StarIcon}>{score}</SmallInfoPill>}
-          {entry.is_favorite && <SmallInfoPill icon={HeartIcon}>Favorite</SmallInfoPill>}
+          {Boolean(entry.is_favorite) && (
+            <SmallInfoPill icon={HeartIcon}>Favorite</SmallInfoPill>
+          )}
         </div>
       </div>
     </button>
@@ -3455,13 +3455,17 @@ function RecommendationLibraryCard({
 
 function SinceYouLikedSection({
   entries,
-  onSelectAnime,
+  onSelectMedia,
   titleLanguage,
+  mediaType,
 }: {
   entries: RecommendationCandidate[];
-  onSelectAnime: (animeId: number) => void;
+  onSelectMedia: (mediaId: number) => void;
   titleLanguage: TitleLanguage;
+  mediaType: MediaType;
 }) {
+  const isManga = mediaType === "MANGA";
+
   return (
     <section>
       <div className="mb-4 flex items-center gap-3">
@@ -3471,25 +3475,27 @@ function SinceYouLikedSection({
         <div>
           <h2 className="text-lg font-semibold text-white">Since You Liked...</h2>
           <p className="text-sm text-white/40">
-            Personal next-watch suggestions built from your favorites.
+            Personal next-{isManga ? "read" : "watch"} suggestions built from your favorites.
           </p>
         </div>
       </div>
 
       {entries.length ? (
-        <div className="space-y-4">
+        <div className="space-y-3">
           {entries.slice(0, 4).map((entry) => (
             <SinceYouLikedPairCard
               key={`since-you-liked-${entry.animeId}`}
               entry={entry}
-              onSelectAnime={onSelectAnime}
+              onSelectMedia={onSelectMedia}
               titleLanguage={titleLanguage}
+              mediaType={mediaType}
             />
           ))}
         </div>
       ) : (
         <div className="rounded-3xl border border-dashed border-white/10 bg-white/3 px-5 py-8 text-sm text-white/45">
-          Favorite a few shows you liked to get more personal next-watch suggestions.
+          Favorite a few {isManga ? "Manga" : "shows"} you liked to get more personal
+          next-{isManga ? "read" : "watch"} suggestions.
         </div>
       )}
     </section>
@@ -3498,13 +3504,16 @@ function SinceYouLikedSection({
 
 function SinceYouLikedPairCard({
   entry,
-  onSelectAnime,
+  onSelectMedia,
   titleLanguage,
+  mediaType,
 }: {
   entry: RecommendationCandidate;
-  onSelectAnime: (animeId: number) => void;
+  onSelectMedia: (mediaId: number) => void;
   titleLanguage: TitleLanguage;
+  mediaType: MediaType;
 }) {
+  const MediaIcon = mediaType === "MANGA" ? BookOpenIcon : TvIcon;
   const recommendedTitle = getPreferredTitle(entry.title, titleLanguage);
   const sourceTitle = entry.source
     ? getPreferredTitle(entry.source.title, titleLanguage)
@@ -3518,15 +3527,15 @@ function SinceYouLikedPairCard({
   ].filter(Boolean) as string[];
 
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-4 shadow-xl">
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[minmax(0,29fr)_3rem_minmax(0,71fr)] lg:items-stretch">
+    <div className="rounded-3xl border border-white/10 bg-white/5 p-3 shadow-xl">
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,30fr)_2.5rem_minmax(0,70fr)] lg:items-stretch">
         <button
           type="button"
-          onClick={() => entry.source && onSelectAnime(entry.source.animeId)}
+          onClick={() => entry.source && onSelectMedia(entry.source.animeId)}
           disabled={!entry.source}
-          className="flex min-w-0 items-center gap-4 rounded-3xl border border-white/10 bg-white/3 p-4 text-left transition hover:bg-white/8 disabled:cursor-default disabled:hover:bg-white/3"
+          className="flex min-w-0 items-center gap-3 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:bg-white/8 disabled:cursor-default disabled:hover:bg-white/3"
         >
-          <div className="h-28 w-20 shrink-0 overflow-hidden rounded-2xl bg-white/5">
+          <div className="h-28 w-20 shrink-0 overflow-hidden rounded-xl bg-white/5">
             {entry.source?.coverImage ? (
               <img
                 src={entry.source.coverImage}
@@ -3541,12 +3550,12 @@ function SinceYouLikedPairCard({
             <p className="text-xs uppercase tracking-[0.2em] text-white/35">
               You liked
             </p>
-            <h3 className="mt-2 line-clamp-2 text-base font-semibold text-white">
+            <h3 className="mt-1.5 line-clamp-2 text-sm font-semibold text-white">
               {sourceTitle}
             </h3>
-            <div className="mt-3 flex flex-wrap gap-1.5">
+            <div className="mt-2.5 flex flex-wrap gap-1.5">
               {entry.source?.format && (
-                <SmallInfoPill icon={TvIcon}>{entry.source.format}</SmallInfoPill>
+                <SmallInfoPill icon={MediaIcon}>{entry.source.format}</SmallInfoPill>
               )}
               {typeof entry.source?.score === "number" && entry.source.score > 0 && (
                 <SmallInfoPill icon={StarIcon}>Mine {entry.source.score}</SmallInfoPill>
@@ -3556,15 +3565,15 @@ function SinceYouLikedPairCard({
         </button>
 
         <div className="flex items-center justify-center text-white/30">
-          <ArrowRightIcon className="h-6 w-6" />
+          <ArrowRightIcon className="h-5 w-5" />
         </div>
 
         <button
           type="button"
-          onClick={() => onSelectAnime(entry.animeId)}
-          className="flex min-w-0 items-center gap-4 rounded-3xl border border-white/10 bg-white/3 p-4 text-left transition hover:bg-white/8"
+          onClick={() => onSelectMedia(entry.animeId)}
+          className="flex min-w-0 items-center gap-3.5 rounded-2xl border border-white/10 bg-white/3 p-3 text-left transition hover:bg-white/8"
         >
-          <div className="h-32 w-22 shrink-0 overflow-hidden rounded-2xl bg-white/5">
+          <div className="h-28 w-20 shrink-0 overflow-hidden rounded-xl bg-white/5">
             {entry.coverImage?.large ? (
               <img
                 src={entry.coverImage.large}
@@ -3579,17 +3588,22 @@ function SinceYouLikedPairCard({
             <p className="text-xs uppercase tracking-[0.2em] text-white/35">
               Try next
             </p>
-            <h3 className="mt-2 line-clamp-2 text-lg font-semibold text-white">
-              {recommendedTitle}
-            </h3>
-            <div className="mt-3 flex flex-wrap gap-1.5">
-              {recommendedMeta.map((item) => (
-                <SmallInfoPill key={`${entry.animeId}-${item}`} icon={item.startsWith("Avg ") ? StarIcon : TvIcon}>
-                  {item}
-                </SmallInfoPill>
-              ))}
+            <div className="mt-1.5 flex min-w-0 flex-col items-start gap-2 sm:flex-row sm:items-center sm:gap-3">
+              <h3 className="min-w-0 flex-1 truncate text-base font-semibold text-white">
+                {recommendedTitle}
+              </h3>
+              <div className="flex shrink-0 flex-wrap gap-1.5">
+                {recommendedMeta.map((item) => (
+                  <SmallInfoPill
+                    key={`${entry.animeId}-${item}`}
+                    icon={item.startsWith("Avg ") ? StarIcon : MediaIcon}
+                  >
+                    {item}
+                  </SmallInfoPill>
+                ))}
+              </div>
             </div>
-            <p className="mt-4 line-clamp-3 text-sm leading-6 text-white/50">
+            <p className="mt-2.5 line-clamp-2 text-xs leading-5 text-white/50">
               {getRecommendationSummary(entry.description)}
             </p>
           </div>
@@ -4339,17 +4353,30 @@ function readSavedDiscoverState(): SavedDiscoverState | null {
   }
 }
 
-function getRecentlyUpdatedLocally<T extends { local_updated_at?: string | null }>(
+function getRecentlyUpdatedLocally<
+  T extends { local_updated_at?: string | null; provider_updated_at?: string | null },
+>(
   entries: T[]
 ) {
+  const recentActivityCutoff = Date.now() - RECENT_ACTIVITY_WINDOW_MS;
+
   return entries
-    .filter((entry) => Boolean(entry.local_updated_at))
+    .filter((entry) => getEntryActivityTime(entry) >= recentActivityCutoff)
     .sort(
       (left, right) =>
-        (Date.parse(right.local_updated_at ?? "") || 0) -
-        (Date.parse(left.local_updated_at ?? "") || 0)
+        getEntryActivityTime(right) - getEntryActivityTime(left)
     )
     .slice(0, 6);
+}
+
+function getEntryActivityTime(entry: {
+  local_updated_at?: string | null;
+  provider_updated_at?: string | null;
+}) {
+  return Math.max(
+    Date.parse(entry.local_updated_at ?? "") || 0,
+    Date.parse(entry.provider_updated_at ?? "") || 0
+  );
 }
 
 function mergeAnimeItems(currentItems: TrendingAnime[], nextItems: TrendingAnime[]) {
