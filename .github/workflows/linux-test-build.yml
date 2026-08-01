@@ -5,9 +5,12 @@ on:
     branches:
       - linux-port
   workflow_dispatch:
+  release:
+    types:
+      - published
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-linux:
@@ -84,3 +87,26 @@ jobs:
           if-no-files-found: error
           retention-days: 14
           compression-level: 0
+
+      - name: Publish Linux assets to GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_EVENT_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          version="${{ steps.artifact.outputs.version }}"
+          artifact_dir="${{ steps.artifact.outputs.artifact_dir }}"
+          tag="${RELEASE_EVENT_TAG:-v${version}}"
+
+          if ! gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "::notice::Release ${tag} does not exist yet; keeping the Linux bundle as a workflow artifact."
+            exit 0
+          fi
+
+          gh release upload "${tag}" \
+            "${artifact_dir}"/*.AppImage \
+            "${artifact_dir}"/*.flatpak \
+            "${artifact_dir}"/*.tar.gz \
+            "${artifact_dir}/SHA256SUMS" \
+            --clobber \
+            --repo "${GITHUB_REPOSITORY}"
