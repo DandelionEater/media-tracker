@@ -8,6 +8,8 @@ const repoRoot = path.resolve(backendDir, '..');
 const frontendDir = path.join(repoRoot, 'frontend');
 const packageJson = require('../package.json');
 const packageLock = require('../package-lock.json');
+const frontendPackageJson = require('../../frontend/package.json');
+const frontendPackageLock = require('../../frontend/package-lock.json');
 const npmCommand = process.platform === 'win32' ? 'npm.cmd' : 'npm';
 const results = [];
 
@@ -162,6 +164,20 @@ function checkReleaseContract() {
     fail(
       'Lockfile version',
       `package-lock root=${packageLock.version}, package entry=${lockedVersion}, package=${packageJson.version}`
+    );
+  }
+
+  const frontendLockedVersion = frontendPackageLock.packages?.['']?.version;
+  if (
+    frontendPackageJson.version === '0.0.0' &&
+    frontendPackageLock.version === '0.0.0' &&
+    frontendLockedVersion === '0.0.0'
+  ) {
+    pass('Frontend package version', 'release-neutral; display version comes from backend/package.json');
+  } else {
+    fail(
+      'Frontend package version',
+      'frontend package and lockfile must remain 0.0.0; Seenary releases use backend/package.json'
     );
   }
 
