@@ -11,6 +11,7 @@
     "rebuild:electron": "electron-rebuild -f",
     "build:frontend": "npm --prefix ../frontend run build",
     "test:animethemes": "node scripts/animethemes-mapper-smoke.js",
+    "test:details-cache": "node scripts/details-cache-smoke.js",
     "security:check": "node scripts/run-security-smoke.js",
     "release:check": "node scripts/release-readiness.js",
     "pack": "npm run build:frontend && electron-builder --dir",

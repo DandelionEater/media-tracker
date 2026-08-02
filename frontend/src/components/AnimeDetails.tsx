@@ -178,7 +178,11 @@ export default function MediaDetails({
       } catch (err) {
         console.error(err);
         if (mounted) {
-          setError(`Failed to load ${mediaType === "MANGA" ? "manga" : "anime"} details.`);
+          setError(
+            err instanceof Error && err.message
+              ? err.message
+              : `Failed to load ${mediaType === "MANGA" ? "manga" : "anime"} details.`
+          );
         }
       } finally {
         if (mounted) {

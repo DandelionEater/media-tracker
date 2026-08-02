@@ -906,15 +906,21 @@ export const localStore = {
     if (!manga) return { ok: false, message: "Invalid manga data." };
 
     const state = await readState(userId);
-    if (state.manga[String(manga.manga_id)]) {
-      return { ok: true };
-    }
-
     state.manga[String(manga.manga_id)] = {
+      ...(state.manga[String(manga.manga_id)] ?? {}),
       ...manga,
     };
     await writeState(userId, state);
     return { ok: true };
+  },
+
+  async getCachedMediaDetails(userId: number, mediaType: "ANIME" | "MANGA", mediaId: number) {
+    const state = await readState(userId);
+    const stored =
+      mediaType === "MANGA"
+        ? state.manga[String(mediaId)]
+        : state.anime[String(mediaId)];
+    return stored?.details ?? null;
   },
 
   async cacheAnimeAdultFlags(

@@ -17,7 +17,10 @@ const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
   db,
   dbPath,
+  saveAnime,
+  saveManga,
   getAnimeById,
+  getMangaById,
   getPersonDetails,
   savePersonDetails,
   getSafeUserById,
@@ -43,7 +46,7 @@ const {
   deleteUser,
 } = require('./db');
 const { startDatabaseBackups } = require('./databaseBackups');
-const { mapDbAnimeForFrontend } = require('./animeMapper');
+const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
 const {
   registerUser,
   loginUser,
@@ -64,7 +67,6 @@ const {
 } = require('./sync');
 
 const PORT = Number(process.env.PORT || 3000);
-const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_RPC_BODY_BYTES = Number(process.env.MAX_RPC_BODY_BYTES || 40 * 1024 * 1024);
 const RPC_RATE_LIMIT_WINDOW_MS = Number(process.env.RPC_RATE_LIMIT_WINDOW_MS || 60 * 1000);
@@ -1533,51 +1535,68 @@ async function fetchAnimeDetailsFromAniList(id) {
   return media;
 }
 
-function hasFreshAnimeDetailsCache(row) {
-  if (!row) return false;
-  if (row.is_adult === null || row.is_adult === undefined) return false;
-  if (!hasCachedStudioIds(row.studios)) return false;
-
-  const hasFullDetails =
-    Boolean(row.site_url) ||
-    Boolean(row.description) ||
-    Boolean(row.trailer_id) ||
-    Boolean(row.external_links && row.external_links !== '[]') ||
-    Boolean(row.relations && row.relations !== '[]') ||
-    Boolean(row.recommendations && row.recommendations !== '[]');
-
-  if (!hasFullDetails || !row.franchise_start_date) return false;
-
-  const cachedAt = Date.parse(row.cached_at);
-  return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
-}
-
-function hasCachedStudioIds(value) {
-  try {
-    const studios = JSON.parse(value || '[]');
-    return (
-      !studios.length ||
-      studios.every(
-        (studio) =>
-          studio &&
-          typeof studio === 'object' &&
-          Number.isInteger(Number(studio.id)) &&
-          Number(studio.id) > 0
-      )
-    );
-  } catch {
-    return false;
-  }
-}
-
 async function getAnimeDetails(id) {
-  const cachedAnime = getAnimeById(id);
+  let media;
 
-  if (hasFreshAnimeDetailsCache(cachedAnime)) {
-    return mapDbAnimeForFrontend(cachedAnime);
+  try {
+    media = await fetchAnimeDetailsFromAniList(id);
+  } catch (error) {
+    let cachedAnime = null;
+    try {
+      cachedAnime = getAnimeById(id);
+    } catch (cacheError) {
+      console.error(`Failed to read cached anime details for ${id}:`, cacheError);
+    }
+    if (cachedAnime) {
+      console.warn(`AniList anime details unavailable for ${id}; serving cached data.`);
+      return mapDbAnimeForFrontend(cachedAnime);
+    }
+    error.statusCode = Number(error.statusCode || error.status) || 503;
+    error.publicMessage = 'AniList is unavailable and no cached anime details are available.';
+    throw error;
   }
 
-  return await fetchAnimeDetailsFromAniList(id);
+  if (media?.id) {
+    try {
+      saveAnime(mapAnimeForDb(media));
+    } catch (error) {
+      console.error(`Failed to cache AniList anime details for ${id}:`, error);
+    }
+  }
+
+  return media;
+}
+
+async function getMangaDetails(id) {
+  let media;
+
+  try {
+    media = await anilist.getMangaDetails(id);
+  } catch (error) {
+    let cachedManga = null;
+    try {
+      cachedManga = getMangaById(id);
+    } catch (cacheError) {
+      console.error(`Failed to read cached manga details for ${id}:`, cacheError);
+    }
+    if (cachedManga?.details) {
+      console.warn(`AniList manga details unavailable for ${id}; serving cached data.`);
+      return cachedManga.details;
+    }
+    error.statusCode = Number(error.statusCode || error.status) || 503;
+    error.publicMessage = 'AniList is unavailable and no cached manga details are available.';
+    throw error;
+  }
+
+  if (media?.id) {
+    try {
+      saveManga(media);
+    } catch (error) {
+      console.error(`Failed to cache AniList manga details for ${id}:`, error);
+    }
+  }
+
+  return media;
 }
 
 function hasFreshPersonDetailsCache(row) {
@@ -1742,7 +1761,7 @@ async function handleRpc(method, args, req, res) {
       const mediaId = Number(args[1]);
 
       if (mediaType === 'ANIME') return await getAnimeDetails(mediaId);
-      if (mediaType === 'MANGA') return await anilist.getMangaDetails(mediaId);
+      if (mediaType === 'MANGA') return await getMangaDetails(mediaId);
       throw new Error('Unsupported media type.');
     }
     case 'searchMedia':
@@ -2798,13 +2817,14 @@ const server = http.createServer(async (req, res) => {
     sendJson(req, res, 200, result);
   } catch (error) {
     console.error('API error:', error);
-    const statusCode = Number(error.statusCode) || 500;
+    const statusCode = Number(error.statusCode || error.status) || 500;
     sendJson(req, res, statusCode, {
       ok: false,
       message:
-        statusCode < 500 || process.env.NODE_ENV !== 'production'
+        error.publicMessage ||
+        (statusCode < 500 || process.env.NODE_ENV !== 'production'
           ? error.message || 'Request failed.'
-          : 'Internal server error.',
+          : 'Internal server error.'),
     });
   }
 });

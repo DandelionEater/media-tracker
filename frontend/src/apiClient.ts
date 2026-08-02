@@ -699,28 +699,37 @@ export function installApiClient() {
     },
     getAnimeDetails: async (id) => {
       const userId = await getActiveUserId();
-      const media = await rpc("getAnimeDetails", [id]);
-      if (userId && media?.id) {
-        await localStore.cacheAnime(userId, media);
-      }
-      return media;
-    },
-    getMediaDetails: async (mediaType, id) => {
-      if (mediaType === "ANIME") {
-        const userId = await getActiveUserId();
-        const media = await rpc("getMediaDetails", [mediaType, id]);
+      try {
+        const media = await rpc("getAnimeDetails", [id]);
         if (userId && media?.id) {
           await localStore.cacheAnime(userId, media);
         }
         return media;
+      } catch (error) {
+        const cached = userId
+          ? await localStore.getCachedMediaDetails(userId, "ANIME", id)
+          : null;
+        if (cached) return cached;
+        throw error;
       }
-
+    },
+    getMediaDetails: async (mediaType, id) => {
       const userId = await getActiveUserId();
-      const media = await rpc("getMediaDetails", [mediaType, id]);
-      if (userId && media?.id) {
-        await localStore.cacheManga(userId, media);
+      try {
+        const media = await rpc("getMediaDetails", [mediaType, id]);
+        if (userId && media?.id && mediaType === "ANIME") {
+          await localStore.cacheAnime(userId, media);
+        } else if (userId && media?.id) {
+          await localStore.cacheManga(userId, media);
+        }
+        return media;
+      } catch (error) {
+        const cached = userId
+          ? await localStore.getCachedMediaDetails(userId, mediaType, id)
+          : null;
+        if (cached) return cached;
+        throw error;
       }
-      return media;
     },
     getCharacterDetails: (id) => rpc("getCharacterDetails", [id]),
     getStaffDetails: (id) => rpc("getStaffDetails", [id]),
