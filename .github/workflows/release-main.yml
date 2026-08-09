@@ -1,0 +1,246 @@
+name: Publish Seenary release
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    name: Check release version
+    runs-on: ubuntu-24.04
+    outputs:
+      publish: ${{ steps.release.outputs.publish }}
+      version: ${{ steps.release.outputs.version }}
+      tag: ${{ steps.release.outputs.tag }}
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      notes: ${{ steps.release.outputs.notes }}
+
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v6
+
+      - name: Validate version and release notes
+        id: release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="$(node -p "require('./backend/package.json').version")"
+          tag="v${version}"
+          notes="release-notes-${version}.md"
+
+          if [[ ! "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::backend/package.json contains an invalid release version: ${version}"
+            exit 1
+          fi
+
+          if [[ ! -f "${notes}" ]]; then
+            echo "::error::Missing ${notes}. Run npm run release:version -- ${version} from backend/."
+            exit 1
+          fi
+
+          if ! grep -Fq "Tag: \`${tag}\`" "${notes}"; then
+            echo "::error::${notes} must contain Tag: \`${tag}\`"
+            exit 1
+          fi
+
+          if grep -Fq "Describe the user-visible" "${notes}"; then
+            echo "::error::Replace the generated placeholders in ${notes} before publishing."
+            exit 1
+          fi
+
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "notes=${notes}" >> "$GITHUB_OUTPUT"
+
+          if [[ "${version}" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release ${tag} already exists; this push does not need another build."
+          else
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-windows:
+    name: Build Windows installer
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Rebuild native modules for Electron
+        run: npm run rebuild:electron
+        working-directory: backend
+
+      - name: Run release readiness checks
+        run: npm run release:check -- --target ${{ needs.prepare.outputs.version }}
+        working-directory: backend
+
+      - name: Build Windows release
+        run: npm run dist
+        working-directory: backend
+
+      - name: Upload Windows release bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: seenary-windows-${{ needs.prepare.outputs.version }}
+          path: |
+            release/${{ needs.prepare.outputs.version }}/*.exe
+            release/${{ needs.prepare.outputs.version }}/*.blockmap
+            release/${{ needs.prepare.outputs.version }}/*.yml
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  build-linux:
+    name: Build Linux packages
+    needs: prepare
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+        working-directory: frontend
+
+      - name: Install desktop dependencies
+        run: npm ci
+        working-directory: backend
+
+      - name: Install Flatpak build dependencies
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes flatpak flatpak-builder
+          flatpak remote-add --user --if-not-exists flathub https://flathub.org/repo/flathub.flatpakrepo
+          flatpak install --user --noninteractive flathub \
+            org.freedesktop.Platform//25.08 \
+            org.freedesktop.Sdk//25.08 \
+            org.electronjs.Electron2.BaseApp//25.08
+
+      - name: Build Linux release
+        run: npm run dist:linux
+        working-directory: backend
+
+      - name: Prepare Linux archive and checksums
+        shell: bash
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          artifact_dir="release/${version}/linux"
+          archive="${artifact_dir}/Seenary-${version}-linux-unpacked.tar.gz"
+
+          tar -C "${artifact_dir}" -czf "${archive}" linux-unpacked
+          (
+            cd "${artifact_dir}"
+            sha256sum ./*.AppImage ./*.flatpak ./*.tar.gz > SHA256SUMS
+          )
+
+      - name: Upload Linux release bundle
+        uses: actions/upload-artifact@v6
+        with:
+          name: seenary-linux-${{ needs.prepare.outputs.version }}
+          path: |
+            release/${{ needs.prepare.outputs.version }}/linux/*.AppImage
+            release/${{ needs.prepare.outputs.version }}/linux/*.flatpak
+            release/${{ needs.prepare.outputs.version }}/linux/*.tar.gz
+            release/${{ needs.prepare.outputs.version }}/linux/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
+
+  publish:
+    name: Create GitHub release
+    needs:
+      - prepare
+      - build-windows
+      - build-linux
+    if: needs.prepare.outputs.publish == 'true'
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Check out release commit
+        uses: actions/checkout@v6
+
+      - name: Download release bundles
+        uses: actions/download-artifact@v7
+        with:
+          pattern: seenary-*-${{ needs.prepare.outputs.version }}
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create release and upload all assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.prepare.outputs.version }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          RELEASE_NOTES: ${{ needs.prepare.outputs.notes }}
+          RELEASE_PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
+        run: |
+          mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f -print0)
+
+          if [[ "${#assets[@]}" -eq 0 ]]; then
+            echo "::error::No release assets were downloaded."
+            exit 1
+          fi
+
+          prerelease_args=()
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            prerelease_args+=(--prerelease)
+          fi
+
+          gh release create "${RELEASE_TAG}" \
+            "${assets[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --target "${GITHUB_SHA}" \
+            --title "Seenary ${RELEASE_VERSION}" \
+            --notes-file "${RELEASE_NOTES}" \
+            "${prerelease_args[@]}"
