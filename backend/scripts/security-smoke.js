@@ -9,6 +9,8 @@ require('../env');
 // key is used only to verify the encryption and migration paths below.
 process.env.TOKEN_ENCRYPTION_KEY =
   '6ef46376b2180dd0336809f9dd58d285810dc871994d9a2465f4e872406a83f8';
+process.env.ANILIST_CLIENT_ID = 'security-smoke-client';
+process.env.ANILIST_CLIENT_SECRET = 'security-smoke-secret';
 
 async function closeServer(server) {
   if (!server?.listening) return;
