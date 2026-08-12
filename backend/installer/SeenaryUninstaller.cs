@@ -84,39 +84,133 @@ namespace SeenaryUninstaller
 
         internal static int RunCoreUninstaller(string[] args)
         {
-            var ownDirectory = Path.GetDirectoryName(
+            var launcherDirectory = Path.GetDirectoryName(
                 Assembly.GetExecutingAssembly().Location);
-            var corePath = Path.Combine(ownDirectory, CoreUninstallerName);
+            var coreDirectory = ResolveCoreDirectory(args, launcherDirectory);
+            var corePath = Path.Combine(coreDirectory, CoreUninstallerName);
             if (!File.Exists(corePath))
             {
                 return 2;
             }
 
+            var stagingDirectory = Path.Combine(
+                Path.GetTempPath(),
+                "SeenaryUninstaller",
+                Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(stagingDirectory);
+            var stagedCorePath = Path.Combine(
+                stagingDirectory,
+                "SeenaryUninstallerCore.exe");
+            File.Copy(corePath, stagedCorePath);
+
             PrepareLauncherForRemoval();
 
             var startInfo = new ProcessStartInfo
             {
-                FileName = corePath,
-                Arguments = JoinArguments(args),
+                FileName = stagedCorePath,
+                Arguments = BuildCoreArguments(args, coreDirectory),
                 UseShellExecute = true,
-                WorkingDirectory = ownDirectory
+                WorkingDirectory = coreDirectory
             };
 
-            using (var process = Process.Start(startInfo))
+            try
             {
-                if (process == null)
+                using (var process = Process.Start(startInfo))
                 {
-                    return 3;
-                }
+                    if (process == null)
+                    {
+                        return 3;
+                    }
 
-                process.WaitForExit();
-                var exitCode = process.ExitCode;
-                if (exitCode != 0)
-                {
-                    RestoreLauncher();
+                    process.WaitForExit();
+                    var exitCode = process.ExitCode;
+                    if (exitCode != 0)
+                    {
+                        RestoreLauncher();
+                    }
+                    return exitCode;
                 }
-                return exitCode;
             }
+            finally
+            {
+                try
+                {
+                    File.Delete(stagedCorePath);
+                    Directory.Delete(stagingDirectory);
+                }
+                catch
+                {
+                    // A scanner can briefly retain a completed uninstaller.
+                }
+            }
+        }
+
+        internal static string ResolveCoreDirectory(
+            string[] args,
+            string launcherDirectory)
+        {
+            const string installDirectoryPrefix = "_?=";
+
+            if (args != null)
+            {
+                for (var index = 0; index < args.Length; index++)
+                {
+                    var argument = args[index] ?? string.Empty;
+                    if (!argument.StartsWith(
+                        installDirectoryPrefix,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    var installDirectory = argument.Substring(
+                        installDirectoryPrefix.Length);
+                    if (index + 1 < args.Length)
+                    {
+                        installDirectory += " " + string.Join(
+                            " ",
+                            args,
+                            index + 1,
+                            args.Length - index - 1);
+                    }
+
+                    installDirectory = installDirectory.Trim().Trim('"');
+                    if (!string.IsNullOrEmpty(installDirectory))
+                    {
+                        return Path.GetFullPath(installDirectory);
+                    }
+                }
+            }
+
+            return Path.GetFullPath(launcherDirectory);
+        }
+
+        internal static string BuildCoreArguments(
+            string[] args,
+            string coreDirectory)
+        {
+            const string installDirectoryPrefix = "_?=";
+            var forwarded = new List<string>();
+            if (args != null)
+            {
+                foreach (var argument in args)
+                {
+                    if ((argument ?? string.Empty).StartsWith(
+                        installDirectoryPrefix,
+                        StringComparison.OrdinalIgnoreCase))
+                    {
+                        break;
+                    }
+                    forwarded.Add(argument ?? string.Empty);
+                }
+            }
+
+            var prefix = JoinArguments(forwarded.ToArray());
+            if (prefix.Length > 0)
+            {
+                prefix += " ";
+            }
+            return prefix + installDirectoryPrefix + coreDirectory;
         }
 
         internal static void ScheduleCleanup()
