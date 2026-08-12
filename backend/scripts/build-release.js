@@ -30,6 +30,8 @@ run(process.execPath, ['scripts/build-custom-uninstaller.js'], { shell: false })
 run(builderCommand, [
   '--win',
   'nsis',
+  '--publish',
+  'never',
   `--config.directories.output=${path.relative(backendDir, releaseDir)}`,
 ]);
 run(process.execPath, ['scripts/build-custom-installer.js'], { shell: false });

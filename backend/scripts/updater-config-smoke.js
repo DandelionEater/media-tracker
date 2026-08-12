@@ -6,6 +6,14 @@ const vm = require('vm');
 const backendDir = path.resolve(__dirname, '..');
 const packageJson = require('../package.json');
 const updaterSource = fs.readFileSync(path.join(backendDir, 'updater.js'), 'utf8');
+const windowsBuildSource = fs.readFileSync(
+  path.join(backendDir, 'scripts', 'build-release.js'),
+  'utf8'
+);
+const linuxBuildSource = fs.readFileSync(
+  path.join(backendDir, 'scripts', 'build-linux-release.js'),
+  'utf8'
+);
 const provider = packageJson.build?.publish?.[0];
 const windowsArtifactName = packageJson.build?.win?.artifactName;
 
@@ -21,6 +29,16 @@ assert.equal(
   '${productName}-Setup-${version}.${ext}',
   'The Windows artifact name must remain GitHub-safe and match update metadata.'
 );
+for (const [label, source] of [
+  ['Windows', windowsBuildSource],
+  ['Linux', linuxBuildSource],
+]) {
+  assert.match(
+    source,
+    /['"]--publish['"]\s*,\s*['"]never['"]/,
+    `${label} packaging must not publish before the coordinated release job.`
+  );
+}
 
 function exerciseUpdater(version) {
   const autoUpdater = {

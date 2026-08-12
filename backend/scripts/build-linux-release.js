@@ -37,6 +37,8 @@ run(builderCommand, [
   '--linux',
   ...linuxTargets,
   '--x64',
+  '--publish',
+  'never',
   '--config.extraMetadata.seenaryBundledFrontend=true',
   `--config.directories.output=${path.relative(backendDir, releaseDir)}`,
 ]);
