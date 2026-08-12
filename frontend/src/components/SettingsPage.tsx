@@ -4,6 +4,7 @@ import {
   ArrowPathIcon,
   BookmarkIcon,
   BugAntIcon,
+  ChartBarSquareIcon,
   CheckIcon,
   CheckCircleIcon,
   ChevronDownIcon,
@@ -20,6 +21,7 @@ import {
   PaintBrushIcon,
   PlayCircleIcon,
   RocketLaunchIcon,
+  ShieldCheckIcon,
   SparklesIcon,
   TrashIcon,
   XMarkIcon,
@@ -64,6 +66,8 @@ export type AppSettings = {
   homeDensity: CardDensity;
   myListDensity: CardDensity;
   startView: StartView;
+  shareAnonymousUsageStatistics: boolean;
+  analyticsConsentDecided: boolean;
 };
 
 type ImportPreviewGroup = {
@@ -147,7 +151,7 @@ type SettingsPageProps = {
   username: string;
   settings: AppSettings;
   onUpdateSettings: (settings: Partial<AppSettings>) => void | Promise<void>;
-  onShowWelcomeScreen: () => void | Promise<void>;
+  onShowTutorial: () => void | Promise<void>;
   onResetSettings: () => void | Promise<void>;
   onImportAniList: (
     username: string,
@@ -640,7 +644,7 @@ export function SettingsPage({
   username,
   settings,
   onUpdateSettings,
-  onShowWelcomeScreen,
+  onShowTutorial,
   onResetSettings,
   onImportAniList,
   onImportMal,
@@ -2333,9 +2337,12 @@ export function SettingsPage({
             <AccordionSection
               icon={SparklesIcon}
               title="General"
-              description="App information, startup behavior, shortcuts, and welcome screen access."
+              description="App information, startup behavior, shortcuts, and Tutorial access."
               summary={[
                 `Version ${APP_VERSION}`,
+                settings.shareAnonymousUsageStatistics
+                  ? "Anonymous statistics on"
+                  : "Anonymous statistics off",
                 ...(window.desktopStartup && desktopStartup.available
                   ? [desktopStartup.openAtLogin ? "Launches at login" : "Manual launch"]
                   : []),
@@ -2425,6 +2432,53 @@ export function SettingsPage({
                     </a>
                   </div>
                 )}
+              </div>
+
+              <div>
+                <SectionHeading
+                  icon={ShieldCheckIcon}
+                  title="Privacy and anonymous statistics"
+                  description="Control Seenary's optional, privacy-first engagement measurement."
+                />
+
+                <div className="space-y-3">
+                  <ToggleSetting
+                    icon={ChartBarSquareIcon}
+                    title="Share anonymous usage statistics"
+                    description="After 15 seconds of visible, focused use and an interaction, share at most one anonymous record for that UTC day."
+                    checked={settings.shareAnonymousUsageStatistics}
+                    onChange={(checked) =>
+                      onUpdateSettings({
+                        shareAnonymousUsageStatistics: checked,
+                        analyticsConsentDecided: true,
+                      })
+                    }
+                  />
+
+                  <div className="grid gap-3 rounded-3xl border border-white/10 bg-black/15 p-5 text-xs leading-5 text-white/45 md:grid-cols-2">
+                    <div>
+                      <p className="font-semibold text-white/75">What is included</p>
+                      <p className="mt-1">
+                        UTC date, operating-system platform, and Seenary version. The
+                        server derives a pseudonymous key that changes every month.
+                      </p>
+                    </div>
+                    <div>
+                      <p className="font-semibold text-white/75">What is never included</p>
+                      <p className="mt-1">
+                        Titles, library, progress, searches, providers, history, account
+                        name, stored IP address, device IDs, hardware details, or a
+                        fingerprint.
+                      </p>
+                    </div>
+                    <p className="md:col-span-2">
+                      Background launches, update checks, sync, and API traffic do not
+                      count. Daily pseudonymous rows are removed after finalized monthly
+                      totals pass a 45-day correction window. Turning this off stops new
+                      records immediately.
+                    </p>
+                  </div>
+                </div>
               </div>
 
               {window.desktopStartup && (
@@ -2598,10 +2652,10 @@ export function SettingsPage({
               <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                 <ActionCard
                   icon={SparklesIcon}
-                  title="Show welcome screen again"
-                  description="Reopen onboarding whenever you want to revisit the welcome flow."
-                  actionLabel="Open welcome"
-                  onAction={onShowWelcomeScreen}
+                  title="Replay Tutorial"
+                  description="Revisit the basics of navigating, discovering, and tracking your media."
+                  actionLabel="Open Tutorial"
+                  onAction={onShowTutorial}
                 />
 
                 <ActionCard

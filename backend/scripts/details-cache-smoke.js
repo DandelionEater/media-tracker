@@ -1,4 +1,5 @@
 const assert = require('assert/strict');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -129,6 +130,18 @@ async function main() {
 }
 
 main().catch((error) => {
+  const isNativeAbiMismatch =
+    error?.code === 'ERR_DLOPEN_FAILED' &&
+    /NODE_MODULE_VERSION|different Node\.js version/i.test(String(error?.message || ''));
+
+  if (!process.versions.electron && isNativeAbiMismatch) {
+    const result = spawnSync(require('electron'), [__filename], {
+      stdio: 'inherit',
+      env: process.env,
+    });
+    process.exit(result.status ?? 1);
+  }
+
   console.error(error);
   process.exitCode = 1;
 });

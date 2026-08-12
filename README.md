@@ -116,7 +116,13 @@ Copy `backend/.env.example` to `backend/.env`, then provide at least:
 ANILIST_CLIENT_ID=
 ANILIST_CLIENT_SECRET=
 TOKEN_ENCRYPTION_KEY=
+ANALYTICS_HMAC_SECRET=
+ANALYTICS_REPORT_USERNAME=
+ANALYTICS_REPORT_PASSWORD=
 ```
+
+The analytics report password must contain at least 16 characters. The private `/reports`
+route remains unavailable until both report credentials are configured.
 
 Generate a local encryption key with:
 
@@ -180,7 +186,21 @@ security controls, and patch integrity. It does not replace hands-on release tes
 
 ## Building packages
 
-From `backend/`:
+Prepare a release version from `backend/` with:
+
+```bash
+npm run release:version -- 0.1.9-beta
+```
+
+This updates the backend package and lockfile together and creates the matching release-notes
+scaffold. Complete those notes, commit the changes, and push or merge to `main`. GitHub Actions
+then validates the release, builds the Windows and Linux packages in parallel, creates the version
+tag and GitHub release, and uploads all generated assets. A version that already has a GitHub
+release is not rebuilt.
+
+Current Windows builds also check the public GitHub releases directly for automatic updates.
+
+For local packaging, from `backend/`:
 
 ```bash
 npm run dist
@@ -192,8 +212,7 @@ builds the Windows release on Windows, while:
 npm run dist:linux
 ```
 
-builds Linux artifacts on Linux. Linux release artifacts are also built and attached by GitHub
-Actions.
+builds Linux artifacts on Linux.
 
 ## Project status and contributions
 

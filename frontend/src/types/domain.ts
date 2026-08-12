@@ -24,6 +24,8 @@ export type AppSettings = {
   homeDensity: CardDensity;
   myListDensity: CardDensity;
   startView: "home" | "list" | "search";
+  shareAnonymousUsageStatistics: boolean;
+  analyticsConsentDecided: boolean;
 };
 
 export type AnimeTitle = {

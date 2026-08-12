@@ -923,8 +923,8 @@ export function MyListPage({
             </div>
 
             {filtersOpen && (
-              <div className="filter-panel-enter">
-                <div className="grid gap-4 rounded-3xl border border-white/10 bg-white/[0.035] p-4 md:grid-cols-2 xl:grid-cols-4">
+              <div className="filter-panel-enter relative z-40">
+                <div className="grid gap-4 rounded-3xl border border-white/10 bg-[#171717] p-4 shadow-xl md:grid-cols-2 xl:grid-cols-4">
                   <FilterSelect
                     label="Rating"
                     value={ratingFilter}
@@ -1305,7 +1305,7 @@ function FilterSelect({
         <ChevronDownIcon className={`h-4 w-4 shrink-0 text-white/40 transition ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+        <div className="absolute left-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-white/12 bg-[#181818] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.7)]">
           <div className="border-b border-white/8 p-2.5">
             <div className="flex items-center gap-2 rounded-xl border border-white/10 bg-black/25 px-3 transition focus-within:border-[var(--app-accent)]/70 focus-within:bg-black/35">
               <MagnifyingGlassIcon className="h-4 w-4 shrink-0 text-white/35" />
@@ -1435,7 +1435,7 @@ function ReleasePeriodFilter({
       <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">Release period</span>
       <FilterTrigger summary={summary} open={open} onClick={() => onOpenChange(!open)} />
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+        <div className="absolute left-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-white/12 bg-[#181818] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.7)]">
           {earliestYear !== null && latestYear !== null && lowerYear !== null && upperYear !== null ? (
             <DualRangeSlider
               availableMinimum={earliestYear}
@@ -1611,7 +1611,7 @@ function NumericRangeFilter({
       <span className="mb-2 block text-xs font-medium uppercase tracking-[0.18em] text-white/35">{label}</span>
       <FilterTrigger summary={summary} open={open} onClick={() => onOpenChange(!open)} />
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+        <div className="absolute left-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-white/12 bg-[#181818] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.7)]">
           {availableMinimum !== null && availableMaximum !== null && lowerValue !== null && upperValue !== null ? (
             <DualRangeSlider
               availableMinimum={availableMinimum}
@@ -1741,7 +1741,7 @@ function MultiSelectFilter({
           <ChevronDownIcon className={`h-4 w-4 shrink-0 text-white/40 transition ${open ? "rotate-180" : ""}`} />
       </button>
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-2 w-full min-w-[18rem] overflow-hidden rounded-2xl border border-white/12 bg-[#181818]/[0.98] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.55)] backdrop-blur-xl">
+        <div className="absolute left-0 top-full z-50 mt-2 w-full overflow-hidden rounded-2xl border border-white/12 bg-[#181818] text-sm text-white/75 shadow-[0_24px_60px_rgba(0,0,0,0.7)]">
           {options.length > 0 ? (
             <>
               <div className="border-b border-white/8 p-2.5">

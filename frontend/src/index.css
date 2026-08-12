@@ -156,6 +156,11 @@
   background: linear-gradient(to top, rgba(5, 5, 5, 0.98), rgba(5, 5, 5, 0.7) 62%, transparent);
 }
 
+[data-browse-card-style="immersive"] .browse-home-card.grid-height-home-card,
+.browse-home-card.grid-height-home-card .browse-home-card-poster {
+  box-shadow: none;
+}
+
 [data-browse-card-style="gallery"] .browse-home-card .browse-home-card-poster {
   border-color: transparent;
   border-radius: 1.25rem;
@@ -424,4 +429,19 @@
   animation: spotlight-backdrop-drift 38s ease-in-out infinite;
   transform-origin: center;
   will-change: transform;
+}
+
+.personal-grid-widget {
+  grid-column: 1 / -1;
+}
+
+@media (min-width: 1024px) {
+  .personal-grid-dashboard {
+    grid-auto-rows: 3.75rem;
+  }
+
+  .personal-grid-widget {
+    grid-column: span var(--personal-grid-columns);
+    grid-row: span var(--personal-grid-rows);
+  }
 }

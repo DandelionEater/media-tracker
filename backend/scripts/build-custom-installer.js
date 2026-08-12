@@ -8,11 +8,11 @@ const packageJson = require('../package.json');
 const backendDir = path.resolve(__dirname, '..');
 const repoRoot = path.resolve(backendDir, '..');
 const releaseDir = path.join(repoRoot, 'release', packageJson.version);
-const installerName = `Seenary Setup ${packageJson.version}.exe`;
+const installerName = `Seenary-Setup-${packageJson.version}.exe`;
 const installerPath = path.join(releaseDir, installerName);
 const coreInstallerPath = path.join(
   releaseDir,
-  `Seenary Setup ${packageJson.version}.core.exe`,
+  `Seenary-Setup-${packageJson.version}.core.exe`,
 );
 const versionSourcePath = path.join(
   releaseDir,

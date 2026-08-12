@@ -37,22 +37,22 @@ export function UpdateModal({
   const releaseNoteBlocks = parseReleaseNotes(info.releaseNotes);
 
   return (
-    <div className="no-drag absolute inset-0 z-[80] flex items-center justify-center bg-black/82 px-5">
-      <div className="w-full max-w-lg overflow-hidden rounded-3xl border border-white/10 bg-[#121212] text-white shadow-2xl">
-        <div className="border-b border-white/10 bg-white/[0.04] px-6 py-5">
+    <div className="no-drag absolute inset-0 z-[80] flex items-center justify-center bg-black/82 p-4 sm:p-6">
+      <div className="flex max-h-[calc(100%_-_2rem)] w-full max-w-2xl flex-col overflow-hidden rounded-3xl border border-white/10 bg-[#121212] text-white shadow-2xl sm:max-h-[calc(100%_-_3rem)]">
+        <div className="border-b border-white/10 bg-white/[0.04] px-6 py-6 sm:px-8 sm:py-7">
           <div className="flex items-start gap-4">
-            <div className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-[var(--app-accent-soft)] text-white/85">
+            <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[var(--app-accent-soft)] text-white/85">
               {isDownloaded ? (
-                <CheckCircleIcon className="h-7 w-7" />
+                <CheckCircleIcon className="h-8 w-8" />
               ) : (
-                <ArrowDownTrayIcon className="h-7 w-7" />
+                <ArrowDownTrayIcon className="h-8 w-8" />
               )}
             </div>
             <div className="min-w-0">
               <p className="text-xs font-semibold uppercase tracking-[0.24em] text-white/35">
                 Desktop update
               </p>
-              <h2 className="mt-2 text-2xl font-bold leading-tight text-white">
+              <h2 className="mt-2 text-2xl font-bold leading-tight text-white sm:text-3xl">
                 {isDownloaded ? "Update ready" : "New version available"}
               </h2>
               <p className="mt-2 text-sm text-white/55">
@@ -65,9 +65,9 @@ export function UpdateModal({
           </div>
         </div>
 
-        <div className="space-y-5 px-6 py-5">
-          <div className="rounded-2xl border border-white/10 bg-black/20 p-4">
-            <div className="mb-3 flex items-center justify-between gap-3">
+        <div className="min-h-0 space-y-6 overflow-y-auto px-6 py-6 sm:px-8 sm:py-7">
+          <div className="rounded-2xl border border-white/10 bg-black/20 p-5 sm:p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
               <p className="text-sm font-semibold text-white">Changelog</p>
               {info.releaseDate && (
                 <p className="text-xs text-white/35">
@@ -77,7 +77,7 @@ export function UpdateModal({
             </div>
 
             {releaseNoteBlocks.length ? (
-              <div className="scroll-container max-h-56 space-y-4 overflow-y-auto pr-1">
+              <div className="scroll-container max-h-72 space-y-4 overflow-y-auto pr-1">
                 {releaseNoteBlocks.map((block, index) => {
                   if (block.type === "heading") {
                     return (

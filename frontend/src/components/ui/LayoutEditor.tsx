@@ -9,6 +9,7 @@ export function LayoutEditorToolbar({
   isEditing,
   onToggleEdit,
   onReset,
+  onCancel,
   className = "",
 }: {
   title: string;
@@ -18,6 +19,7 @@ export function LayoutEditorToolbar({
   isEditing: boolean;
   onToggleEdit: () => void;
   onReset: () => void;
+  onCancel?: () => void;
   className?: string;
 }) {
   return (
@@ -30,6 +32,7 @@ export function LayoutEditorToolbar({
         </div>
       </div>
       <div className="flex flex-wrap gap-2">
+        {isEditing && onCancel && <button type="button" onClick={onCancel} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white/65 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55">Cancel</button>}
         {isEditing && <button type="button" onClick={onReset} className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white/65 transition hover:bg-white/8 hover:text-white focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55">Reset</button>}
         <button type="button" onClick={onToggleEdit} className={`inline-flex items-center gap-2 rounded-2xl border px-4 py-2 text-sm font-semibold transition focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55 ${isEditing ? "border-[var(--app-accent)] bg-[var(--app-accent-soft)] text-white" : "border-[var(--app-accent)]/25 bg-[var(--app-accent)] text-black shadow-lg shadow-[var(--app-accent)]/15 hover:opacity-90"}`}>
           <RectangleGroupIcon className="h-4 w-4" />{isEditing ? doneLabel : "Edit"}

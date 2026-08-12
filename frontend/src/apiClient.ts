@@ -21,24 +21,60 @@ let localAutoSyncTimer: number | null = null;
 const localAutoSyncListeners = new Set<(result: AutoSyncCompleteEvent) => void>();
 const LOCAL_AUTO_SYNC_DELAY_MS = 15_000;
 
-async function rpc(method: string, args: unknown[] = [], options: { signal?: AbortSignal } = {}) {
-  const response = await fetch(`${API_BASE_URL}/rpc`, {
-    method: "POST",
-    credentials: "include",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ method, args }),
-    signal: options.signal,
-  });
+async function rpc(
+  method: string,
+  args: unknown[] = [],
+  options: { signal?: AbortSignal; timeoutMs?: number } = {}
+) {
+  const timeoutController = options.timeoutMs ? new AbortController() : null;
+  const forwardAbort = () => timeoutController?.abort(options.signal?.reason);
+  let timedOut = false;
+  const timeoutId = timeoutController
+    ? window.setTimeout(() => {
+        timedOut = true;
+        timeoutController.abort();
+      }, options.timeoutMs)
+    : null;
 
-  const payload = await response.json().catch(() => null);
-
-  if (!response.ok) {
-    throw new Error(payload?.message || `API request failed with status ${response.status}`);
+  if (timeoutController && options.signal) {
+    if (options.signal.aborted) {
+      forwardAbort();
+    } else {
+      options.signal.addEventListener("abort", forwardAbort, { once: true });
+    }
   }
 
-  return payload;
+  try {
+    const response = await fetch(`${API_BASE_URL}/rpc`, {
+      method: "POST",
+      credentials: "include",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ method, args }),
+      signal: timeoutController?.signal ?? options.signal,
+    });
+
+    const payload = await response.json().catch(() => null);
+
+    if (!response.ok) {
+      throw new Error(payload?.message || `API request failed with status ${response.status}`);
+    }
+
+    return payload;
+  } catch (error) {
+    if (timedOut) {
+      throw new Error("The search request timed out. Try again in a moment.", {
+        cause: error,
+      });
+    }
+    throw error;
+  } finally {
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+    options.signal?.removeEventListener("abort", forwardAbort);
+  }
 }
 
 function throwIfAborted(signal?: AbortSignal) {
@@ -476,8 +512,11 @@ export function installApiClient() {
   }
 
   const api: ApiClient = {
-    searchMedia: (query, hideAdultContent = true) =>
-      rpc("searchMedia", [query, hideAdultContent]),
+    searchMedia: (query, hideAdultContent = true, options) =>
+      rpc("searchMedia", [query, hideAdultContent], {
+        signal: options?.signal,
+        timeoutMs: 30_000,
+      }),
     getDiscoverMedia: (hideAdultContent = true) => rpc("getDiscoverMedia", [hideAdultContent]),
     getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = "ANIME") =>
       rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent, mediaType]),
@@ -582,6 +621,7 @@ export function installApiClient() {
       const userId = await requireActiveUserId();
       return await localStore.updateSettings(userId, settings);
     },
+    recordEngagement: (payload) => rpc("recordEngagement", [payload]),
     getSyncStatus: async () => {
       const userId = await requireActiveUserId();
       const result = await rpc("getSyncStatus", [

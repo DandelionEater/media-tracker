@@ -29,7 +29,9 @@ import type { AppSettings } from "./components/SettingsPage";
 import { getPreferredTitle } from "./utils/titlePreference";
 import { SyncToast, type SyncToastState } from "./components/SyncToast";
 import { UpdateModal } from "./components/UpdateModal";
+import { AnalyticsConsentModal } from "./components/AnalyticsConsentModal";
 import { GlobalScrollToTop } from "./components/GlobalScrollToTop";
+import { useEngagementAnalytics } from "./hooks/useEngagementAnalytics";
 import type { LibraryDestination } from "./components/LibraryLens";
 import type {
   ImportPreviewItem,
@@ -82,6 +84,7 @@ const EMPTY_MEDIA_SEARCH_RESULTS: MediaSearchResults = {
   warnings: [],
 };
 const SONG_PREVIEW_VOLUME_STORAGE_KEY = "seenary:song-preview-volume";
+const SEARCH_DEBOUNCE_MS = 300;
 
 const DEFAULT_APP_SETTINGS: AppSettings = {
   themeAccent: "violet",
@@ -102,6 +105,8 @@ const DEFAULT_APP_SETTINGS: AppSettings = {
   homeDensity: "balanced",
   myListDensity: "balanced",
   startView: "home",
+  shareAnonymousUsageStatistics: false,
+  analyticsConsentDecided: false,
 };
 
 type AuthUser = {
@@ -343,6 +348,8 @@ function App() {
   const listScrollElementRef = useRef<HTMLDivElement | null>(null);
   const searchRequestIdRef = useRef(0);
   const searchResultCacheRef = useRef(new Map<string, MediaSearchResults>());
+  const searchDebounceTimerRef = useRef<number | null>(null);
+  const searchAbortControllerRef = useRef<AbortController | null>(null);
   const handleSongPreviewVolumeChange = useCallback((volume: number) => {
     setSongPreviewVolume(volume);
     try {
@@ -476,6 +483,15 @@ function App() {
     window.setTimeout(() => {
       setSyncToast((current) => (current?.id === id ? null : current));
     }, 4200);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (searchDebounceTimerRef.current !== null) {
+        window.clearTimeout(searchDebounceTimerRef.current);
+      }
+      searchAbortControllerRef.current?.abort();
+    };
   }, []);
 
   useEffect(() => {
@@ -788,10 +804,15 @@ function App() {
   };
 
   const handleResetSettings = async () => {
-    setSettings(DEFAULT_APP_SETTINGS);
+    const resetSettings = {
+      ...DEFAULT_APP_SETTINGS,
+      shareAnonymousUsageStatistics: settings.shareAnonymousUsageStatistics,
+      analyticsConsentDecided: settings.analyticsConsentDecided,
+    };
+    setSettings(resetSettings);
 
     try {
-      const updatedSettings = await window.api.updateSettings(DEFAULT_APP_SETTINGS);
+      const updatedSettings = await window.api.updateSettings(resetSettings);
       setSettings(normalizeAppSettings(updatedSettings));
       showSyncToast("success", "Settings reset", "Preferences were reset to defaults.");
     } catch (error) {
@@ -1071,12 +1092,8 @@ function App() {
     await loadTrackedEntries();
   };
 
-  const handleDismissTutorial = async (dontShowAgain: boolean) => {
+  const handleDismissTutorial = async () => {
     setShowTutorial(false);
-
-    if (!dontShowAgain) {
-      return;
-    }
 
     try {
       const result = await window.api.setTutorialDismissed(true);
@@ -1096,7 +1113,7 @@ function App() {
     }
   };
 
-  const handleShowWelcomeScreen = async () => {
+  const handleShowTutorial = async () => {
     try {
       const result = await window.api.setTutorialDismissed(false);
 
@@ -1128,8 +1145,16 @@ function App() {
   const runResolvedSearch = async (
     rawQueries: string[],
     activeQuery = "",
-    filteredTerms = resolvedSearchTerms
+    filteredTerms = resolvedSearchTerms,
+    revealResults = true
   ) => {
+    if (searchDebounceTimerRef.current !== null) {
+      window.clearTimeout(searchDebounceTimerRef.current);
+      searchDebounceTimerRef.current = null;
+    }
+    searchAbortControllerRef.current?.abort();
+    searchAbortControllerRef.current = null;
+
     const requestId = searchRequestIdRef.current + 1;
     searchRequestIdRef.current = requestId;
     captureHomeScrollTop();
@@ -1154,9 +1179,13 @@ function App() {
       return;
     }
 
-    setSearchResultsVisible(true);
+    if (revealResults) {
+      setSearchResultsVisible(true);
+    }
     setIsSearching(true);
     setSearchError(null);
+    const abortController = new AbortController();
+    searchAbortControllerRef.current = abortController;
 
     try {
       const queryResults = await Promise.all(
@@ -1165,7 +1194,9 @@ function App() {
           const cachedResults = searchResultCacheRef.current.get(cacheKey);
           if (cachedResults) return cachedResults;
 
-          const nextResults = await searchMedia(query, settings.hideAdultContent);
+          const nextResults = await searchMedia(query, settings.hideAdultContent, {
+            signal: abortController.signal,
+          });
           if (searchResultCacheRef.current.size >= 60) {
             const oldestKey = searchResultCacheRef.current.keys().next().value;
             if (oldestKey) searchResultCacheRef.current.delete(oldestKey);
@@ -1225,6 +1256,10 @@ function App() {
       setSelectedAnimeId(null);
       setCurrentView("home");
     } catch (error) {
+      if (isSearchAbortError(error)) {
+        return;
+      }
+
       console.error("Failed to search Seenary providers:", error);
 
       if (searchRequestIdRef.current !== requestId) {
@@ -1240,6 +1275,9 @@ function App() {
           : "There was a problem searching Seenary."
       );
     } finally {
+      if (searchAbortControllerRef.current === abortController) {
+        searchAbortControllerRef.current = null;
+      }
       if (searchRequestIdRef.current === requestId) {
         setIsSearching(false);
       }
@@ -1249,10 +1287,34 @@ function App() {
   const handleSearch = (query: string) => {
     setSearchQuery(query);
     setActiveSearchResolution(null);
-    void runResolvedSearch(
-      [...resolvedSearchTerms.map((term) => term.query), query],
-      query
-    );
+
+    if (searchDebounceTimerRef.current !== null) {
+      window.clearTimeout(searchDebounceTimerRef.current);
+      searchDebounceTimerRef.current = null;
+    }
+    searchAbortControllerRef.current?.abort();
+    searchAbortControllerRef.current = null;
+    searchRequestIdRef.current += 1;
+
+    const queries = [...resolvedSearchTerms.map((term) => term.query), query];
+    if (!queries.some((candidate) => candidate.trim())) {
+      setSearchResultsVisible(false);
+      setSearchError(null);
+      setIsSearching(false);
+      setResults(EMPTY_MEDIA_SEARCH_RESULTS);
+      if (selectedAnimeId === null) {
+        setCurrentView("home");
+      }
+      return;
+    }
+
+    setSearchResultsVisible(true);
+    setIsSearching(true);
+    setSearchError(null);
+    searchDebounceTimerRef.current = window.setTimeout(() => {
+      searchDebounceTimerRef.current = null;
+      void runResolvedSearch(queries, query, resolvedSearchTerms, false);
+    }, SEARCH_DEBOUNCE_MS);
   };
 
   const handleCommitSearchTerm = (selectedMatchTypes: SearchMatchType[]) => {
@@ -1637,6 +1699,11 @@ function App() {
     setCurrentView("home");
   };
 
+  useEngagementAnalytics({
+    enabled: settings.shareAnonymousUsageStatistics,
+    userId: authUser?.id ?? null,
+  });
+
   if (checkingSession) {
     return (
       <div className="h-screen w-screen bg-transparent max-sm:h-dvh">
@@ -1690,6 +1757,12 @@ function App() {
                 onEditSearchTerm={handleEditSearchTerm}
                 onRemoveSearchTerm={handleRemoveSearchTerm}
                 onClear={() => {
+                  if (searchDebounceTimerRef.current !== null) {
+                    window.clearTimeout(searchDebounceTimerRef.current);
+                    searchDebounceTimerRef.current = null;
+                  }
+                  searchAbortControllerRef.current?.abort();
+                  searchAbortControllerRef.current = null;
                   searchRequestIdRef.current += 1;
                   setSearchQuery("");
                   setResolvedSearchTerms([]);
@@ -1725,6 +1798,17 @@ function App() {
                 onDismiss={() => setSyncToast(null)}
               />
 
+              {!showTutorial && !settings.analyticsConsentDecided && (
+                <AnalyticsConsentModal
+                  onChoose={(enabled) => {
+                    void handleUpdateSettings({
+                      shareAnonymousUsageStatistics: enabled,
+                      analyticsConsentDecided: true,
+                    });
+                  }}
+                />
+              )}
+
               <div className="min-h-0 flex-1">
                 <Suspense fallback={<PageLoadingFallback />}>
                   {currentView === "artist" && selectedArtist ? (
@@ -1750,6 +1834,7 @@ function App() {
                     />
                   ) : currentView === "details" && selectedAnimeId !== null ? (
                     <MediaDetails
+                    userId={authUser.id}
                     mediaId={selectedAnimeId}
                     mediaType={selectedMediaType}
                     onBack={handleBackFromDetails}
@@ -1784,7 +1869,7 @@ function App() {
                     username={authUser.username}
                     settings={settings}
                     onUpdateSettings={handleUpdateSettings}
-                    onShowWelcomeScreen={handleShowWelcomeScreen}
+                    onShowTutorial={handleShowTutorial}
                     onResetSettings={handleResetSettings}
                     onImportAniList={handleImportAniList}
                     onImportMal={handleImportMal}
@@ -2258,6 +2343,10 @@ function normalizeSearchTerm(value: string) {
   return value.trim().normalize("NFKC").toLocaleLowerCase();
 }
 
+function isSearchAbortError(error: unknown) {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
 function readSongPreviewVolume() {
   try {
     const storedValue = window.localStorage.getItem(
@@ -2453,6 +2542,8 @@ function normalizeAppSettings(value: Partial<AppSettings> | null | undefined): A
     startView: startViews.includes(value?.startView as AppSettings["startView"])
       ? (value?.startView as AppSettings["startView"])
       : DEFAULT_APP_SETTINGS.startView,
+    shareAnonymousUsageStatistics: value?.shareAnonymousUsageStatistics === true,
+    analyticsConsentDecided: value?.analyticsConsentDecided === true,
   };
 }
 

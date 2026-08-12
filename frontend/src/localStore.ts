@@ -228,6 +228,8 @@ export const DEFAULT_LOCAL_SETTINGS: LocalSettings = {
   homeDensity: "balanced",
   myListDensity: "balanced",
   startView: "home",
+  shareAnonymousUsageStatistics: false,
+  analyticsConsentDecided: false,
 };
 
 function normalizeAccentColor(value: unknown) {
@@ -257,6 +259,8 @@ function normalizeSettings(settings: Partial<LocalSettings> | null | undefined):
     discoverDensity: normalizeDensity(settings?.discoverDensity),
     homeDensity: normalizeDensity(settings?.homeDensity),
     myListDensity: normalizeDensity(settings?.myListDensity),
+    shareAnonymousUsageStatistics: settings?.shareAnonymousUsageStatistics === true,
+    analyticsConsentDecided: settings?.analyticsConsentDecided === true,
   };
 }
 

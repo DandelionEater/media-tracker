@@ -108,7 +108,7 @@ const {
 } = require('./sync');
 
 const ANILIST_URL = 'https://graphql.anilist.co';
-const ANIME_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const MEDIA_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let mainWindow = null;
 
@@ -131,6 +131,8 @@ const DEFAULT_APP_SETTINGS = {
   homeDensity: 'balanced',
   myListDensity: 'balanced',
   startView: 'home',
+  shareAnonymousUsageStatistics: false,
+  analyticsConsentDecided: false,
 };
 
 const ALLOWED_THEME_ACCENTS = ['violet', 'rose', 'amber', 'emerald', 'custom'];
@@ -202,6 +204,10 @@ function getAppPreferences() {
   const homeDensity = getAppSetting('preferences.homeDensity');
   const myListDensity = getAppSetting('preferences.myListDensity');
   const startView = getAppSetting('preferences.startView');
+  const shareAnonymousUsageStatistics = getAppSetting(
+    'preferences.shareAnonymousUsageStatistics'
+  );
+  const analyticsConsentDecided = getAppSetting('preferences.analyticsConsentDecided');
 
   return {
     themeAccent: ALLOWED_THEME_ACCENTS.includes(themeAccent)
@@ -263,6 +269,14 @@ function getAppPreferences() {
     startView: ALLOWED_START_VIEWS.includes(startView)
       ? startView
       : DEFAULT_APP_SETTINGS.startView,
+    shareAnonymousUsageStatistics:
+      shareAnonymousUsageStatistics === null
+        ? DEFAULT_APP_SETTINGS.shareAnonymousUsageStatistics
+        : shareAnonymousUsageStatistics === 'true',
+    analyticsConsentDecided:
+      analyticsConsentDecided === null
+        ? DEFAULT_APP_SETTINGS.analyticsConsentDecided
+        : analyticsConsentDecided === 'true',
   };
 }
 
@@ -331,6 +345,14 @@ function updateAppPreferences(payload = {}) {
     startView: ALLOWED_START_VIEWS.includes(payload.startView)
       ? payload.startView
       : current.startView,
+    shareAnonymousUsageStatistics:
+      typeof payload.shareAnonymousUsageStatistics === 'boolean'
+        ? payload.shareAnonymousUsageStatistics
+        : current.shareAnonymousUsageStatistics,
+    analyticsConsentDecided:
+      typeof payload.analyticsConsentDecided === 'boolean'
+        ? payload.analyticsConsentDecided
+        : current.analyticsConsentDecided,
   };
 
   setAppSetting('preferences.themeAccent', next.themeAccent);
@@ -351,6 +373,11 @@ function updateAppPreferences(payload = {}) {
   setAppSetting('preferences.homeDensity', next.homeDensity);
   setAppSetting('preferences.myListDensity', next.myListDensity);
   setAppSetting('preferences.startView', next.startView);
+  setAppSetting(
+    'preferences.shareAnonymousUsageStatistics',
+    next.shareAnonymousUsageStatistics
+  );
+  setAppSetting('preferences.analyticsConsentDecided', next.analyticsConsentDecided);
 
   return next;
 }
@@ -1147,6 +1174,15 @@ ipcMain.handle('settings:update', (_event, payload) => {
   return updateAppPreferences(payload);
 });
 
+ipcMain.handle('analytics:record-engagement', () => {
+  return {
+    ok: true,
+    recorded: false,
+    disabled: true,
+    message: 'Engagement analytics are sent only through the hosted Seenary service.',
+  };
+});
+
 ipcMain.handle('sync:get-status', () => {
   try {
     const session = getCurrentSession();
@@ -1769,7 +1805,7 @@ async function fetchAnimeDetailsFromAniList(id) {
   return data.data.Media;
 }
 
-function hasFreshAnimeDetailsCache(row) {
+function hasUsableAnimeDetailsCache(row) {
   if (!row) return false;
   if (row.is_adult === null || row.is_adult === undefined) return false;
   if (!hasCachedStudioIds(row.studios)) return false;
@@ -1782,10 +1818,21 @@ function hasFreshAnimeDetailsCache(row) {
     Boolean(row.relations && row.relations !== '[]') ||
     Boolean(row.recommendations && row.recommendations !== '[]');
 
-  if (!hasFullDetails || !row.franchise_start_date) return false;
+  return hasFullDetails && Boolean(row.franchise_start_date);
+}
+
+function hasFreshAnimeDetailsCache(row) {
+  if (!hasUsableAnimeDetailsCache(row)) return false;
 
   const cachedAt = Date.parse(row.cached_at);
-  return Number.isFinite(cachedAt) && Date.now() - cachedAt < ANIME_DETAILS_CACHE_TTL_MS;
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < MEDIA_DETAILS_CACHE_TTL_MS;
+}
+
+function hasFreshMangaDetailsCache(row) {
+  if (!row?.details) return false;
+
+  const cachedAt = Date.parse(row.cached_at);
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < MEDIA_DETAILS_CACHE_TTL_MS;
 }
 
 function hasCachedStudioIds(value) {
@@ -1813,9 +1860,39 @@ async function getAnimeDetails(id) {
     return mapDbAnimeForFrontend(cachedAnime);
   }
 
-  const media = await fetchAnimeDetailsFromAniList(id);
-  saveAnime(mapAnimeForDb(media));
-  return media;
+  try {
+    const media = await fetchAnimeDetailsFromAniList(id);
+    saveAnime(mapAnimeForDb(media));
+    return media;
+  } catch (error) {
+    if (hasUsableAnimeDetailsCache(cachedAnime)) {
+      console.warn(`AniList anime details unavailable for ${id}; serving stale cached data.`);
+      return mapDbAnimeForFrontend(cachedAnime);
+    }
+
+    throw error;
+  }
+}
+
+async function getMangaDetails(id) {
+  const cachedManga = getMangaById(id);
+
+  if (hasFreshMangaDetailsCache(cachedManga)) {
+    return cachedManga.details;
+  }
+
+  try {
+    const media = await anilist.getMangaDetails(id);
+    saveManga(media);
+    return media;
+  } catch (error) {
+    if (cachedManga?.details) {
+      console.warn(`AniList manga details unavailable for ${id}; serving stale cached data.`);
+      return cachedManga.details;
+    }
+
+    throw error;
+  }
 }
 
 function hasFreshPersonDetailsCache(row) {
@@ -1863,9 +1940,7 @@ ipcMain.handle('media:get-details', async (_event, payload) => {
     }
 
     if (mediaType === 'MANGA') {
-      const media = await anilist.getMangaDetails(id);
-      saveManga(media);
-      return media;
+      return await getMangaDetails(id);
     }
 
     throw new Error('Unsupported media type.');

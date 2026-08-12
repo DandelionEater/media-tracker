@@ -1,9 +1,9 @@
 const { app, ipcMain } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
-const DEFAULT_UPDATE_FEED_URL = 'https://api.seenary.app/desktop-updates';
 const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const STARTUP_CHECK_DELAY_MS = 10 * 1000;
+const UPDATE_DIALOG_PREVIEW = process.env?.SEENARY_PREVIEW_UPDATE_DIALOG === '1';
 
 let checkTimer = null;
 let startupCheckTimer = null;
@@ -19,13 +19,24 @@ function isAutoUpdateAvailable() {
   return process.platform !== 'linux';
 }
 
-function getUpdateFeedUrl() {
-  return process.env.SEENARY_UPDATE_FEED_URL || DEFAULT_UPDATE_FEED_URL;
-}
-
 function setupAutoUpdates(win) {
   activeWindow = win;
   registerUpdaterIpc();
+
+  if (UPDATE_DIALOG_PREVIEW) {
+    latestUpdateInfo = normalizeUpdateInfo({
+      version: '0.1.9-beta',
+      releaseName: 'Seenary 0.1.9 Beta',
+      releaseNotes: [
+        'A new Seenary update is ready.',
+        '',
+        '- Smoother desktop updates through GitHub Releases',
+        '- Visual refinements and reliability improvements',
+      ].join('\n'),
+      releaseDate: new Date().toISOString(),
+    });
+    return;
+  }
 
   if (!app.isPackaged || !isAutoUpdateAvailable()) {
     return;
@@ -33,10 +44,7 @@ function setupAutoUpdates(win) {
 
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = false;
-  autoUpdater.setFeedURL({
-    provider: 'generic',
-    url: getUpdateFeedUrl(),
-  });
+  autoUpdater.allowPrerelease = app.getVersion().includes('-');
   registerUpdaterEvents();
 
   scheduleStartupCheck();
@@ -132,6 +140,13 @@ function registerUpdaterIpc() {
   handlersRegistered = true;
 
   ipcMain.handle('updater:download', async () => {
+    if (UPDATE_DIALOG_PREVIEW) {
+      return {
+        ok: false,
+        message: 'This is an update-dialog preview; no update will be downloaded.',
+      };
+    }
+
     if (!app.isPackaged || !isAutoUpdateAvailable() || isDownloading) {
       return {
         ok: false,

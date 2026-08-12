@@ -31,6 +31,7 @@ update-instructions.md
 *.db-wal
 backend/media.db
 backend/.electron-user-data/
+backend/.electron-update-preview/
 backend/.electron-crash-dumps/
 
 # Environment and local config

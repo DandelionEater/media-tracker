@@ -1,38 +1,45 @@
 const anilist = require('./anilist');
 const animethemes = require('./animethemes');
 
+const OPTIONAL_MUSIC_WAIT_MS = 2500;
+
 async function searchMedia(search, options = {}) {
   const query = String(search || '').trim();
-  const musicSearchPromise =
+  const musicResolutionPromise =
     query.normalize('NFKC').length >= 2
-      ? animethemes
-          .searchMusic(query)
-          .then((items) => ({ ...items, error: null }))
-          .catch((error) => ({ songs: [], artists: [], error }))
-      : Promise.resolve({ songs: [], artists: [], error: null });
+      ? resolveMusicSearch(query, options).catch((error) => {
+          console.warn('AnimeThemes song search failed:', error);
+          return {
+            songs: [],
+            artists: [],
+            warnings: [
+              {
+                provider: 'animethemes',
+                message: 'Music matches are temporarily unavailable.',
+              },
+            ],
+          };
+        })
+      : Promise.resolve({ songs: [], artists: [], warnings: [] });
 
-  const [baseResults, musicSearch] = await Promise.all([
+  const [baseResults, musicResults] = await Promise.all([
     anilist.searchMedia(query, options),
-    musicSearchPromise,
+    waitForOptionalMusicSearch(musicResolutionPromise),
   ]);
-  const warnings = [];
 
-  if (musicSearch.error) {
-    console.warn('AnimeThemes song search failed:', musicSearch.error);
-    warnings.push({
-      provider: 'animethemes',
-      message: 'Music matches are temporarily unavailable.',
-    });
-  }
+  return {
+    ...baseResults,
+    songs: musicResults.songs,
+    artists: musicResults.artists,
+    warnings: musicResults.warnings,
+  };
+}
 
+async function resolveMusicSearch(query, options) {
+  const musicSearch = await animethemes.searchMusic(query);
   const musicAssociations = [...musicSearch.songs, ...musicSearch.artists];
   if (!musicAssociations.length) {
-    return {
-      ...baseResults,
-      songs: [],
-      artists: [],
-      warnings,
-    };
+    return { songs: [], artists: [], warnings: [] };
   }
 
   try {
@@ -73,25 +80,50 @@ async function searchMedia(search, options = {}) {
     }
 
     return {
-      ...baseResults,
       songs: Array.from(songs.values()),
       artists: Array.from(artists.values()),
-      warnings,
+      warnings: [],
     };
   } catch (error) {
     console.warn('AnimeThemes media resolution failed:', error);
-    warnings.push({
-      provider: 'animethemes',
-      message: 'Music matches could not be connected to AniList right now.',
-    });
-
     return {
-      ...baseResults,
       songs: [],
       artists: [],
-      warnings,
+      warnings: [
+        {
+          provider: 'animethemes',
+          message: 'Music matches could not be connected to AniList right now.',
+        },
+      ],
     };
   }
+}
+
+function waitForOptionalMusicSearch(searchPromise) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      resolve({
+        songs: [],
+        artists: [],
+        warnings: [
+          {
+            provider: 'animethemes',
+            message: 'Music matches are taking longer than usual and were skipped.',
+          },
+        ],
+      });
+    }, OPTIONAL_MUSIC_WAIT_MS);
+
+    searchPromise.then((result) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    });
+  });
 }
 
 async function getArtistMedia(slug, page = 1, options = {}) {

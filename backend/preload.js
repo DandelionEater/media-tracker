@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld('api', {
     ipcRenderer.invoke('text-import:import', { entries, selectedMediaKeys }),
   getSettings: () => ipcRenderer.invoke('settings:get'),
   updateSettings: (settings) => ipcRenderer.invoke('settings:update', settings),
+  recordEngagement: (payload) => ipcRenderer.invoke('analytics:record-engagement', payload),
   getSyncStatus: () => ipcRenderer.invoke('sync:get-status'),
   setAutoSync: (enabled) => ipcRenderer.invoke('sync:set-auto', enabled),
   runSyncNow: () => ipcRenderer.invoke('sync:run-now'),

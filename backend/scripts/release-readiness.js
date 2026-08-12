@@ -203,11 +203,20 @@ function checkReleaseContract() {
   if (missingFiles.length) fail('Desktop packaging inputs', `missing: ${missingFiles.join(', ')}`);
   else pass('Desktop packaging inputs', `${configuredFiles.length} configured files found`);
 
-  const publishUrl = build.publish?.[0]?.url;
-  if (typeof publishUrl === 'string' && publishUrl.startsWith('https://')) {
-    pass('Updater endpoint', publishUrl);
+  const updateProvider = build.publish?.[0];
+  if (
+    updateProvider?.provider === 'github' &&
+    updateProvider.owner === 'DandelionEater' &&
+    updateProvider.repo === 'Seenary' &&
+    updateProvider.private === false &&
+    updateProvider.tagNamePrefix === 'v'
+  ) {
+    pass('Updater provider', 'GitHub Releases: DandelionEater/Seenary');
   } else {
-    fail('Updater endpoint', 'electron-builder publish URL must use HTTPS');
+    fail(
+      'Updater provider',
+      'electron-builder must use the public GitHub repository DandelionEater/Seenary'
+    );
   }
 }
 
@@ -268,7 +277,7 @@ function printManualChecks() {
     'Large mixed Anime/Manga libraries, unknown totals, one-shots, novels, rereads, and duplicate numeric IDs.',
     'Every My List layout/density, compact windows, keyboard flows, adult filtering, artwork inspection, and back navigation.',
     'Screen-reader labels, focus order, loading/empty/error states, persistence across restart, and backup/restore review.',
-    'Built installer, blockmap, and latest.yml checksum/version verification before upload.',
+    'Built installer, blockmap, and update metadata verification before publishing to GitHub Releases.',
   ];
   checks.forEach((check, index) => console.log(`${index + 1}. ${check}`));
 }
@@ -280,6 +289,44 @@ function main() {
   const javascriptFiles = listJavaScriptFiles(backendDir);
   runSyntaxChecks(javascriptFiles);
 
+  runCommand(
+    'GitHub updater configuration',
+    process.execPath,
+    [path.join(__dirname, 'updater-config-smoke.js')],
+    { cwd: backendDir, shell: false }
+  );
+  runCommand(
+    'AnimeThemes mapper smoke test',
+    process.execPath,
+    [path.join(__dirname, 'animethemes-mapper-smoke.js')],
+    { cwd: backendDir, shell: false }
+  );
+  runCommand(
+    'Details cache fallback smoke test',
+    require('electron'),
+    [path.join(__dirname, 'details-cache-smoke.js')],
+    {
+      cwd: backendDir,
+      shell: false,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+    }
+  );
+  runCommand(
+    'Engagement analytics smoke test',
+    require('electron'),
+    [path.join(__dirname, 'engagement-analytics-smoke.js')],
+    {
+      cwd: backendDir,
+      shell: false,
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+    }
+  );
   runNpm('Frontend lint', ['run', 'lint'], frontendDir);
   runNpm('Frontend production build', ['run', 'build'], frontendDir);
   runDataSmoke('fresh');

@@ -9,16 +9,21 @@ import {
   BookOpenIcon,
   CalendarDaysIcon,
   ChartBarIcon,
+  CheckIcon,
   CheckCircleIcon,
   ClockIcon,
   ExclamationTriangleIcon,
   FireIcon,
   HeartIcon,
+  HomeIcon,
+  MagnifyingGlassIcon,
+  MinusIcon,
   PlayCircleIcon,
   PlusIcon,
   SparklesIcon,
   StarIcon,
   TvIcon,
+  XMarkIcon,
 } from "@heroicons/react/24/outline";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { getMigratedLocalStorageItem } from "../utils/localStorageMigration";
@@ -34,6 +39,11 @@ import {
   formatScore10,
 } from "../utils/mediaFormatting";
 import type { MediaType, TrackedMangaEntry } from "../types/domain";
+import {
+  dismissRecentMedia,
+  readRecentMediaHistory,
+  type RecentMediaHistoryEntry,
+} from "../utils/recentMediaHistory";
 
 const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
 const HOME_DISCOVER_STATE_LEGACY_STORAGE_KEY = "media-tracker.discover-state";
@@ -44,7 +54,6 @@ const HOME_DISCOVER_LAYOUT_STORAGE_KEY = "seenary.discover-layout-order";
 const HOME_DISCOVER_LAYOUT_LEGACY_STORAGE_KEY = "media-tracker.discover-layout-order";
 const TRENDING_CYCLE_MS = 6500;
 const HOME_DISCOVER_CACHE_TTL_MS = 20 * 60 * 1000;
-const RECENT_ACTIVITY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 const DISCOVER_CAROUSEL_LAYOUT_ID = "carousel";
 const DEFAULT_DISCOVER_LAYOUT_ORDER = [
   DISCOVER_CAROUSEL_LAYOUT_ID,
@@ -56,33 +65,83 @@ const DEFAULT_DISCOVER_LAYOUT_ORDER = [
 const DEFAULT_PERSONAL_LAYOUT_ORDER = [
   "overview",
   "stats",
+  "activity",
   "continue",
   "planned",
   "sinceLiked",
-  "recent",
 ] as const;
 
 type PersonalLayoutSectionId = (typeof DEFAULT_PERSONAL_LAYOUT_ORDER)[number];
+type PersonalGridWidgetId =
+  | "spotlight"
+  | "account"
+  | "stats"
+  | "activity"
+  | "continue"
+  | "planned"
+  | "sinceLiked";
+type ShelfOrientation = "horizontal" | "vertical";
+type PersonalGridItem = {
+  id: PersonalGridWidgetId;
+  columns: number;
+  rows: number;
+  orientation?: ShelfOrientation;
+};
 type DiscoverDensity = "comfortable" | "balanced" | "compact";
 type HomeDensity = "comfortable" | "balanced" | "compact";
 
-const PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
-  overview: "List overview",
-  stats: "Stats",
+const PERSONAL_GRID_STORAGE_VERSION = 1;
+const PERSONAL_GRID_WIDGET_LABELS: Record<PersonalGridWidgetId, string> = {
+  spotlight: "Spotlight",
+  account: "Account Overview",
+  stats: "Status Summary",
+  activity: "Last Activity",
   continue: "Continue Watching",
   planned: "Planned Picks",
   sinceLiked: "Since You Liked",
-  recent: "Recently Updated",
 };
-
-const MANGA_PERSONAL_LAYOUT_SECTION_LABELS: Record<PersonalLayoutSectionId, string> = {
-  overview: "Reading overview",
-  stats: "Stats",
+const MANGA_PERSONAL_GRID_WIDGET_LABELS: Record<PersonalGridWidgetId, string> = {
+  spotlight: "Spotlight",
+  account: "Reading Overview",
+  stats: "Status Summary",
+  activity: "Last Activity",
   continue: "Continue Reading",
   planned: "Plan to Read",
   sinceLiked: "Since You Liked",
-  recent: "Recently Updated",
 };
+const PERSONAL_GRID_CONSTRAINTS: Record<
+  PersonalGridWidgetId,
+  { minColumns: number; maxColumns: number; minRows: number; maxRows: number }
+> = {
+  spotlight: { minColumns: 5, maxColumns: 12, minRows: 5, maxRows: 9 },
+  account: { minColumns: 4, maxColumns: 12, minRows: 5, maxRows: 10 },
+  stats: { minColumns: 3, maxColumns: 12, minRows: 2, maxRows: 5 },
+  activity: { minColumns: 3, maxColumns: 12, minRows: 3, maxRows: 12 },
+  continue: { minColumns: 3, maxColumns: 12, minRows: 5, maxRows: 14 },
+  planned: { minColumns: 3, maxColumns: 12, minRows: 5, maxRows: 14 },
+  sinceLiked: { minColumns: 5, maxColumns: 12, minRows: 6, maxRows: 16 },
+};
+const PERSONAL_GRID_SHELF_IDS = new Set<PersonalGridWidgetId>([
+  "stats",
+  "activity",
+  "continue",
+  "planned",
+]);
+const PERSONAL_GRID_HORIZONTAL_ROWS: Partial<Record<PersonalGridWidgetId, number>> = {
+  stats: 2,
+  activity: 3,
+  continue: 5,
+  planned: 5,
+};
+const DEFAULT_PERSONAL_GRID_LAYOUT: PersonalGridItem[] = [
+  { id: "spotlight", columns: 7, rows: 6 },
+  { id: "account", columns: 5, rows: 6 },
+  { id: "stats", columns: 12, rows: 2, orientation: "horizontal" },
+  { id: "activity", columns: 12, rows: 3, orientation: "horizontal" },
+  { id: "continue", columns: 12, rows: 5, orientation: "horizontal" },
+  { id: "planned", columns: 12, rows: 5, orientation: "horizontal" },
+  { id: "sinceLiked", columns: 12, rows: 10 },
+];
 
 const DISCOVER_DENSITY_STYLES: Record<
   DiscoverDensity,
@@ -156,7 +215,7 @@ const HOME_DENSITY_STYLES: Record<
     compactCardClass: "min-h-34 p-4",
     compactPosterClass: "h-28 w-20",
     mediumPosterClass: "h-72 w-full",
-    mediumTitleClass: "line-clamp-2 min-h-10 text-base font-semibold leading-5 text-white",
+    mediumTitleClass: "line-clamp-2 text-base font-semibold leading-5 text-white",
     mediumMetaClass: "mt-3 flex flex-wrap gap-1.5",
   },
   balanced: {
@@ -168,7 +227,7 @@ const HOME_DENSITY_STYLES: Record<
     compactCardClass: "min-h-30 p-3.5",
     compactPosterClass: "h-24 w-16",
     mediumPosterClass: "h-64 w-full",
-    mediumTitleClass: "line-clamp-2 min-h-10 text-sm font-semibold leading-5 text-white",
+    mediumTitleClass: "line-clamp-2 text-sm font-semibold leading-5 text-white",
     mediumMetaClass: "mt-2.5 flex flex-wrap gap-1.5",
   },
   compact: {
@@ -180,7 +239,7 @@ const HOME_DENSITY_STYLES: Record<
     compactCardClass: "min-h-24 p-2.5",
     compactPosterClass: "h-20 w-14",
     mediumPosterClass: "h-52 w-full",
-    mediumTitleClass: "line-clamp-2 min-h-8 text-xs font-semibold leading-4 text-white",
+    mediumTitleClass: "line-clamp-2 text-xs font-semibold leading-4 text-white",
     mediumMetaClass: "mt-2 flex flex-wrap gap-1",
   },
 };
@@ -386,7 +445,7 @@ type HomePageProps = {
   userId: number;
   hasResults: boolean;
   showTutorial: boolean;
-  onDismissTutorial: (dontShowAgain: boolean) => void | Promise<void>;
+  onDismissTutorial: () => void | Promise<void>;
   trackedEntries: TrackedAnimeEntry[];
   trackedMangaEntries: TrackedMangaEntry[];
   mediaType: MediaType;
@@ -459,18 +518,43 @@ export function HomePage({
   onScrollPositionChange,
   children,
 }: HomePageProps) {
-  const [dontShowAgain, setDontShowAgain] = useState(false);
+  const [tutorialStep, setTutorialStep] = useState(0);
+
+  useEffect(() => {
+    if (showTutorial) {
+      setTutorialStep(0);
+    }
+  }, [showTutorial]);
+  const [recentMediaHistory, setRecentMediaHistory] = useState(() =>
+    readRecentMediaHistory(userId)
+  );
   const [personalLayoutOrder, setPersonalLayoutOrder] = useState<PersonalLayoutSectionId[]>(
     readPersonalLayoutOrder
   );
   const personalLayoutOrderRef = useRef(personalLayoutOrder);
+  const [personalGridLayout, setPersonalGridLayout] = useState<PersonalGridItem[]>(() =>
+    readPersonalGridLayout(userId)
+  );
+  const personalGridLayoutRef = useRef(personalGridLayout);
+  const [selectedPersonalGridWidget, setSelectedPersonalGridWidget] =
+    useState<PersonalGridWidgetId | null>(null);
+  const [draggedPersonalGridWidget, setDraggedPersonalGridWidget] =
+    useState<PersonalGridWidgetId | null>(null);
+  const personalGridEditSnapshotRef = useRef<PersonalGridItem[] | null>(null);
+  const [mangaPersonalGridLayout, setMangaPersonalGridLayout] = useState<
+    PersonalGridItem[]
+  >(() => readMangaPersonalGridLayout(userId));
+  const mangaPersonalGridLayoutRef = useRef(mangaPersonalGridLayout);
+  const [selectedMangaPersonalGridWidget, setSelectedMangaPersonalGridWidget] =
+    useState<PersonalGridWidgetId | null>(null);
+  const [draggedMangaPersonalGridWidget, setDraggedMangaPersonalGridWidget] =
+    useState<PersonalGridWidgetId | null>(null);
+  const mangaPersonalGridEditSnapshotRef = useRef<PersonalGridItem[] | null>(null);
   const [mangaPersonalLayoutOrder, setMangaPersonalLayoutOrder] = useState<
     PersonalLayoutSectionId[]
   >(readMangaPersonalLayoutOrder);
   const mangaPersonalLayoutOrderRef = useRef(mangaPersonalLayoutOrder);
   const [isEditingPersonalLayout, setIsEditingPersonalLayout] = useState(false);
-  const [draggedPersonalSectionId, setDraggedPersonalSectionId] =
-    useState<PersonalLayoutSectionId | null>(null);
   const [discoverLayoutOrder, setDiscoverLayoutOrder] = useState<string[]>(
     readDiscoverLayoutOrder
   );
@@ -536,8 +620,48 @@ export function HomePage({
         : discoverShelfPages,
     [discoverShelfPages, hideAdultContent]
   );
+  const visibleRecentMediaHistory = useMemo(
+    () =>
+      recentMediaHistory.filter(
+        (entry) =>
+          entry.mediaType === mediaType && (!hideAdultContent || !entry.isAdult)
+      ),
+    [hideAdultContent, mediaType, recentMediaHistory]
+  );
   const discoverShelfPagesRef = useRef(discoverShelfPages);
   const homeScrollRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setRecentMediaHistory(readRecentMediaHistory(userId));
+    const nextGridLayout = readPersonalGridLayout(userId);
+    personalGridLayoutRef.current = nextGridLayout;
+    setPersonalGridLayout(nextGridLayout);
+    setSelectedPersonalGridWidget(null);
+    setDraggedPersonalGridWidget(null);
+    personalGridEditSnapshotRef.current = null;
+    const nextMangaGridLayout = readMangaPersonalGridLayout(userId);
+    mangaPersonalGridLayoutRef.current = nextMangaGridLayout;
+    setMangaPersonalGridLayout(nextMangaGridLayout);
+    setSelectedMangaPersonalGridWidget(null);
+    setDraggedMangaPersonalGridWidget(null);
+    mangaPersonalGridEditSnapshotRef.current = null;
+  }, [userId]);
+
+  useEffect(() => {
+    personalGridLayoutRef.current = personalGridLayout;
+    persistPersonalGridLayout(userId, personalGridLayout);
+  }, [personalGridLayout, userId]);
+
+  useEffect(() => {
+    mangaPersonalGridLayoutRef.current = mangaPersonalGridLayout;
+    persistMangaPersonalGridLayout(userId, mangaPersonalGridLayout);
+  }, [mangaPersonalGridLayout, userId]);
+
+  function handleDismissRecentMedia(entry: RecentMediaHistoryEntry) {
+    setRecentMediaHistory(
+      dismissRecentMedia(userId, entry.mediaType, entry.mediaId)
+    );
+  }
   const discoverRailRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const discoverOverviewScrollTop = useRef(savedDiscoverState?.overviewScrollTop ?? 0);
   const discoverOverviewRailScrolls = useRef<Record<string, number>>(
@@ -583,6 +707,9 @@ export function HomePage({
           personalLayoutOrderRef.current = order;
           persistPersonalLayoutOrder(order);
           setPersonalLayoutOrder(order);
+          if (JSON.stringify(result.personalLayoutOrder) !== JSON.stringify(order)) {
+            missingLayouts.personalLayoutOrder = order;
+          }
         } else {
           missingLayouts.personalLayoutOrder = personalLayoutOrderRef.current;
         }
@@ -592,6 +719,9 @@ export function HomePage({
           mangaPersonalLayoutOrderRef.current = order;
           persistMangaPersonalLayoutOrder(order);
           setMangaPersonalLayoutOrder(order);
+          if (JSON.stringify(result.mangaPersonalLayoutOrder) !== JSON.stringify(order)) {
+            missingLayouts.mangaPersonalLayoutOrder = order;
+          }
         } else {
           missingLayouts.mangaPersonalLayoutOrder = mangaPersonalLayoutOrderRef.current;
         }
@@ -674,7 +804,6 @@ export function HomePage({
   useEffect(() => {
     if (activeHomeTab !== "personal") {
       setIsEditingPersonalLayout(false);
-      setDraggedPersonalSectionId(null);
     }
 
     if (activeHomeTab !== "discover") {
@@ -685,35 +814,13 @@ export function HomePage({
 
   useEffect(() => {
     setIsEditingPersonalLayout(false);
-    setDraggedPersonalSectionId(null);
+    setSelectedPersonalGridWidget(null);
+    setDraggedPersonalGridWidget(null);
+    setSelectedMangaPersonalGridWidget(null);
+    setDraggedMangaPersonalGridWidget(null);
     setIsEditingDiscoverLayout(false);
     setDraggedDiscoverSectionId(null);
   }, [mediaType]);
-
-  function savePersonalLayoutOrder(order: PersonalLayoutSectionId[]) {
-    if (mediaType === "MANGA") {
-      mangaPersonalLayoutOrderRef.current = order;
-      persistMangaPersonalLayoutOrder(order);
-      setMangaPersonalLayoutOrder(order);
-      const result = window.desktopConfig?.setLayoutOrders(userId, {
-        mangaPersonalLayoutOrder: order,
-      });
-      if (result && !result.ok) {
-        console.warn(result.message || "Failed to save Manga Personal layout.");
-      }
-      return;
-    }
-
-    personalLayoutOrderRef.current = order;
-    persistPersonalLayoutOrder(order);
-    setPersonalLayoutOrder(order);
-    const result = window.desktopConfig?.setLayoutOrders(userId, {
-      personalLayoutOrder: order,
-    });
-    if (result && !result.ok) {
-      console.warn(result.message || "Failed to save Personal layout.");
-    }
-  }
 
   function saveDiscoverLayoutOrder(order: string[]) {
     discoverLayoutOrderRef.current = order;
@@ -728,44 +835,22 @@ export function HomePage({
   }
 
   function handleResetPersonalLayout() {
-    const defaultOrder = [...DEFAULT_PERSONAL_LAYOUT_ORDER];
-    savePersonalLayoutOrder(defaultOrder);
-    setDraggedPersonalSectionId(null);
-  }
-
-  function handlePersonalSectionDragStart(
-    sectionId: string,
-    event: DragEvent<HTMLDivElement>
-  ) {
-    if (!isPersonalLayoutSectionId(sectionId)) {
+    if (mediaType === "ANIME" || mediaType === "MANGA") {
+      const nextLayout = cloneDefaultPersonalGridLayout();
+      if (mediaType === "MANGA") {
+        mangaPersonalGridLayoutRef.current = nextLayout;
+        setMangaPersonalGridLayout(nextLayout);
+        setSelectedMangaPersonalGridWidget(null);
+        setDraggedMangaPersonalGridWidget(null);
+        return;
+      }
+      personalGridLayoutRef.current = nextLayout;
+      setPersonalGridLayout(nextLayout);
+      setSelectedPersonalGridWidget(null);
+      setDraggedPersonalGridWidget(null);
       return;
     }
 
-    setDraggedPersonalSectionId(sectionId);
-    event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("text/plain", sectionId);
-  }
-
-  function handlePersonalSectionDragOver(
-    sectionId: string,
-    event: DragEvent<HTMLDivElement>
-  ) {
-    event.preventDefault();
-
-    const activeSectionId = draggedPersonalSectionId;
-    if (!activeSectionId || activeSectionId === sectionId || !isPersonalLayoutSectionId(sectionId)) {
-      return;
-    }
-
-    const activeOrder =
-      mediaType === "MANGA"
-        ? mangaPersonalLayoutOrderRef.current
-        : personalLayoutOrderRef.current;
-    savePersonalLayoutOrder(movePersonalLayoutSection(activeOrder, activeSectionId, sectionId));
-  }
-
-  function handlePersonalSectionDragEnd() {
-    setDraggedPersonalSectionId(null);
   }
 
   function handleResetDiscoverLayout() {
@@ -808,15 +893,168 @@ export function HomePage({
   }
 
   function handleTogglePersonalLayoutEdit() {
-    if (isEditingPersonalLayout) {
-      if (mediaType === "MANGA") {
-        persistMangaPersonalLayoutOrder(mangaPersonalLayoutOrderRef.current);
+    if (mediaType === "ANIME" || mediaType === "MANGA") {
+      const isManga = mediaType === "MANGA";
+      if (isEditingPersonalLayout) {
+        if (isManga) {
+          persistMangaPersonalGridLayout(userId, mangaPersonalGridLayoutRef.current);
+          setSelectedMangaPersonalGridWidget(null);
+          setDraggedMangaPersonalGridWidget(null);
+          mangaPersonalGridEditSnapshotRef.current = null;
+        } else {
+          persistPersonalGridLayout(userId, personalGridLayoutRef.current);
+          setSelectedPersonalGridWidget(null);
+          setDraggedPersonalGridWidget(null);
+          personalGridEditSnapshotRef.current = null;
+        }
       } else {
-        persistPersonalLayoutOrder(personalLayoutOrderRef.current);
+        if (isManga) {
+          mangaPersonalGridEditSnapshotRef.current =
+            mangaPersonalGridLayoutRef.current.map((item) => ({ ...item }));
+        } else {
+          personalGridEditSnapshotRef.current = personalGridLayoutRef.current.map(
+            (item) => ({ ...item })
+          );
+        }
+      }
+      setIsEditingPersonalLayout((current) => !current);
+      return;
+    }
+
+  }
+
+  function handleCancelPersonalGridEdit() {
+    const isManga = mediaType === "MANGA";
+    const snapshot = isManga
+      ? mangaPersonalGridEditSnapshotRef.current
+      : personalGridEditSnapshotRef.current;
+    if (snapshot) {
+      const restored = normalizePersonalGridLayout(snapshot);
+      if (isManga) {
+        mangaPersonalGridLayoutRef.current = restored;
+        setMangaPersonalGridLayout(restored);
+        persistMangaPersonalGridLayout(userId, restored);
+      } else {
+        personalGridLayoutRef.current = restored;
+        setPersonalGridLayout(restored);
+        persistPersonalGridLayout(userId, restored);
       }
     }
 
-    setIsEditingPersonalLayout((current) => !current);
+    personalGridEditSnapshotRef.current = null;
+    mangaPersonalGridEditSnapshotRef.current = null;
+    setSelectedPersonalGridWidget(null);
+    setDraggedPersonalGridWidget(null);
+    setSelectedMangaPersonalGridWidget(null);
+    setDraggedMangaPersonalGridWidget(null);
+    setIsEditingPersonalLayout(false);
+  }
+
+  function updatePersonalGridLayout(
+    updater: (current: PersonalGridItem[]) => PersonalGridItem[]
+  ) {
+    if (mediaType === "MANGA") {
+      setMangaPersonalGridLayout((current) => {
+        const next = normalizePersonalGridLayout(updater(current));
+        mangaPersonalGridLayoutRef.current = next;
+        return next;
+      });
+      return;
+    }
+    setPersonalGridLayout((current) => {
+      const next = normalizePersonalGridLayout(updater(current));
+      personalGridLayoutRef.current = next;
+      return next;
+    });
+  }
+
+  function handlePersonalGridResize(
+    widgetId: PersonalGridWidgetId,
+    columns: number,
+    rows: number
+  ) {
+    updatePersonalGridLayout((current) =>
+      current.map((item) =>
+        item.id === widgetId ? { ...item, columns, rows } : item
+      )
+    );
+  }
+
+  function handlePersonalGridOrientation(widgetId: PersonalGridWidgetId) {
+    if (!PERSONAL_GRID_SHELF_IDS.has(widgetId)) return;
+
+    updatePersonalGridLayout((current) =>
+      current.map((item) => {
+        if (item.id !== widgetId) return item;
+        const orientation = item.orientation === "vertical" ? "horizontal" : "vertical";
+        if (item.id === "stats") {
+          return orientation === "vertical"
+            ? { ...item, orientation, columns: Math.min(item.columns, 4), rows: 5 }
+            : { ...item, orientation, columns: Math.max(item.columns, 10), rows: 2 };
+        }
+        const columns =
+          orientation === "vertical" && item.columns > 6
+            ? 6
+            : orientation === "horizontal" && item.columns < 6
+              ? 6
+              : item.columns;
+        const rows =
+          orientation === "vertical"
+            ? Math.max(item.rows, 7)
+            : PERSONAL_GRID_HORIZONTAL_ROWS[item.id] ?? 5;
+        return { ...item, orientation, columns, rows };
+      })
+    );
+  }
+
+  function handlePersonalGridMove(widgetId: PersonalGridWidgetId, direction: -1 | 1) {
+    updatePersonalGridLayout((current) => {
+      const currentIndex = current.findIndex((item) => item.id === widgetId);
+      const targetIndex = currentIndex + direction;
+      if (currentIndex < 0 || targetIndex < 0 || targetIndex >= current.length) {
+        return current;
+      }
+      const next = [...current];
+      const [item] = next.splice(currentIndex, 1);
+      next.splice(targetIndex, 0, item);
+      return next;
+    });
+  }
+
+  function handlePersonalGridDragStart(
+    widgetId: PersonalGridWidgetId,
+    event: DragEvent<HTMLDivElement>
+  ) {
+    if (mediaType === "MANGA") {
+      setSelectedMangaPersonalGridWidget(widgetId);
+      setDraggedMangaPersonalGridWidget(widgetId);
+    } else {
+      setSelectedPersonalGridWidget(widgetId);
+      setDraggedPersonalGridWidget(widgetId);
+    }
+    event.dataTransfer.effectAllowed = "move";
+    event.dataTransfer.setData("text/plain", widgetId);
+  }
+
+  function handlePersonalGridDragOver(
+    widgetId: PersonalGridWidgetId,
+    event: DragEvent<HTMLDivElement>
+  ) {
+    event.preventDefault();
+    const activeWidget =
+      mediaType === "MANGA"
+        ? draggedMangaPersonalGridWidget
+        : draggedPersonalGridWidget;
+    if (!activeWidget || activeWidget === widgetId) return;
+
+    updatePersonalGridLayout((current) =>
+      movePersonalGridWidget(current, activeWidget, widgetId)
+    );
+  }
+
+  function handlePersonalGridDragEnd() {
+    setDraggedPersonalGridWidget(null);
+    setDraggedMangaPersonalGridWidget(null);
   }
 
   function handleToggleDiscoverLayoutEdit() {
@@ -1438,10 +1676,6 @@ export function HomePage({
     const total = scoredEntries.reduce((sum, entry) => sum + (entry.score ?? 0), 0);
     return total / scoredEntries.length;
   }, [trackedEntries]);
-  const recentlyUpdated = useMemo(
-    () => getRecentlyUpdatedLocally(trackedEntries),
-    [trackedEntries]
-  );
   const recommendationReadyEntries = useMemo(
     () =>
       trackedEntries.map((entry) => {
@@ -1494,70 +1728,123 @@ export function HomePage({
     );
   }, [planned, trackedEntries, watching]);
 
+  if (showTutorial) {
+    return (
+      <Tutorial
+        step={tutorialStep}
+        onStepChange={setTutorialStep}
+        onSkip={onDismissTutorial}
+        onFinish={(destination) => {
+          void onDismissTutorial();
+          onLibraryDestinationChange(destination);
+        }}
+      />
+    );
+  }
+
   if (hasResults) {
     return <>{children}</>;
   }
 
-  if (showTutorial) {
-    return (
-      <div className="flex h-full flex-col items-center justify-center px-8 text-center">
-        <div className="max-w-2xl">
-          <p className="mb-3 text-sm uppercase tracking-[0.3em] text-white/35">
-            Welcome
-          </p>
-
-          <h1 className="text-4xl font-bold tracking-tight text-white">
-            Your anime list starts here.
-          </h1>
-
-          <p className="mt-4 text-base leading-7 text-white/60">
-            Search titles, open detail pages, build your list, and keep your
-            library in one clean desktop app.
-          </p>
-
-          <div className="mt-10 grid grid-cols-1 gap-4 md:grid-cols-3">
-            <TutorialCard
-              icon={SparklesIcon}
-              title="Search fast"
-              body="Use the top bar to search for anime and jump into details fast."
-            />
-            <TutorialCard
-              icon={BookmarkIcon}
-              title="Build your list"
-              body="Add shows, track progress, and keep everything tied to your account."
-            />
-            <TutorialCard
-              icon={FireIcon}
-              title="Stay focused"
-              body="Minimal, overlay-friendly design meant to feel quick and clean."
-            />
-          </div>
-
-          <label className="mt-8 inline-flex items-center gap-3 rounded-2xl border border-white/10 bg-white/5 px-4 py-3 text-sm text-white/75">
-            <input
-              type="checkbox"
-              checked={dontShowAgain}
-              onChange={(e) => setDontShowAgain(e.target.checked)}
-              className="h-4 w-4 rounded border-white/20 bg-transparent"
-            />
-            Don&apos;t show this again
-          </label>
-
-          <div className="mt-6">
-            <button
-              onClick={() => onDismissTutorial(dontShowAgain)}
-              className="rounded-2xl bg-white px-6 py-3 font-semibold text-black transition hover:opacity-90"
-            >
-              Got it
-            </button>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  const personalLayoutSections: Record<PersonalLayoutSectionId, ReactNode> = {
-    overview: (
+  const personalGridWidgets: Record<
+    PersonalGridWidgetId,
+    (item: PersonalGridItem) => ReactNode
+  > = {
+    spotlight: (item) => (
+      <SpotlightPanel
+        entry={spotlight}
+        onSelectAnime={handleSelectAnimeFromHome}
+        titleLanguage={titleLanguage}
+        compact={item.rows <= 5 || item.columns <= 5}
+      />
+    ),
+    account: (item) => (
+      <AccountOverviewPanel
+        total={trackedEntries.length}
+        totalEpisodes={totalEpisodes}
+        watchedEpisodes={watchedEpisodes}
+        watchedMinutes={watchedMinutes}
+        averageScore={averagePersonalScore}
+        favorites={favoriteCount}
+        columns={item.columns}
+        rows={item.rows}
+      />
+    ),
+    stats: (item) => (
+      <section
+        className={`grid h-full overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-lg ${
+          item.orientation === "vertical"
+            ? "grid-cols-1 divide-y divide-white/10"
+            : "grid-cols-5 divide-x divide-white/10"
+        }`}
+      >
+        <StatTile icon={PlayCircleIcon} label="Watching" value={watching.length} strip />
+        <StatTile icon={BookmarkIcon} label="Planned" value={planned.length} strip />
+        <StatTile icon={CheckCircleIcon} label="Completed" value={completed.length} strip />
+        <StatTile icon={ClockIcon} label="Paused" value={paused.length} strip />
+        <StatTile icon={BrokenHeartIcon} label="Dropped" value={dropped.length} strip />
+      </section>
+    ),
+    activity: (item) => (
+      <RecentActivityShelf
+        entries={visibleRecentMediaHistory}
+        density={homeDensity}
+        titleLanguage={titleLanguage}
+        orientation={item.orientation ?? "horizontal"}
+        onSelectMedia={handleSelectAnimeFromHome}
+        onDismiss={handleDismissRecentMedia}
+      />
+    ),
+    continue: (item) => {
+      const vertical = item.orientation === "vertical";
+      return (
+        <HomeShelf
+          title="Continue Watching"
+          icon={PlayCircleIcon}
+          entries={watching.slice(0, 15)}
+          emptyText="Move something into Watching and it will appear here."
+          onSelectAnime={handleSelectAnimeFromHome}
+          variant={vertical ? "list" : "medium"}
+          density={homeDensity}
+          titleLanguage={titleLanguage}
+          carousel={!vertical}
+          verticalScroll={vertical}
+          autoScroll={autoScrollHomeShelves && !isEditingPersonalLayout && !vertical}
+          fitGridHeight={!vertical}
+        />
+      );
+    },
+    planned: (item) => {
+      const vertical = item.orientation === "vertical";
+      return (
+        <HomeShelf
+          title="Planned Picks"
+          icon={BookmarkIcon}
+          entries={planned.slice(0, 15)}
+          emptyText="Add titles as Planned to build a clean watch queue."
+          onSelectAnime={handleSelectAnimeFromHome}
+          variant={vertical ? "list" : "medium"}
+          density={homeDensity}
+          titleLanguage={titleLanguage}
+          carousel={!vertical}
+          verticalScroll={vertical}
+          autoScroll={autoScrollHomeShelves && !isEditingPersonalLayout && !vertical}
+          fitGridHeight={!vertical}
+        />
+      );
+    },
+    sinceLiked: (item) => (
+      <SinceYouLikedSection
+        entries={favoriteBasedRecommendations}
+        onSelectMedia={handleSelectAnimeFromHome}
+        titleLanguage={titleLanguage}
+        mediaType="ANIME"
+        maxItems={item.rows >= 10 ? 4 : item.rows >= 8 ? 3 : 2}
+      />
+    ),
+  };
+  const emptyPersonalOverview = (
+    <>
       <section className="grid grid-cols-1 gap-4 lg:grid-cols-[1.45fr_0.9fr]">
         <SpotlightPanel
           entry={spotlight}
@@ -1574,67 +1861,16 @@ export function HomePage({
           favorites={favoriteCount}
         />
       </section>
-    ),
-    stats: (
       <section className="grid grid-cols-2 gap-4 lg:grid-cols-5">
         <StatTile icon={PlayCircleIcon} label="Watching" value={watching.length} />
         <StatTile icon={BookmarkIcon} label="Planned" value={planned.length} />
         <StatTile icon={CheckCircleIcon} label="Completed" value={completed.length} />
         <StatTile icon={ClockIcon} label="Paused" value={paused.length} />
-        <StatTile icon={HeartIcon} label="Dropped" value={dropped.length} />
+        <StatTile icon={BrokenHeartIcon} label="Dropped" value={dropped.length} />
       </section>
-    ),
-    continue: (
-      <HomeShelf
-        title="Continue Watching"
-        icon={PlayCircleIcon}
-        entries={watching.slice(0, 15)}
-        emptyText="Move something into Watching and it will appear here."
-        onSelectAnime={handleSelectAnimeFromHome}
-        variant="medium"
-        density={homeDensity}
-        titleLanguage={titleLanguage}
-        carousel
-        autoScroll={autoScrollHomeShelves && !isEditingPersonalLayout}
-      />
-    ),
-    planned: (
-      <HomeShelf
-        title="Planned Picks"
-        icon={BookmarkIcon}
-        entries={planned.slice(0, 15)}
-        emptyText="Add titles as Planned to build a clean watch queue."
-        onSelectAnime={handleSelectAnimeFromHome}
-        variant="medium"
-        density={homeDensity}
-        titleLanguage={titleLanguage}
-        carousel
-        autoScroll={autoScrollHomeShelves && !isEditingPersonalLayout}
-      />
-    ),
-    sinceLiked: (
-      <SinceYouLikedSection
-        entries={favoriteBasedRecommendations}
-        onSelectMedia={handleSelectAnimeFromHome}
-        titleLanguage={titleLanguage}
-        mediaType="ANIME"
-      />
-    ),
-    recent: (
-      <section>
-        <HomeShelf
-          title="Recently Updated"
-          icon={CalendarDaysIcon}
-          entries={recentlyUpdated}
-          emptyText="Your latest activity from Seenary and connected lists will collect here."
-          onSelectAnime={handleSelectAnimeFromHome}
-          variant="gridCompact"
-          density={homeDensity}
-          titleLanguage={titleLanguage}
-        />
-      </section>
-    ),
-  };
+      <EmptyHomeState />
+    </>
+  );
   const discoverShelvesById = new Map(
     privacySafeDiscoverShelves.map((shelf) => [shelf.id, shelf])
   );
@@ -1733,16 +1969,24 @@ export function HomePage({
           <MangaHomePreview
             entries={trackedMangaEntries}
             recommendations={favoriteBasedMangaRecommendations}
-            layoutOrder={mangaPersonalLayoutOrder}
+            gridLayout={mangaPersonalGridLayout}
             isEditingLayout={isEditingPersonalLayout}
-            draggedSectionId={draggedPersonalSectionId}
+            selectedWidget={selectedMangaPersonalGridWidget}
+            draggedWidget={draggedMangaPersonalGridWidget}
             titleLanguage={titleLanguage}
+            recentActivity={visibleRecentMediaHistory}
             onSelectManga={(mangaId) => onSelectMedia(mangaId, "MANGA")}
+            onDismissRecentMedia={handleDismissRecentMedia}
             onToggleLayoutEdit={handleTogglePersonalLayoutEdit}
             onResetLayout={handleResetPersonalLayout}
-            onDragStart={handlePersonalSectionDragStart}
-            onDragOver={handlePersonalSectionDragOver}
-            onDragEnd={handlePersonalSectionDragEnd}
+            onCancelLayout={handleCancelPersonalGridEdit}
+            onSelectWidget={setSelectedMangaPersonalGridWidget}
+            onMoveWidget={handlePersonalGridMove}
+            onResizeWidget={handlePersonalGridResize}
+            onToggleOrientation={handlePersonalGridOrientation}
+            onDragStart={handlePersonalGridDragStart}
+            onDragOver={handlePersonalGridDragOver}
+            onDragEnd={handlePersonalGridDragEnd}
             density={homeDensity}
             autoScroll={autoScrollHomeShelves}
           />
@@ -1753,29 +1997,28 @@ export function HomePage({
               isEditing={isEditingPersonalLayout}
               onToggleEdit={handleTogglePersonalLayoutEdit}
               onReset={handleResetPersonalLayout}
+              onCancel={handleCancelPersonalGridEdit}
+              idleDescription="Arrange, resize, and rotate your dashboard widgets."
+              editingDescription="Select a widget to move, resize, or change its orientation."
             />
 
-            {trackedEntries.length ? (
-              personalLayoutOrder.map((sectionId) => (
-                <LayoutEditBlock
-                  key={sectionId}
-                  sectionId={sectionId}
-                  label={PERSONAL_LAYOUT_SECTION_LABELS[sectionId]}
-                  isEditing={isEditingPersonalLayout}
-                  isDragging={draggedPersonalSectionId === sectionId}
-                  onDragStart={handlePersonalSectionDragStart}
-                  onDragOver={handlePersonalSectionDragOver}
-                  onDragEnd={handlePersonalSectionDragEnd}
-                >
-                  {personalLayoutSections[sectionId]}
-                </LayoutEditBlock>
-              ))
+            {trackedEntries.length || visibleRecentMediaHistory.length || isEditingPersonalLayout ? (
+              <PersonalGridDashboard
+                layout={personalGridLayout}
+                isEditing={isEditingPersonalLayout}
+                selectedWidget={selectedPersonalGridWidget}
+                draggedWidget={draggedPersonalGridWidget}
+                renderWidget={(item) => personalGridWidgets[item.id](item)}
+                onSelectWidget={setSelectedPersonalGridWidget}
+                onMoveWidget={handlePersonalGridMove}
+                onResizeWidget={handlePersonalGridResize}
+                onToggleOrientation={handlePersonalGridOrientation}
+                onDragStart={handlePersonalGridDragStart}
+                onDragOver={handlePersonalGridDragOver}
+                onDragEnd={handlePersonalGridDragEnd}
+              />
             ) : (
-              <>
-                {personalLayoutSections.overview}
-                {personalLayoutSections.stats}
-                <EmptyHomeState />
-              </>
+              emptyPersonalOverview
             )}
           </>
         ) : activeDiscoverShelfId ? (
@@ -1919,16 +2162,144 @@ function DiscoverLoadError({
   );
 }
 
+function RecentActivityShelf({
+  entries,
+  density,
+  titleLanguage,
+  orientation = "horizontal",
+  onSelectMedia,
+  onDismiss,
+}: {
+  entries: RecentMediaHistoryEntry[];
+  density: HomeDensity;
+  titleLanguage: TitleLanguage;
+  orientation?: ShelfOrientation;
+  onSelectMedia: (mediaId: number) => void;
+  onDismiss: (entry: RecentMediaHistoryEntry) => void;
+}) {
+  const densityStyles = HOME_DENSITY_STYLES[density];
+  const visibleCards = density === "compact" ? 5 : 4;
+  const isVertical = orientation === "vertical";
+
+  return (
+    <MediaShelf
+      title="Last activity"
+      icon={ClockIcon}
+      items={entries}
+      emptyText="Titles you open will appear here."
+      gridClassName={isVertical ? "grid grid-cols-1 gap-3" : densityStyles.compactGridClass}
+      carousel={!isVertical}
+      verticalScroll={isVertical}
+      autoScroll={false}
+      gapClassName={densityStyles.railGapClass}
+      gapPixels={densityStyles.railGapPixels}
+      visibleCards={visibleCards}
+      getKey={(entry) => `${entry.mediaType}:${entry.mediaId}`}
+      renderItem={(entry) => (
+        <RecentActivityCard
+          entry={entry}
+          titleLanguage={titleLanguage}
+          onSelect={() => onSelectMedia(entry.mediaId)}
+          onDismiss={() => onDismiss(entry)}
+        />
+      )}
+    />
+  );
+}
+
+function RecentActivityCard({
+  entry,
+  titleLanguage,
+  onSelect,
+  onDismiss,
+}: {
+  entry: RecentMediaHistoryEntry;
+  titleLanguage: TitleLanguage;
+  onSelect: () => void;
+  onDismiss: () => void;
+}) {
+  const title = getPreferredTitle(entry.title, titleLanguage);
+  const amount =
+    entry.mediaType === "MANGA"
+      ? entry.chapters
+        ? `${entry.chapters} ch`
+        : entry.volumes
+          ? `${entry.volumes} vols`
+          : null
+      : entry.episodes
+        ? `${entry.episodes} eps`
+        : null;
+  const meta = [entry.format ? formatEnum(entry.format) : null, amount]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <article className="group relative overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl transition hover:bg-white/8 focus-within:ring-2 focus-within:ring-white/55">
+      <button
+        type="button"
+        onClick={onSelect}
+        className="flex w-full items-center gap-3 p-3 pr-11 text-left focus:outline-none"
+      >
+        <div className="h-20 w-14 shrink-0 overflow-hidden rounded-2xl bg-white/5">
+          {entry.coverImage ? (
+            <img
+              src={entry.coverImage}
+              alt={title}
+              className="h-full w-full object-cover object-top transition duration-300 group-hover:scale-105"
+            />
+          ) : (
+            <div className="grid h-full w-full place-items-center">
+              {entry.mediaType === "MANGA" ? (
+                <BookOpenIcon className="h-5 w-5 text-white/20" />
+              ) : (
+                <TvIcon className="h-5 w-5 text-white/20" />
+              )}
+            </div>
+          )}
+        </div>
+        <div className="min-w-0 flex-1">
+          <h3 className="line-clamp-2 text-sm font-semibold leading-5 text-white">
+            {title}
+          </h3>
+          {meta && <p className="mt-1 truncate text-xs text-white/45">{meta}</p>}
+        </div>
+      </button>
+      <Tooltip
+        content={`Dismiss ${title}`}
+        className="absolute right-2.5 top-2.5"
+        positioned
+      >
+        <button
+          type="button"
+          onClick={onDismiss}
+          aria-label={`Dismiss ${title} from last activity`}
+          className="rounded-xl p-1.5 text-white/35 opacity-70 transition hover:bg-white/10 hover:text-white focus:opacity-100 focus:outline-none"
+        >
+          <XMarkIcon className="h-4 w-4" />
+        </button>
+      </Tooltip>
+    </article>
+  );
+}
+
 function MangaHomePreview({
   entries,
   recommendations,
-  layoutOrder,
+  recentActivity,
+  gridLayout,
   isEditingLayout,
-  draggedSectionId,
+  selectedWidget,
+  draggedWidget,
   titleLanguage,
   onSelectManga,
+  onDismissRecentMedia,
   onToggleLayoutEdit,
   onResetLayout,
+  onCancelLayout,
+  onSelectWidget,
+  onMoveWidget,
+  onResizeWidget,
+  onToggleOrientation,
   onDragStart,
   onDragOver,
   onDragEnd,
@@ -1937,15 +2308,27 @@ function MangaHomePreview({
 }: {
   entries: TrackedMangaEntry[];
   recommendations: RecommendationCandidate[];
-  layoutOrder: PersonalLayoutSectionId[];
+  recentActivity: RecentMediaHistoryEntry[];
+  gridLayout: PersonalGridItem[];
   isEditingLayout: boolean;
-  draggedSectionId: PersonalLayoutSectionId | null;
+  selectedWidget: PersonalGridWidgetId | null;
+  draggedWidget: PersonalGridWidgetId | null;
   titleLanguage: TitleLanguage;
   onSelectManga: (mangaId: number) => void;
+  onDismissRecentMedia: (entry: RecentMediaHistoryEntry) => void;
   onToggleLayoutEdit: () => void;
   onResetLayout: () => void;
-  onDragStart: (sectionId: string, event: DragEvent<HTMLDivElement>) => void;
-  onDragOver: (sectionId: string, event: DragEvent<HTMLDivElement>) => void;
+  onCancelLayout: () => void;
+  onSelectWidget: (widgetId: PersonalGridWidgetId) => void;
+  onMoveWidget: (widgetId: PersonalGridWidgetId, direction: -1 | 1) => void;
+  onResizeWidget: (
+    widgetId: PersonalGridWidgetId,
+    columns: number,
+    rows: number
+  ) => void;
+  onToggleOrientation: (widgetId: PersonalGridWidgetId) => void;
+  onDragStart: (widgetId: PersonalGridWidgetId, event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (widgetId: PersonalGridWidgetId, event: DragEvent<HTMLDivElement>) => void;
   onDragEnd: () => void;
   density: HomeDensity;
   autoScroll: boolean;
@@ -1974,79 +2357,97 @@ function MangaHomePreview({
     planned.find((entry) => entry.banner_image || entry.cover_image_large) ||
     entries.find((entry) => entry.banner_image || entry.cover_image_large) ||
     null;
-  const recentlyUpdated = getRecentlyUpdatedLocally(entries);
-
-  const sections: Record<PersonalLayoutSectionId, ReactNode> = {
-    overview: (
-      <section className="grid grid-cols-1 gap-4 lg:grid-cols-[1.45fr_0.9fr]">
-        <MangaSpotlightPanel
-          entry={spotlight}
+  const widgets: Record<PersonalGridWidgetId, (item: PersonalGridItem) => ReactNode> = {
+    spotlight: (item) => (
+      <MangaSpotlightPanel
+        entry={spotlight}
+        onSelectManga={onSelectManga}
+        titleLanguage={titleLanguage}
+        compact={item.rows <= 5 || item.columns <= 5}
+      />
+    ),
+    account: (item) => (
+      <MangaAccountOverviewPanel
+        total={entries.length}
+        chaptersRead={chaptersRead}
+        volumesRead={volumesRead}
+        averageScore={averageScore}
+        favorites={favorites}
+        rereads={rereads}
+        columns={item.columns}
+        rows={item.rows}
+      />
+    ),
+    stats: (item) => (
+      <section
+        className={`grid h-full overflow-hidden rounded-2xl border border-white/10 bg-white/[0.04] shadow-lg ${
+          item.orientation === "vertical"
+            ? "grid-cols-1 divide-y divide-white/10"
+            : "grid-cols-5 divide-x divide-white/10"
+        }`}
+      >
+        <StatTile icon={BookOpenIcon} label="Reading" value={reading.length} strip />
+        <StatTile icon={BookmarkIcon} label="Plan to Read" value={planned.length} strip />
+        <StatTile icon={CheckCircleIcon} label="Completed" value={completed.length} strip />
+        <StatTile icon={ClockIcon} label="Paused" value={paused.length} strip />
+        <StatTile icon={BrokenHeartIcon} label="Dropped" value={dropped.length} strip />
+      </section>
+    ),
+    activity: (item) => (
+      <RecentActivityShelf
+        entries={recentActivity}
+        density={density}
+        titleLanguage={titleLanguage}
+        orientation={item.orientation ?? "horizontal"}
+        onSelectMedia={onSelectManga}
+        onDismiss={onDismissRecentMedia}
+      />
+    ),
+    continue: (item) => {
+      const vertical = item.orientation === "vertical";
+      return (
+        <MangaHomeShelf
+          title="Continue Reading"
+          icon={BookOpenIcon}
+          entries={reading.slice(0, 15)}
+          emptyText="Move something into Reading and it will appear here."
           onSelectManga={onSelectManga}
+          density={density}
           titleLanguage={titleLanguage}
+          variant={vertical ? "gridCompact" : "medium"}
+          carousel={!vertical}
+          verticalScroll={vertical}
+          autoScroll={autoScroll && !isEditingLayout && !vertical}
+          fitGridHeight={!vertical}
         />
-        <MangaAccountOverviewPanel
-          total={entries.length}
-          chaptersRead={chaptersRead}
-          volumesRead={volumesRead}
-          averageScore={averageScore}
-          favorites={favorites}
-          rereads={rereads}
+      );
+    },
+    planned: (item) => {
+      const vertical = item.orientation === "vertical";
+      return (
+        <MangaHomeShelf
+          title="Plan to Read"
+          icon={BookmarkIcon}
+          entries={planned.slice(0, 15)}
+          emptyText="Add Manga as Plan to Read to build your reading queue."
+          onSelectManga={onSelectManga}
+          density={density}
+          titleLanguage={titleLanguage}
+          variant={vertical ? "gridCompact" : "medium"}
+          carousel={!vertical}
+          verticalScroll={vertical}
+          autoScroll={autoScroll && !isEditingLayout && !vertical}
+          fitGridHeight={!vertical}
         />
-      </section>
-    ),
-    stats: (
-      <section className="grid grid-cols-2 gap-4 lg:grid-cols-5">
-        <StatTile icon={BookOpenIcon} label="Reading" value={reading.length} />
-        <StatTile icon={BookmarkIcon} label="Plan to Read" value={planned.length} />
-        <StatTile icon={CheckCircleIcon} label="Completed" value={completed.length} />
-        <StatTile icon={ClockIcon} label="Paused" value={paused.length} />
-        <StatTile icon={HeartIcon} label="Dropped" value={dropped.length} />
-      </section>
-    ),
-    continue: (
-      <MangaHomeShelf
-        title="Continue Reading"
-        icon={BookOpenIcon}
-        entries={reading.slice(0, 15)}
-        emptyText="Move something into Reading and it will appear here."
-        onSelectManga={onSelectManga}
-        density={density}
-        titleLanguage={titleLanguage}
-        carousel
-        autoScroll={autoScroll && !isEditingLayout}
-      />
-    ),
-    planned: (
-      <MangaHomeShelf
-        title="Plan to Read"
-        icon={BookmarkIcon}
-        entries={planned.slice(0, 15)}
-        emptyText="Add Manga as Plan to Read to build your reading queue."
-        onSelectManga={onSelectManga}
-        density={density}
-        titleLanguage={titleLanguage}
-        carousel
-        autoScroll={autoScroll && !isEditingLayout}
-      />
-    ),
-    sinceLiked: (
+      );
+    },
+    sinceLiked: (item) => (
       <SinceYouLikedSection
         entries={recommendations}
         onSelectMedia={onSelectManga}
         titleLanguage={titleLanguage}
         mediaType="MANGA"
-      />
-    ),
-    recent: (
-      <MangaHomeShelf
-        title="Recently Updated"
-        icon={CalendarDaysIcon}
-        entries={recentlyUpdated}
-        emptyText="Your latest Manga activity from Seenary and connected lists will collect here."
-        onSelectManga={onSelectManga}
-        density={density}
-        titleLanguage={titleLanguage}
-        variant="gridCompact"
+        maxItems={item.rows >= 10 ? 4 : item.rows >= 8 ? 3 : 2}
       />
     ),
   };
@@ -2058,29 +2459,32 @@ function MangaHomePreview({
         isEditing={isEditingLayout}
         onToggleEdit={onToggleLayoutEdit}
         onReset={onResetLayout}
+        onCancel={onCancelLayout}
+        idleDescription="Arrange, resize, and rotate your Manga dashboard widgets."
+        editingDescription="Select a widget to move, resize, or change its orientation."
       />
 
-      {(entries.length ? layoutOrder : (["overview", "stats"] as PersonalLayoutSectionId[])).map(
-        (sectionId) =>
-          entries.length ? (
-            <LayoutEditBlock
-              key={sectionId}
-              sectionId={sectionId}
-              label={MANGA_PERSONAL_LAYOUT_SECTION_LABELS[sectionId]}
-              isEditing={isEditingLayout}
-              isDragging={draggedSectionId === sectionId}
-              onDragStart={onDragStart}
-              onDragOver={onDragOver}
-              onDragEnd={onDragEnd}
-            >
-              {sections[sectionId]}
-            </LayoutEditBlock>
-          ) : (
-            <div key={sectionId}>{sections[sectionId]}</div>
-          )
+      {entries.length || recentActivity.length || isEditingLayout ? (
+        <PersonalGridDashboard
+          layout={gridLayout}
+          widgetLabels={MANGA_PERSONAL_GRID_WIDGET_LABELS}
+          isEditing={isEditingLayout}
+          selectedWidget={selectedWidget}
+          draggedWidget={draggedWidget}
+          renderWidget={(item) => widgets[item.id](item)}
+          onSelectWidget={onSelectWidget}
+          onMoveWidget={onMoveWidget}
+          onResizeWidget={onResizeWidget}
+          onToggleOrientation={onToggleOrientation}
+          onDragStart={onDragStart}
+          onDragOver={onDragOver}
+          onDragEnd={onDragEnd}
+        />
+      ) : (
+        <EmptyMangaHomeState />
       )}
 
-      {!entries.length && <EmptyMangaHomeState />}
+      {!entries.length && isEditingLayout && <EmptyMangaHomeState />}
     </div>
   );
 }
@@ -2089,18 +2493,20 @@ function MangaSpotlightPanel({
   entry,
   onSelectManga,
   titleLanguage,
+  compact = false,
 }: {
   entry: TrackedMangaEntry | null;
   onSelectManga: (mangaId: number) => void;
   titleLanguage: TitleLanguage;
+  compact?: boolean;
 }) {
   if (!entry) {
     return (
-      <section className="relative min-h-72 overflow-hidden rounded-3xl border border-white/10 bg-white/5 p-8 shadow-xl">
+      <section className={`relative h-full min-h-0 overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl ${compact ? "p-5" : "p-8"}`}>
         <div className="absolute inset-0 bg-linear-to-br from-white/8 via-transparent to-black/30" />
         <div className="relative flex h-full flex-col justify-end">
           <p className="text-sm uppercase tracking-[0.3em] text-white/35">Manga</p>
-          <h2 className="mt-3 max-w-xl text-3xl font-bold tracking-tight text-white">
+          <h2 className={`mt-3 max-w-xl font-bold tracking-tight text-white ${compact ? "text-2xl" : "text-3xl"}`}>
             Add your first Manga and build a reading dashboard.
           </h2>
         </div>
@@ -2119,7 +2525,7 @@ function MangaSpotlightPanel({
     <button
       type="button"
       onClick={() => onSelectManga(entry.manga_id)}
-      className="group relative min-h-72 overflow-hidden rounded-3xl border border-white/10 bg-white/5 text-left shadow-xl focus:outline-none focus:ring-2 focus:ring-white/55"
+      className="group relative h-full min-h-0 w-full overflow-hidden rounded-3xl border border-white/10 bg-white/5 text-left shadow-xl focus:outline-none focus:ring-2 focus:ring-white/55"
     >
       <HeroBackdrop
         bannerImage={entry.banner_image ?? null}
@@ -2130,12 +2536,12 @@ function MangaSpotlightPanel({
       />
       <div className="absolute inset-0 bg-linear-to-r from-[#0f0f0f] via-[#0f0f0f]/75 to-[#0f0f0f]/20" />
       <div className="absolute inset-0 bg-linear-to-t from-[#0f0f0f] via-transparent to-transparent" />
-      <div className="relative flex h-full min-h-72 flex-col justify-end p-6 md:p-8">
-        <span className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/65 backdrop-blur">
+      <div className={`relative flex h-full min-h-0 flex-col justify-end ${compact ? "p-5" : "p-6 md:p-8"}`}>
+        <span className={`${compact ? "mb-3" : "mb-4"} inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/65 backdrop-blur`}>
           <BookOpenIcon className="h-4 w-4" /> {focusLabel}
         </span>
-        <h2 className="max-w-2xl text-3xl font-bold tracking-tight text-white">{title}</h2>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <h2 className={`max-w-2xl font-bold tracking-tight text-white ${compact ? "text-2xl" : "text-3xl"}`}>{title}</h2>
+        <div className={`${compact ? "mt-3" : "mt-4"} flex flex-wrap gap-2`}>
           <MetaPill>{formatMangaHomeStatus(entry.status)}</MetaPill>
           <MetaPill>{formatMangaProgress(entry)}</MetaPill>
           {entry.average_score ? <MetaPill>{entry.average_score}% avg</MetaPill> : null}
@@ -2152,6 +2558,8 @@ function MangaAccountOverviewPanel({
   averageScore,
   favorites,
   rereads,
+  columns = 5,
+  rows = 6,
 }: {
   total: number;
   chaptersRead: number;
@@ -2159,19 +2567,23 @@ function MangaAccountOverviewPanel({
   averageScore: number | null;
   favorites: number;
   rereads: number;
+  columns?: number;
+  rows?: number;
 }) {
+  const compact = rows <= 5;
+  const narrow = columns <= 4;
   return (
-    <section className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-xl">
-      <div className="mb-5 flex items-center gap-3">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-2.5 text-white/70">
+    <section className={`flex h-full min-h-0 flex-col rounded-3xl border border-white/10 bg-white/5 shadow-xl ${compact ? "p-4" : "p-5"}`}>
+      <div className="flex items-center gap-3">
+        <div className={`rounded-2xl border border-white/10 bg-white/5 text-white/70 ${compact ? "p-2" : "p-2.5"}`}>
           <BookOpenIcon className="h-5 w-5" />
         </div>
         <div>
-          <h2 className="font-semibold text-white">Reading Overview</h2>
-          <p className="text-sm text-white/40">Your Manga list at a glance</p>
+          <h2 className={`${compact ? "text-base" : "text-lg"} font-semibold text-white`}>Reading Overview</h2>
+          {!(compact && narrow) && <p className={`${compact ? "text-xs" : "text-sm"} text-white/40`}>Your Manga list at a glance</p>}
         </div>
       </div>
-      <div className="grid grid-cols-2 gap-3">
+      <div className={`${compact ? "mt-3 gap-2" : "mt-6 gap-3"} grid min-h-0 flex-1 ${compact && !narrow ? "grid-cols-3" : "grid-cols-2"}`}>
         {[
           ["Library", formatNumber(total), formatExactCount(total, "title")],
           ["Volumes read", formatNumber(volumesRead), formatExactCount(volumesRead, "volume read", "volumes read")],
@@ -2180,7 +2592,7 @@ function MangaAccountOverviewPanel({
           ["Favorites", formatNumber(favorites), formatExactCount(favorites, "favorite")],
           ["Rereads", formatNumber(rereads), formatExactCount(rereads, "reread")],
         ].map(([label, value, exactValue]) => (
-          <OverviewMetric key={label} label={label} value={value} exactValue={exactValue} />
+          <OverviewMetric key={label} label={label} value={value} exactValue={exactValue} compact={compact} centered={compact && !narrow} />
         ))}
       </div>
     </section>
@@ -2197,7 +2609,9 @@ function MangaHomeShelf({
   titleLanguage,
   variant = "medium",
   carousel = false,
+  verticalScroll = false,
   autoScroll = false,
+  fitGridHeight = false,
 }: {
   title: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
@@ -2208,12 +2622,14 @@ function MangaHomeShelf({
   titleLanguage: TitleLanguage;
   variant?: "medium" | "gridCompact";
   carousel?: boolean;
+  verticalScroll?: boolean;
   autoScroll?: boolean;
+  fitGridHeight?: boolean;
 }) {
   const densityStyles = HOME_DENSITY_STYLES[density];
   const shouldUseCarousel = carousel && variant === "medium" && entries.length > 0;
   return (
-    <MediaShelf title={title} icon={Icon} items={entries} emptyText={emptyText} gridClassName={densityStyles.compactGridClass} carousel={shouldUseCarousel} autoScroll={autoScroll} gapClassName={densityStyles.railGapClass} gapPixels={densityStyles.railGapPixels} visibleCards={densityStyles.railVisibleCards} getKey={(entry) => entry.manga_id} renderItem={(entry) => <MangaHomeCard entry={entry} onSelectManga={onSelectManga} density={density} titleLanguage={titleLanguage} variant={variant} />} />
+    <MediaShelf title={title} icon={Icon} items={entries} emptyText={emptyText} gridClassName={densityStyles.compactGridClass} carousel={shouldUseCarousel} verticalScroll={verticalScroll} autoScroll={autoScroll} gapClassName={densityStyles.railGapClass} gapPixels={densityStyles.railGapPixels} visibleCards={densityStyles.railVisibleCards} getKey={(entry) => entry.manga_id} renderItem={(entry) => <MangaHomeCard entry={entry} onSelectManga={onSelectManga} density={density} titleLanguage={titleLanguage} variant={variant} fitGridHeight={fitGridHeight} />} fillHeight={fitGridHeight} />
   );
 }
 
@@ -2223,16 +2639,19 @@ function MangaHomeCard({
   density,
   titleLanguage,
   variant,
+  fitGridHeight = false,
 }: {
   entry: TrackedMangaEntry;
   onSelectManga: (mangaId: number) => void;
   density: HomeDensity;
   titleLanguage: TitleLanguage;
   variant: "medium" | "gridCompact";
+  fitGridHeight?: boolean;
 }) {
   const title = getMangaEntryTitle(entry, titleLanguage);
   const densityStyles = HOME_DENSITY_STYLES[density];
   const score = getMangaDisplayScore(entry);
+  const mediumTitleHeightClass = density === "compact" ? "min-h-8" : "min-h-10";
 
   if (variant === "gridCompact") {
     return (
@@ -2266,19 +2685,23 @@ function MangaHomeCard({
     <button
       type="button"
       onClick={() => onSelectManga(entry.manga_id)}
-      className="browse-home-card group block w-full text-left focus:outline-none focus:ring-2 focus:ring-white/55"
+      className={`browse-home-card group w-full text-left focus:outline-none focus:ring-2 focus:ring-white/55 ${
+        fitGridHeight ? "grid-height-home-card flex h-full min-h-0 flex-col" : "block"
+      }`}
     >
-      <div className="browse-home-card-poster overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl">
+      <div className={`browse-home-card-poster overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl ${fitGridHeight ? "min-h-0 flex-1" : ""}`}>
         {entry.cover_image_large ? (
-          <img src={entry.cover_image_large} alt={title} className={`${densityStyles.mediumPosterClass} object-cover object-top transition duration-300 group-hover:scale-[1.04]`} />
+          <img src={entry.cover_image_large} alt={title} className={`${fitGridHeight ? "h-full w-full" : densityStyles.mediumPosterClass} object-cover object-top transition duration-300 group-hover:scale-[1.04]`} />
         ) : (
-          <div className={`${densityStyles.mediumPosterClass} flex items-center justify-center bg-white/5`}>
+          <div className={`${fitGridHeight ? "h-full w-full" : densityStyles.mediumPosterClass} flex items-center justify-center bg-white/5`}>
             <BookOpenIcon className="h-8 w-8 text-white/20" />
           </div>
         )}
       </div>
       <div className="browse-home-card-body mt-3">
-        <h3 className={densityStyles.mediumTitleClass}>{title}</h3>
+        <div className={`flex ${mediumTitleHeightClass} items-end`}>
+          <h3 className={densityStyles.mediumTitleClass}>{title}</h3>
+        </div>
         <p className="mt-1 truncate text-sm text-white/45">{formatMangaProgress(entry)}</p>
         <div className={densityStyles.mediumMetaClass}>
           {entry.format && <SmallInfoPill icon={BookOpenIcon}>{formatEnum(entry.format)}</SmallInfoPill>}
@@ -2304,18 +2727,297 @@ function EmptyMangaHomeState() {
   );
 }
 
+function PersonalGridDashboard({
+  layout,
+  widgetLabels = PERSONAL_GRID_WIDGET_LABELS,
+  isEditing,
+  selectedWidget,
+  draggedWidget,
+  renderWidget,
+  onSelectWidget,
+  onMoveWidget,
+  onResizeWidget,
+  onToggleOrientation,
+  onDragStart,
+  onDragOver,
+  onDragEnd,
+}: {
+  layout: PersonalGridItem[];
+  widgetLabels?: Record<PersonalGridWidgetId, string>;
+  isEditing: boolean;
+  selectedWidget: PersonalGridWidgetId | null;
+  draggedWidget: PersonalGridWidgetId | null;
+  renderWidget: (item: PersonalGridItem) => ReactNode;
+  onSelectWidget: (widgetId: PersonalGridWidgetId) => void;
+  onMoveWidget: (widgetId: PersonalGridWidgetId, direction: -1 | 1) => void;
+  onResizeWidget: (
+    widgetId: PersonalGridWidgetId,
+    columns: number,
+    rows: number
+  ) => void;
+  onToggleOrientation: (widgetId: PersonalGridWidgetId) => void;
+  onDragStart: (widgetId: PersonalGridWidgetId, event: DragEvent<HTMLDivElement>) => void;
+  onDragOver: (widgetId: PersonalGridWidgetId, event: DragEvent<HTMLDivElement>) => void;
+  onDragEnd: () => void;
+}) {
+  const gridRef = useRef<HTMLDivElement | null>(null);
+  const resizeSessionRef = useRef<{
+    widgetId: PersonalGridWidgetId;
+    pointerId: number;
+    startX: number;
+    startY: number;
+    startColumns: number;
+    startRows: number;
+    columnStep: number;
+    rowStep: number;
+    orientation?: ShelfOrientation;
+  } | null>(null);
+  const gridStyle = isEditing
+    ? {
+        backgroundImage:
+          "linear-gradient(to right, rgba(255,255,255,0.045) 1px, transparent 1px), linear-gradient(to bottom, rgba(255,255,255,0.04) 1px, transparent 1px)",
+        backgroundSize: "calc(100% / 12) 4.75rem",
+      }
+    : undefined;
+
+  function handleResizeStart(
+    item: PersonalGridItem,
+    event: React.PointerEvent<HTMLButtonElement>
+  ) {
+    const grid = gridRef.current;
+    if (!grid) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const styles = window.getComputedStyle(grid);
+    const columnGap = Number.parseFloat(styles.columnGap) || 0;
+    const rowGap = Number.parseFloat(styles.rowGap) || 0;
+    const columnWidth = (grid.getBoundingClientRect().width - columnGap * 11) / 12;
+    const rowHeight = Number.parseFloat(styles.gridAutoRows) || 56;
+
+    resizeSessionRef.current = {
+      widgetId: item.id,
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      startColumns: item.columns,
+      startRows: item.rows,
+      columnStep: columnWidth + columnGap,
+      rowStep: rowHeight + rowGap,
+      orientation: item.orientation,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handleResizeMove(event: React.PointerEvent<HTMLButtonElement>) {
+    const session = resizeSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    const constraints = PERSONAL_GRID_CONSTRAINTS[session.widgetId];
+    const isShelf = PERSONAL_GRID_SHELF_IDS.has(session.widgetId);
+    const minColumns =
+      session.widgetId === "stats" && session.orientation !== "vertical"
+        ? Math.max(10, constraints.minColumns)
+        : isShelf && session.orientation !== "vertical"
+        ? Math.max(6, constraints.minColumns)
+        : constraints.minColumns;
+    const minRows =
+      isShelf && session.widgetId !== "stats" && session.orientation === "vertical"
+        ? Math.max(7, constraints.minRows)
+        : constraints.minRows;
+    const maxRows =
+      isShelf && session.orientation !== "vertical"
+        ? (PERSONAL_GRID_HORIZONTAL_ROWS[session.widgetId] ?? constraints.maxRows)
+        : constraints.maxRows;
+    const columns = Math.max(
+      minColumns,
+      Math.min(
+        constraints.maxColumns,
+        session.startColumns +
+          Math.round((event.clientX - session.startX) / session.columnStep)
+      )
+    );
+    const rows = Math.max(
+      minRows,
+      Math.min(
+        maxRows,
+        session.startRows +
+          Math.round((event.clientY - session.startY) / session.rowStep)
+      )
+    );
+
+    onResizeWidget(session.widgetId, columns, rows);
+  }
+
+  function handleResizeEnd(event: React.PointerEvent<HTMLButtonElement>) {
+    const session = resizeSessionRef.current;
+    if (!session || session.pointerId !== event.pointerId) return;
+    event.preventDefault();
+    event.stopPropagation();
+    resizeSessionRef.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }
+
+  return (
+    <div
+      ref={gridRef}
+      className={`personal-grid-dashboard grid grid-cols-1 gap-4 transition lg:grid-cols-12 lg:grid-flow-row-dense ${
+        isEditing
+          ? "rounded-[2rem] border border-white/10 bg-white/[0.015] p-3 shadow-inner"
+          : ""
+      }`}
+      style={gridStyle}
+    >
+      {layout.map((item, index) => {
+        const selected = selectedWidget === item.id;
+        const isShelf = PERSONAL_GRID_SHELF_IDS.has(item.id);
+
+        return (
+          <div
+            key={item.id}
+            draggable={isEditing}
+            onClick={() => isEditing && onSelectWidget(item.id)}
+            onDragStart={(event) => onDragStart(item.id, event)}
+            onDragOver={(event) => onDragOver(item.id, event)}
+            onDragEnd={onDragEnd}
+            style={
+              {
+                "--personal-grid-columns": item.columns,
+                "--personal-grid-rows": item.rows,
+              } as React.CSSProperties
+            }
+            className={`personal-grid-widget relative min-w-0 overflow-hidden transition-all duration-200 ${
+              isEditing
+                ? `cursor-pointer rounded-[1.75rem] border border-dashed ${
+                    selected
+                      ? "border-(--app-accent)/70 bg-(--app-accent)/[0.045] shadow-[0_0_0_3px_var(--app-accent-soft)]"
+                      : "border-white/15 bg-black/15 hover:border-white/30 hover:bg-white/[0.025]"
+                  }`
+                : ""
+            } ${draggedWidget === item.id ? "scale-[0.985] opacity-40" : "opacity-100"}`}
+          >
+            {isEditing && (
+              <>
+                <div className="pointer-events-none absolute left-4 top-4 z-20 rounded-xl border border-white/10 bg-[#151515]/92 px-2.5 py-1.5 text-[0.65rem] font-semibold uppercase tracking-[0.16em] text-white/65 shadow-lg backdrop-blur">
+                    {widgetLabels[item.id]}
+                </div>
+
+                {selected && (
+                  <div
+                    className="absolute right-4 top-4 z-30 flex flex-wrap items-center justify-end gap-1.5 rounded-2xl border border-white/12 bg-[#151515]/96 p-1.5 shadow-2xl backdrop-blur-xl"
+                    onClick={(event) => event.stopPropagation()}
+                    onMouseDown={(event) => event.stopPropagation()}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onMoveWidget(item.id, -1)}
+                      disabled={index === 0}
+                      aria-label={`Move ${PERSONAL_GRID_WIDGET_LABELS[item.id]} earlier`}
+                      className="grid h-8 w-8 place-items-center rounded-xl text-white/55 transition hover:bg-white/10 hover:text-white disabled:opacity-25"
+                    >
+                      <ArrowLeftIcon className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onMoveWidget(item.id, 1)}
+                      disabled={index === layout.length - 1}
+                      aria-label={`Move ${PERSONAL_GRID_WIDGET_LABELS[item.id]} later`}
+                      className="grid h-8 w-8 place-items-center rounded-xl text-white/55 transition hover:bg-white/10 hover:text-white disabled:opacity-25"
+                    >
+                      <ArrowRightIcon className="h-4 w-4" />
+                    </button>
+                    <span className="mx-0.5 h-5 w-px bg-white/10" />
+                    <span className="min-w-12 text-center text-[0.65rem] font-semibold text-white/45">
+                      {item.columns} × {item.rows}
+                    </span>
+                    {isShelf && (
+                      <>
+                        <span className="mx-0.5 h-5 w-px bg-white/10" />
+                        <button
+                          type="button"
+                          onClick={() => onToggleOrientation(item.id)}
+                          className="inline-flex h-8 items-center gap-1.5 rounded-xl px-2.5 text-[0.68rem] font-semibold text-white/60 transition hover:bg-white/10 hover:text-white"
+                        >
+                          <ArrowPathIcon className="h-3.5 w-3.5" />
+                          {item.orientation === "vertical" ? "Vertical" : "Horizontal"}
+                        </button>
+                      </>
+                    )}
+                  </div>
+                )}
+
+                {selected && (
+                  <button
+                    type="button"
+                    draggable={false}
+                    aria-label={`Resize ${PERSONAL_GRID_WIDGET_LABELS[item.id]}`}
+                    onPointerDown={(event) => handleResizeStart(item, event)}
+                    onPointerMove={handleResizeMove}
+                    onPointerUp={handleResizeEnd}
+                    onPointerCancel={handleResizeEnd}
+                    onClick={(event) => event.stopPropagation()}
+                    className="absolute bottom-3 right-3 z-30 hidden h-9 w-9 cursor-nwse-resize touch-none place-items-center rounded-xl border border-(--app-accent)/30 bg-[#151515]/96 text-(--app-accent) shadow-2xl transition hover:bg-(--app-accent-soft) lg:grid"
+                  >
+                    <svg
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.5"
+                      strokeLinecap="round"
+                      aria-hidden="true"
+                      className="h-4 w-4"
+                    >
+                      <path d="M3 17 17 3M9 17l8-8M15 17l2-2" />
+                    </svg>
+                  </button>
+                )}
+              </>
+            )}
+
+            <div
+              className={`${isEditing ? "pointer-events-none select-none" : ""} h-full [&>*]:h-full [&>*]:w-full`}
+            >
+              {renderWidget(item)}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function HomeLayoutToolbar({
   title,
   isEditing,
   onToggleEdit,
   onReset,
+  onCancel,
+  idleDescription,
+  editingDescription,
 }: {
   title: string;
   isEditing: boolean;
   onToggleEdit: () => void;
   onReset: () => void;
+  onCancel?: () => void;
+  idleDescription?: string;
+  editingDescription?: string;
 }) {
-  return <LayoutEditorToolbar title={title} isEditing={isEditing} onToggleEdit={onToggleEdit} onReset={onReset} />;
+  return (
+    <LayoutEditorToolbar
+      title={title}
+      isEditing={isEditing}
+      idleDescription={idleDescription}
+      editingDescription={editingDescription}
+      onToggleEdit={onToggleEdit}
+      onReset={onReset}
+      onCancel={onCancel}
+    />
+  );
 }
 
 function LayoutEditBlock({
@@ -2347,6 +3049,8 @@ function AccountOverviewPanel({
   watchedMinutes,
   averageScore,
   favorites,
+  columns = 5,
+  rows = 6,
 }: {
   total: number;
   totalEpisodes: number;
@@ -2354,50 +3058,64 @@ function AccountOverviewPanel({
   watchedMinutes: number;
   averageScore: number | null;
   favorites: number;
+  columns?: number;
+  rows?: number;
 }) {
+  const compact = rows <= 5;
+  const narrow = columns <= 4;
+  const metrics = [
+    {
+      label: "Library",
+      value: formatNumber(total),
+      exactValue: formatExactCount(total, "title"),
+    },
+    {
+      label: "Total Episodes",
+      value: formatNumber(totalEpisodes),
+      exactValue: `${formatExactNumber(totalEpisodes)} total episodes`,
+    },
+    {
+      label: "Avg Score",
+      value: averageScore ? formatScore10(averageScore) : "-",
+    },
+    {
+      label: "Episodes Seen",
+      value: formatNumber(watchedEpisodes),
+      exactValue: formatExactCount(watchedEpisodes, "episode seen", "episodes seen"),
+    },
+    {
+      label: "Favorites",
+      value: formatNumber(favorites),
+      exactValue: formatExactCount(favorites, "favorite"),
+    },
+    {
+      label: "Time Watched",
+      value: formatWatchedTime(watchedMinutes),
+      exactValue: formatExactWatchedTime(watchedMinutes),
+      secondaryExactValue: formatTotalWatchedTime(watchedMinutes),
+    },
+  ];
   return (
-    <section className="rounded-3xl border border-white/10 bg-white/5 p-6 shadow-xl">
+    <section className={`flex flex-col rounded-3xl border border-white/10 bg-white/5 shadow-xl ${compact ? "p-4" : "p-6"}`}>
       <div className="flex items-center gap-3">
-        <div className="rounded-2xl border border-white/10 bg-white/5 p-2.5 text-white/70">
-          <ChartBarIcon className="h-5 w-5" />
+        <div className={`rounded-2xl border border-white/10 bg-white/5 text-white/70 ${compact ? "p-2" : "p-2.5"}`}>
+          <ChartBarIcon className={compact ? "h-4 w-4" : "h-5 w-5"} />
         </div>
         <div>
-          <h2 className="text-lg font-semibold text-white">Account Overview</h2>
-          <p className="text-sm text-white/40">Your list at a glance</p>
+          <h2 className={`${compact ? "text-base" : "text-lg"} font-semibold text-white`}>Account Overview</h2>
+          {!(compact && narrow) && <p className={`${compact ? "text-xs" : "text-sm"} text-white/40`}>Your list at a glance</p>}
         </div>
       </div>
 
-      <div className="mt-6 grid grid-cols-2 gap-3">
-        <OverviewMetric
-          label="Library"
-          value={formatNumber(total)}
-          exactValue={formatExactCount(total, "title")}
-        />
-        <OverviewMetric
-          label="Total Episodes"
-          value={formatNumber(totalEpisodes)}
-          exactValue={`${formatExactNumber(totalEpisodes)} total episodes`}
-        />
-        <OverviewMetric
-          label="Avg Score"
-          value={averageScore ? formatScore10(averageScore) : "-"}
-        />
-        <OverviewMetric
-          label="Episodes Seen"
-          value={formatNumber(watchedEpisodes)}
-          exactValue={formatExactCount(watchedEpisodes, "episode seen", "episodes seen")}
-        />
-        <OverviewMetric
-          label="Favorites"
-          value={formatNumber(favorites)}
-          exactValue={formatExactCount(favorites, "favorite")}
-        />
-        <OverviewMetric
-          label="Time Watched"
-          value={formatWatchedTime(watchedMinutes)}
-          exactValue={formatExactWatchedTime(watchedMinutes)}
-          secondaryExactValue={formatTotalWatchedTime(watchedMinutes)}
-        />
+      <div className={`${compact ? "mt-3 gap-2" : "mt-6 gap-3"} grid min-h-0 flex-1 ${compact && !narrow ? "grid-cols-3" : "grid-cols-2"}`}>
+        {metrics.map((metric) => (
+          <OverviewMetric
+            key={metric.label}
+            {...metric}
+            compact={compact}
+            centered={compact && !narrow}
+          />
+        ))}
       </div>
     </section>
   );
@@ -2408,23 +3126,27 @@ function OverviewMetric({
   value,
   exactValue,
   secondaryExactValue,
+  compact = false,
+  centered = false,
 }: {
   label: string;
   value: string;
   exactValue?: string;
   secondaryExactValue?: string;
+  compact?: boolean;
+  centered?: boolean;
 }) {
   const metric = (
     <div
-      className="h-full w-full rounded-2xl border border-white/10 bg-white/4 p-4"
+      className={`h-full w-full rounded-2xl border border-white/10 bg-white/4 ${compact ? "p-3" : "p-4"} ${centered ? "flex flex-col justify-center" : ""}`}
       aria-label={
         exactValue
           ? `${label}: ${exactValue}${secondaryExactValue ? `. ${secondaryExactValue}` : ""}`
           : undefined
       }
     >
-      <p className="text-2xl font-semibold text-white">{value}</p>
-      <p className="mt-1 text-xs uppercase tracking-[0.16em] text-white/35">{label}</p>
+      <p className={`${compact ? "text-xl" : "text-2xl"} truncate font-semibold text-white`}>{value}</p>
+      <p className={`${compact ? "text-[0.6rem]" : "text-xs"} mt-1 truncate uppercase tracking-[0.16em] text-white/35`}>{label}</p>
     </div>
   );
 
@@ -2943,20 +3665,493 @@ function DiscoverGridSkeleton({ density }: { density: DiscoverDensity }) {
   );
 }
 
-function TutorialCard({
+const TUTORIAL_STEPS = [
+  {
+    eyebrow: "Welcome to Seenary",
+    title: "Your anime and manga, all in one place.",
+    body: "Discover something new, organize what you want to watch or read, and keep your progress up to date.",
+    icon: SparklesIcon,
+  },
+  {
+    eyebrow: "Find your way around",
+    title: "One library, three useful views.",
+    body: "Personal shows your activity and highlights. Discover helps you browse. My List keeps every tracked title organized.",
+    icon: HomeIcon,
+  },
+  {
+    eyebrow: "Find something",
+    title: "Search directly or follow your curiosity.",
+    body: "Use the search bar when you know what you want, or explore curated shelves in Discover. Switch between Anime and Manga at any time.",
+    icon: MagnifyingGlassIcon,
+  },
+  {
+    eyebrow: "Build your list",
+    title: "Save a title in a single click.",
+    body: "Quick add places anime in Planned and manga in Plan to Read. Open any title when you want to choose a different status.",
+    icon: BookmarkIcon,
+  },
+  {
+    eyebrow: "Track what matters",
+    title: "Keep progress and favorites current.",
+    body: "Update episodes or chapters, change status, add a score, and mark favorites from the list editor.",
+    icon: ChartBarIcon,
+  },
+  {
+    eyebrow: "You’re ready",
+    title: "Make Seenary yours.",
+    body: "Start exploring now. You can adjust appearance, layouts, account connections, and other preferences later in Settings.",
+    icon: CheckCircleIcon,
+  },
+] as const;
+
+function Tutorial({
+  step,
+  onStepChange,
+  onSkip,
+  onFinish,
+}: {
+  step: number;
+  onStepChange: (step: number) => void;
+  onSkip: () => void | Promise<void>;
+  onFinish: (destination: LibraryDestination) => void;
+}) {
+  const activeStep = TUTORIAL_STEPS[step] ?? TUTORIAL_STEPS[0];
+  const Icon = activeStep.icon;
+  const isLastStep = step === TUTORIAL_STEPS.length - 1;
+
+  return (
+    <div className="flex h-full min-h-0 overflow-y-auto px-5 py-6 sm:px-8 lg:px-12">
+      <div className="m-auto w-full max-w-5xl">
+        <div className="mb-5 flex items-center justify-between gap-4">
+          <div className="flex items-center gap-2" aria-label={`Tutorial step ${step + 1} of ${TUTORIAL_STEPS.length}`}>
+            {TUTORIAL_STEPS.map((tutorialStep, index) => (
+              <button
+                key={tutorialStep.eyebrow}
+                type="button"
+                onClick={() => onStepChange(index)}
+                aria-label={`Go to step ${index + 1}: ${tutorialStep.eyebrow}`}
+                aria-current={index === step ? "step" : undefined}
+                className={`h-1.5 rounded-full transition-all ${
+                  index === step
+                    ? "w-10 bg-(--app-accent)"
+                    : index < step
+                      ? "w-5 bg-white/35 hover:bg-white/55"
+                      : "w-5 bg-white/12 hover:bg-white/25"
+                }`}
+              />
+            ))}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void onSkip()}
+            className="rounded-xl px-3 py-2 text-sm font-semibold text-white/45 transition hover:bg-white/6 hover:text-white"
+          >
+            Skip tutorial
+          </button>
+        </div>
+
+        <section className="overflow-hidden rounded-[2rem] border border-white/10 bg-[#111111]/85 shadow-2xl backdrop-blur-xl">
+          <div className="grid min-h-[31rem] lg:grid-cols-[0.88fr_1.12fr]">
+            <div className="flex flex-col justify-between p-7 sm:p-10 lg:p-12">
+              <div>
+                <div className="inline-flex h-12 w-12 items-center justify-center rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft)">
+                  <Icon className="h-6 w-6 text-(--app-accent)" />
+                </div>
+
+                <p className="mt-8 text-xs font-semibold uppercase tracking-[0.24em] text-(--app-accent)">
+                  {activeStep.eyebrow}
+                </p>
+                <h1 className="mt-3 max-w-lg text-3xl font-bold tracking-tight text-white sm:text-4xl">
+                  {activeStep.title}
+                </h1>
+                <p className="mt-5 max-w-lg text-base leading-7 text-white/55">
+                  {activeStep.body}
+                </p>
+              </div>
+
+              <div className="mt-10">
+                {isLastStep ? (
+                  <div className="flex flex-col gap-3 sm:flex-row">
+                    <button
+                      type="button"
+                      onClick={() => onFinish("discover")}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-(--app-accent) px-5 py-3 text-sm font-bold text-black transition hover:brightness-110"
+                    >
+                      Explore Discover
+                      <ArrowRightIcon className="h-4 w-4" />
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => onFinish("list")}
+                      className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                    >
+                      Open My List
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-3">
+                    {step > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => onStepChange(step - 1)}
+                        className="inline-flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+                      >
+                        <ArrowLeftIcon className="h-4 w-4" />
+                        Back
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onStepChange(step + 1)}
+                      className="inline-flex items-center justify-center gap-2 rounded-2xl bg-(--app-accent) px-5 py-3 text-sm font-bold text-black transition hover:brightness-110"
+                    >
+                      {step === 0 ? "Start tutorial" : "Next"}
+                      <ArrowRightIcon className="h-4 w-4" />
+                    </button>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="relative min-h-80 overflow-hidden border-t border-white/8 bg-white/[0.025] p-5 sm:p-8 lg:min-h-full lg:border-l lg:border-t-0">
+              <div className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-(--app-accent)/10 blur-3xl" />
+              <TutorialPreview step={step} />
+            </div>
+          </div>
+        </section>
+
+        <p className="mt-4 text-center text-xs text-white/30">
+          Step {step + 1} of {TUTORIAL_STEPS.length}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TutorialPreview({ step }: { step: number }) {
+  if (step === 0) {
+    return (
+      <div className="relative flex h-full min-h-72 items-center justify-center">
+        <div className="relative grid h-56 w-56 place-items-center rounded-[3rem] border border-white/10 bg-white/5 shadow-2xl">
+          <div className="absolute inset-5 rounded-[2.3rem] border border-(--app-accent)/15 bg-(--app-accent-soft)" />
+          <SparklesIcon className="relative h-20 w-20 text-(--app-accent)" />
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 1) {
+    return (
+      <div className="flex h-full min-h-72 items-center">
+        <div className="w-full">
+          <p className="text-center text-[0.65rem] font-semibold uppercase tracking-[0.24em] text-white/30">
+            The Library Lens
+          </p>
+
+          <div className="relative mt-5 flex justify-center">
+            <div className="pointer-events-none absolute inset-x-14 -inset-y-8 rounded-full bg-(--app-accent)/8 blur-3xl" />
+            <div className="pointer-events-none relative">
+              <LibraryLens
+                mediaType="ANIME"
+                destination="personal"
+                onMediaChange={() => undefined}
+                onDestinationChange={() => undefined}
+              />
+            </div>
+          </div>
+
+          <div className="mt-9 overflow-hidden rounded-3xl border border-white/10 bg-black/20 shadow-xl">
+            <TutorialLensRow
+              icon={HomeIcon}
+              title="Personal"
+              body="Your overview, activity, stats, and recommendations."
+              active
+            />
+            <TutorialLensRow
+              icon={MagnifyingGlassIcon}
+              title="Discover"
+              body="Trending titles, seasonal picks, and curated shelves."
+            />
+            <TutorialLensRow
+              icon={BookmarkIcon}
+              title="My List"
+              body="Every title you track, organized by status."
+            />
+          </div>
+
+          <div className="mt-4 flex items-center justify-center gap-2 text-xs text-white/35">
+            <PlayCircleIcon className="h-4 w-4 text-(--app-accent)" />
+            Use the Anime menu to switch the entire Lens to Manga.
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 2) {
+    return (
+      <div className="flex h-full min-h-72 flex-col justify-center">
+        <div className="flex w-full items-center gap-2 rounded-2xl border border-white/10 bg-white/6 px-3 py-2 shadow-lg">
+          <MagnifyingGlassIcon className="h-5 w-5 shrink-0 text-white/45" />
+          <span className="min-w-0 flex-1 truncate text-sm text-white/35">
+            Search titles, characters, studios, or music...
+          </span>
+          <kbd className="rounded-lg border border-white/10 bg-white/[0.06] px-2 py-1 text-[10px] font-medium tracking-wide text-white/38">
+            Enter
+          </kbd>
+        </div>
+
+        <div className="mt-6 flex items-center justify-between">
+          <div>
+            <p className="text-[0.65rem] uppercase tracking-[0.22em] text-white/30">Discover</p>
+            <p className="mt-1 text-sm font-semibold text-white">Trending now</p>
+          </div>
+          <span className="text-xs text-white/40">See all</span>
+        </div>
+        <div className="mt-3 grid grid-cols-4 gap-3">
+          <TutorialMediaCard title="Frieren" meta="TV · 28 eps" tone="violet" />
+          <TutorialMediaCard title="Dandadan" meta="TV · 12 eps" tone="blue" />
+          <TutorialMediaCard title="Vinland Saga" meta="TV · 24 eps" tone="amber" />
+          <TutorialMediaCard title="Monster" meta="TV · 74 eps" tone="rose" />
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 3) {
+    return (
+      <div className="flex h-full min-h-72 items-center">
+        <div className="w-full">
+          <div className="mb-4 flex items-end justify-between">
+            <div>
+              <p className="text-[0.65rem] uppercase tracking-[0.22em] text-white/30">Discover</p>
+              <p className="mt-1 text-base font-semibold text-white">Popular this season</p>
+            </div>
+            <span className="text-xs text-white/40">See all</span>
+          </div>
+
+          <div className="grid grid-cols-3 gap-4">
+            <TutorialDiscoverCard title="Frieren" meta="TV · 28 eps" highlighted />
+            <TutorialDiscoverCard title="Dandadan" meta="TV · 12 eps" />
+            <TutorialDiscoverCard title="Vinland Saga" meta="TV · 24 eps" />
+          </div>
+
+          <div className="mt-4 flex items-center gap-3 rounded-2xl border border-white/10 bg-[#141414]/95 px-4 py-3 shadow-2xl backdrop-blur-md">
+            <div className="relative grid h-9 w-9 shrink-0 place-items-center">
+              <span className="absolute inset-0 rounded-full border-2 border-emerald-300/25" />
+              <span className="grid h-6 w-6 place-items-center rounded-full bg-emerald-300 text-black">
+                <CheckIcon className="h-3.5 w-3.5 stroke-[2.4]" />
+              </span>
+            </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold text-white">List updated</p>
+              <p className="mt-0.5 text-[0.68rem] text-white/55">Frieren was added to your list as Planned.</p>
+            </div>
+            <XMarkIcon className="h-3.5 w-3.5 text-white/40" />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (step === 4) {
+    return (
+      <div className="flex h-full min-h-72 items-center">
+        <div className="w-full rounded-3xl border border-white/10 bg-[#111111]/95 p-5 shadow-2xl">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <p className="text-[0.65rem] uppercase tracking-[0.25em] text-white/35">List Entry</p>
+              <h2 className="mt-1.5 text-xl font-semibold text-white">Edit list entry</h2>
+              <p className="mt-1 text-xs text-white/55">A title from your list</p>
+            </div>
+            <XMarkIcon className="h-5 w-5 text-white/55" />
+          </div>
+
+          <div className="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-3 py-2.5">
+            <div>
+              <p className="text-xs font-medium text-white">Favorite</p>
+              <p className="mt-0.5 text-[0.65rem] text-white/40">Pin this title to the top.</p>
+            </div>
+            <div className="inline-flex items-center gap-1.5 rounded-xl border border-white/10 bg-white/5 px-2.5 py-2 text-xs text-white/65">
+              <HeartIcon className="h-3.5 w-3.5" />
+              Favorite
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <p className="mb-2 text-xs text-white/65">Status</p>
+            <div className="grid grid-cols-5 gap-1.5">
+              {["Planned", "Watching", "Completed", "Paused", "Dropped"].map((status, index) => (
+                <div
+                  key={status}
+                  className={`rounded-xl border px-1.5 py-2 text-center text-[0.62rem] ${
+                    index === 1
+                      ? "border-(--app-accent) bg-(--app-accent) font-semibold text-black shadow-lg shadow-(--app-accent)/15"
+                      : "border-white/10 bg-white/5 text-white/55"
+                  }`}
+                >
+                  {status}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-2 flex items-center justify-between text-xs">
+              <span className="text-white/65">Progress</span>
+              <span className="text-white/35">8 / 12</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <div
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-white/75"
+              >
+                <MinusIcon className="h-3.5 w-3.5" />
+              </div>
+              <div className="flex h-10 flex-1 items-center rounded-xl border border-white/10 bg-black/25 px-3 text-sm text-white">
+                8
+              </div>
+              <div
+                className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-xl border border-white/10 bg-white/5 text-white/75"
+              >
+                <PlusIcon className="h-3.5 w-3.5" />
+              </div>
+            </div>
+            <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-white/10">
+              <div className="h-full w-2/3 rounded-full bg-(--app-accent) shadow-[0_0_14px_var(--app-accent)]" />
+            </div>
+          </div>
+
+          <div className="mt-4 flex items-center gap-3">
+            <div className="min-w-0 flex-1">
+              <div className="mb-2 flex justify-between text-xs">
+                <span className="text-white/65">Score</span>
+                <span className="text-white/35">8.5 / 10</span>
+              </div>
+              <div className="relative h-2 rounded-full bg-white/10">
+                <div className="h-full w-[85%] rounded-full bg-(--app-accent)" />
+                <div className="absolute left-[85%] top-1/2 h-3.5 w-3.5 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-[#111111] bg-(--app-accent)" />
+              </div>
+            </div>
+            <div className="flex h-10 w-16 items-center justify-center rounded-xl border border-white/10 bg-black/25 text-sm font-semibold text-white">
+              8.5
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full min-h-72 items-center justify-center">
+      <div className="w-full max-w-sm rounded-3xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-7 text-center shadow-2xl">
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-2xl bg-(--app-accent) text-black">
+          <CheckCircleIcon className="h-9 w-9" />
+        </div>
+        <p className="mt-6 text-lg font-bold text-white">Everything is ready</p>
+        <p className="mt-2 text-sm leading-6 text-white/50">
+          Your library will grow with you as you watch, read, and discover.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function TutorialLensRow({
   icon: Icon,
   title,
   body,
+  active = false,
 }: {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   title: string;
   body: string;
+  active?: boolean;
 }) {
   return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-5 text-left shadow-xl">
-      <Icon className="mb-4 h-6 w-6 text-white/75" />
-      <h2 className="text-sm font-semibold text-white">{title}</h2>
-      <p className="mt-2 text-sm leading-6 text-white/55">{body}</p>
+    <div className="flex items-center gap-4 border-b border-white/8 px-4 py-3.5 last:border-b-0">
+      <div
+        className={`grid h-9 w-9 shrink-0 place-items-center rounded-xl border ${
+          active
+            ? "border-(--app-accent)/25 bg-(--app-accent-soft) text-(--app-accent)"
+            : "border-white/8 bg-white/4 text-white/40"
+        }`}
+      >
+        <Icon className="h-4 w-4" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-white">{title}</p>
+        <p className="mt-0.5 truncate text-xs text-white/40">{body}</p>
+      </div>
+      {active && (
+        <span className="ml-auto shrink-0 rounded-full border border-(--app-accent)/20 bg-(--app-accent-soft) px-2 py-1 text-[0.6rem] font-semibold uppercase tracking-wider text-(--app-accent)">
+          Selected
+        </span>
+      )}
+    </div>
+  );
+}
+
+function TutorialMediaCard({
+  title,
+  meta,
+  tone,
+}: {
+  title: string;
+  meta: string;
+  tone: "violet" | "blue" | "amber" | "rose";
+}) {
+  const posterTone = {
+    violet: "from-violet-500/30 to-violet-950/25",
+    blue: "from-sky-500/25 to-slate-950/30",
+    amber: "from-amber-400/25 to-orange-950/25",
+    rose: "from-rose-500/25 to-fuchsia-950/25",
+  }[tone];
+
+  return (
+    <div className="browse-search-card">
+      <div className={`browse-search-poster relative aspect-2/3 overflow-hidden rounded-2xl bg-gradient-to-br ${posterTone}`}>
+        <div className="absolute inset-0 flex items-end bg-gradient-to-t from-black/80 via-transparent to-transparent p-2">
+          <div>
+            <p className="line-clamp-2 text-[0.65rem] font-semibold text-white">{title}</p>
+            <p className="mt-0.5 text-[0.55rem] text-white/60">{meta}</p>
+          </div>
+        </div>
+        <div className="absolute right-1.5 top-1.5 inline-flex h-6 w-6 items-center justify-center rounded-lg border border-(--app-accent)/35 bg-black/55 text-white/90 backdrop-blur-sm">
+          <PlusIcon className="h-3 w-3" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TutorialDiscoverCard({
+  title,
+  meta,
+  highlighted = false,
+}: {
+  title: string;
+  meta: string;
+  highlighted?: boolean;
+}) {
+  return (
+    <div className={`browse-discover-card relative overflow-hidden rounded-3xl border bg-white/5 shadow-xl ${highlighted ? "border-(--app-accent)/40" : "border-white/10"}`}>
+      <div className={`browse-card-poster relative aspect-2/3 w-full overflow-hidden ${highlighted ? "bg-gradient-to-br from-(--app-accent)/30 to-black/25" : "bg-gradient-to-br from-white/12 to-black/20"}`}>
+        <div className={`absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-xl border border-(--app-accent)/35 ${highlighted ? "bg-(--app-accent-soft)" : "bg-black/55"} text-white/90 shadow-lg backdrop-blur`}>
+          {highlighted ? (
+            <BookmarkIcon className="h-4 w-4" />
+          ) : (
+            <PlusIcon className="h-4 w-4" />
+          )}
+        </div>
+      </div>
+      <div className="browse-card-body p-3">
+        <h3 className="line-clamp-2 min-h-9 text-xs font-semibold leading-4 text-white">{title}</h3>
+        <div className="mt-2 h-px w-full bg-white/10" />
+        <span className="mt-2 inline-flex rounded-full border border-white/10 bg-black/20 px-2 py-1 text-[0.58rem] text-white/55">
+          {meta}
+        </span>
+      </div>
     </div>
   );
 }
@@ -3183,10 +4378,12 @@ function SpotlightPanel({
   entry,
   onSelectAnime,
   titleLanguage,
+  compact = false,
 }: {
   entry: TrackedAnimeEntry | null;
   onSelectAnime: (animeId: number) => void;
   titleLanguage: TitleLanguage;
+  compact?: boolean;
 }) {
   if (!entry) {
     return (
@@ -3233,15 +4430,15 @@ function SpotlightPanel({
       <div className="absolute inset-0 bg-linear-to-r from-[#0f0f0f] via-[#0f0f0f]/75 to-[#0f0f0f]/20" />
       <div className="absolute inset-0 bg-linear-to-t from-[#0f0f0f] via-transparent to-transparent" />
 
-      <div className="relative flex h-full min-h-72 flex-col justify-end p-6 md:p-8">
-        <span className="mb-4 inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 text-xs uppercase tracking-[0.18em] text-white/65 backdrop-blur">
+      <div className={`relative flex h-full min-h-72 flex-col justify-end ${compact ? "p-5" : "p-6 md:p-8"}`}>
+        <span className={`${compact ? "mb-2 text-[0.65rem]" : "mb-4 text-xs"} inline-flex w-fit items-center gap-2 rounded-full border border-white/10 bg-black/30 px-3 py-1 uppercase tracking-[0.18em] text-white/65 backdrop-blur`}>
           <FireIcon className="h-4 w-4" />
           {focusLabel}
         </span>
-        <h1 className="max-w-2xl text-3xl font-bold tracking-tight text-white">
+        <h1 className={`max-w-2xl font-bold tracking-tight text-white ${compact ? "text-2xl" : "text-3xl"}`}>
           {title}
         </h1>
-        <div className="mt-4 flex flex-wrap gap-2">
+        <div className={`${compact ? "mt-2" : "mt-4"} flex flex-wrap gap-2`}>
           <MetaPill>{formatStatus(entry.status)}</MetaPill>
           {progress && <MetaPill>{progress}</MetaPill>}
           {entry.average_score !== null && entry.average_score !== undefined && (
@@ -3253,22 +4450,67 @@ function SpotlightPanel({
   );
 }
 
+function BrokenHeartIcon(props: React.SVGProps<SVGSVGElement>) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      aria-hidden="true"
+      data-slot="icon"
+      {...props}
+    >
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733C11.285 4.876 9.623 3.75 7.687 3.75 5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12Z"
+      />
+      <path
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        d="m12.75 4.5-2.25 5.25 3 2.25-3 5.25"
+      />
+    </svg>
+  );
+}
+
 function StatTile({
   icon: Icon,
   label,
   value,
+  compact = false,
+  strip = false,
 }: {
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
   label: string;
   value: number;
+  compact?: boolean;
+  strip?: boolean;
 }) {
-  return (
-    <div className="rounded-3xl border border-white/10 bg-white/5 p-5 shadow-xl">
-      <div className="inline-flex rounded-2xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80">
-        <Icon className="h-5 w-5" />
+  if (strip) {
+    return (
+      <div className="flex min-w-0 items-center justify-center gap-3 px-3 py-2">
+        <div className="inline-flex shrink-0 rounded-xl border border-(--app-accent)/20 bg-(--app-accent-soft) p-2 text-white/80">
+          <Icon className="h-5 w-5" />
+        </div>
+        <div className="min-w-0">
+          <p className="text-2xl font-semibold leading-none text-white">{value}</p>
+          <p className="mt-1 truncate text-xs text-white/45">{label}</p>
+        </div>
       </div>
-      <p className="mt-5 text-3xl font-semibold text-white">{value}</p>
-      <p className="mt-1 text-sm text-white/45">{label}</p>
+    );
+  }
+
+  return (
+    <div className={`flex items-center rounded-2xl border border-white/10 bg-white/5 shadow-lg ${compact ? "gap-2 p-2.5" : "gap-3 p-5"}`}>
+      <div className={`inline-flex shrink-0 rounded-xl border border-(--app-accent)/20 bg-(--app-accent-soft) text-white/80 ${compact ? "p-1.5" : "p-2"}`}>
+        <Icon className={compact ? "h-4 w-4" : "h-5 w-5"} />
+      </div>
+      <div className="min-w-0">
+        <p className={`${compact ? "text-xl" : "text-[1.65rem]"} font-semibold leading-none text-white`}>{value}</p>
+        <p className={`${compact ? "text-[0.65rem]" : "text-sm"} ${compact ? "mt-1" : "mt-1.5"} truncate text-white/45`}>{label}</p>
+      </div>
     </div>
   );
 }
@@ -3284,7 +4526,9 @@ function HomeShelf({
   titleLanguage,
   mode = "library",
   carousel = false,
+  verticalScroll = false,
   autoScroll = false,
+  fitGridHeight = false,
 }: {
   title: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
@@ -3296,13 +4540,15 @@ function HomeShelf({
   titleLanguage: TitleLanguage;
   mode?: "library" | "recommendations";
   carousel?: boolean;
+  verticalScroll?: boolean;
   autoScroll?: boolean;
+  fitGridHeight?: boolean;
 }) {
   const densityStyles = HOME_DENSITY_STYLES[density];
   const shouldUseCarousel =
     carousel && variant === "medium" && mode === "library" && entries.length > 0;
   return (
-    <MediaShelf<TrackedAnimeEntry | RecommendationCandidate> title={title} icon={Icon} items={entries} emptyText={emptyText} gridClassName={variant === "gridCompact" ? densityStyles.compactGridClass : variant === "compact" || variant === "list" ? "grid grid-cols-1 gap-3" : densityStyles.gridClass} carousel={shouldUseCarousel} autoScroll={autoScroll} gapClassName={densityStyles.railGapClass} gapPixels={densityStyles.railGapPixels} visibleCards={densityStyles.railVisibleCards} getKey={(entry, index) => mode === "recommendations" ? `recommendation-${index}` : (entry as TrackedAnimeEntry).anime_id} renderItem={(entry) => mode === "recommendations" ? <RecommendationLibraryCard entry={entry as RecommendationCandidate} onSelectAnime={onSelectAnime} titleLanguage={titleLanguage} /> : <HomeAnimeCard entry={entry as TrackedAnimeEntry} onSelectAnime={onSelectAnime} variant={variant} density={density} titleLanguage={titleLanguage} />} />
+    <MediaShelf<TrackedAnimeEntry | RecommendationCandidate> title={title} icon={Icon} items={entries} emptyText={emptyText} gridClassName={variant === "gridCompact" ? densityStyles.compactGridClass : variant === "compact" || variant === "list" ? "grid grid-cols-1 gap-3" : densityStyles.gridClass} carousel={shouldUseCarousel} verticalScroll={verticalScroll} autoScroll={autoScroll} gapClassName={densityStyles.railGapClass} gapPixels={densityStyles.railGapPixels} visibleCards={densityStyles.railVisibleCards} getKey={(entry, index) => mode === "recommendations" ? `recommendation-${index}` : (entry as TrackedAnimeEntry).anime_id} renderItem={(entry) => mode === "recommendations" ? <RecommendationLibraryCard entry={entry as RecommendationCandidate} onSelectAnime={onSelectAnime} titleLanguage={titleLanguage} /> : <HomeAnimeCard entry={entry as TrackedAnimeEntry} onSelectAnime={onSelectAnime} variant={variant} density={density} titleLanguage={titleLanguage} fitGridHeight={fitGridHeight} />} fillHeight={fitGridHeight} />
   );
 }
 
@@ -3312,18 +4558,24 @@ function HomeAnimeCard({
   variant = "medium",
   density = "balanced",
   titleLanguage,
+  fitGridHeight = false,
 }: {
   entry: TrackedAnimeEntry;
   onSelectAnime: (animeId: number) => void;
   variant?: "medium" | "compact" | "gridCompact" | "list";
   density?: HomeDensity;
   titleLanguage: TitleLanguage;
+  fitGridHeight?: boolean;
 }) {
   const title = getEntryTitle(entry, titleLanguage);
   const progress = getProgressLabel(entry);
   const score = getDisplayScore(entry);
   const subMeta = buildEntryMeta(entry);
   const densityStyles = HOME_DENSITY_STYLES[density];
+  const mediumTitleHeightClass = density === "compact" ? "min-h-8" : "min-h-10";
+  const mediumPosterClass = fitGridHeight
+    ? "h-full w-full"
+    : densityStyles.mediumPosterClass;
 
   if (variant === "compact" || variant === "gridCompact" || variant === "list") {
     return (
@@ -3364,15 +4616,19 @@ function HomeAnimeCard({
     <button
       type="button"
       onClick={() => onSelectAnime(entry.anime_id)}
-      className="browse-home-card group block w-full text-left focus:outline-none focus:ring-2 focus:ring-white/55"
+      className={`browse-home-card group w-full text-left focus:outline-none focus:ring-2 focus:ring-white/55 ${
+        fitGridHeight ? "grid-height-home-card flex h-full min-h-0 flex-col" : "block"
+      }`}
     >
-      <div className="browse-home-card-poster overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl">
-        <PosterImage entry={entry} title={title} className={densityStyles.mediumPosterClass} />
+      <div className={`browse-home-card-poster overflow-hidden rounded-3xl border border-white/10 bg-white/5 shadow-xl ${fitGridHeight ? "min-h-0 flex-1" : ""}`}>
+        <PosterImage entry={entry} title={title} className={mediumPosterClass} />
       </div>
       <div className="browse-home-card-body mt-3">
-        <h3 className={densityStyles.mediumTitleClass}>
-          {title}
-        </h3>
+        <div className={`flex ${mediumTitleHeightClass} items-end`}>
+          <h3 className={densityStyles.mediumTitleClass}>
+            {title}
+          </h3>
+        </div>
         <p className="mt-1 truncate text-sm text-white/45">
           {progress || subMeta.join(" - ") || formatStatus(entry.status)}
         </p>
@@ -3458,11 +4714,13 @@ function SinceYouLikedSection({
   onSelectMedia,
   titleLanguage,
   mediaType,
+  maxItems = 4,
 }: {
   entries: RecommendationCandidate[];
   onSelectMedia: (mediaId: number) => void;
   titleLanguage: TitleLanguage;
   mediaType: MediaType;
+  maxItems?: number;
 }) {
   const isManga = mediaType === "MANGA";
 
@@ -3482,7 +4740,7 @@ function SinceYouLikedSection({
 
       {entries.length ? (
         <div className="space-y-3">
-          {entries.slice(0, 4).map((entry) => (
+          {entries.slice(0, maxItems).map((entry) => (
             <SinceYouLikedPairCard
               key={`since-you-liked-${entry.animeId}`}
               entry={entry}
@@ -4223,9 +5481,200 @@ function persistMangaPersonalLayoutOrder(order: PersonalLayoutSectionId[]) {
   );
 }
 
+function getPersonalGridStorageKey(userId: number) {
+  return `seenary.personal-grid-layout.v${PERSONAL_GRID_STORAGE_VERSION}:${userId}`;
+}
+
+function getMangaPersonalGridStorageKey(userId: number) {
+  return `seenary.manga-personal-grid-layout.v${PERSONAL_GRID_STORAGE_VERSION}:${userId}`;
+}
+
+function cloneDefaultPersonalGridLayout() {
+  return DEFAULT_PERSONAL_GRID_LAYOUT.map((item) => ({ ...item }));
+}
+
+function createPersonalGridFromLegacyOrder(order: PersonalLayoutSectionId[]) {
+  const defaultById = new Map(
+    DEFAULT_PERSONAL_GRID_LAYOUT.map((item) => [item.id, item] as const)
+  );
+  const widgetOrder = order.flatMap<PersonalGridWidgetId>((sectionId) =>
+    sectionId === "overview" ? ["spotlight", "account"] : [sectionId]
+  );
+
+  return normalizePersonalGridLayout(
+    widgetOrder.map((id) => ({
+      ...(defaultById.get(id) ?? { id, columns: 12, rows: 6 }),
+    }))
+  );
+}
+
+function readPersonalGridLayout(userId: number) {
+  try {
+    const saved = window.localStorage.getItem(getPersonalGridStorageKey(userId));
+    if (!saved) {
+      return createPersonalGridFromLegacyOrder(readPersonalLayoutOrder());
+    }
+
+    const parsed = JSON.parse(saved) as {
+      version?: number;
+      items?: unknown;
+    };
+    if (parsed.version !== PERSONAL_GRID_STORAGE_VERSION) {
+      return createPersonalGridFromLegacyOrder(readPersonalLayoutOrder());
+    }
+
+    return normalizePersonalGridLayout(parsed.items);
+  } catch {
+    return createPersonalGridFromLegacyOrder(readPersonalLayoutOrder());
+  }
+}
+
+function persistPersonalGridLayout(userId: number, layout: PersonalGridItem[]) {
+  try {
+    window.localStorage.setItem(
+      getPersonalGridStorageKey(userId),
+      JSON.stringify({
+        version: PERSONAL_GRID_STORAGE_VERSION,
+        items: normalizePersonalGridLayout(layout),
+      })
+    );
+  } catch {
+    // The in-memory layout remains usable when storage is unavailable.
+  }
+}
+
+function readMangaPersonalGridLayout(userId: number) {
+  try {
+    const saved = window.localStorage.getItem(getMangaPersonalGridStorageKey(userId));
+    if (!saved) {
+      return createPersonalGridFromLegacyOrder(readMangaPersonalLayoutOrder());
+    }
+
+    const parsed = JSON.parse(saved) as {
+      version?: number;
+      items?: unknown;
+    };
+    if (parsed.version !== PERSONAL_GRID_STORAGE_VERSION) {
+      return createPersonalGridFromLegacyOrder(readMangaPersonalLayoutOrder());
+    }
+
+    return normalizePersonalGridLayout(parsed.items);
+  } catch {
+    return createPersonalGridFromLegacyOrder(readMangaPersonalLayoutOrder());
+  }
+}
+
+function persistMangaPersonalGridLayout(userId: number, layout: PersonalGridItem[]) {
+  try {
+    window.localStorage.setItem(
+      getMangaPersonalGridStorageKey(userId),
+      JSON.stringify({
+        version: PERSONAL_GRID_STORAGE_VERSION,
+        items: normalizePersonalGridLayout(layout),
+      })
+    );
+  } catch {
+    // The in-memory layout remains usable when storage is unavailable.
+  }
+}
+
+function normalizePersonalGridLayout(value: unknown): PersonalGridItem[] {
+  const source = Array.isArray(value) ? value : [];
+  const seen = new Set<PersonalGridWidgetId>();
+  const items: PersonalGridItem[] = [];
+
+  for (const candidate of source) {
+    if (!candidate || typeof candidate !== "object") continue;
+    const raw = candidate as {
+      id?: unknown;
+      span?: unknown;
+      columns?: unknown;
+      rows?: unknown;
+      orientation?: unknown;
+    };
+    if (
+      typeof raw.id !== "string" ||
+      !Object.prototype.hasOwnProperty.call(PERSONAL_GRID_WIDGET_LABELS, raw.id)
+    ) {
+      continue;
+    }
+
+    const id = raw.id as PersonalGridWidgetId;
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const defaultItem =
+      DEFAULT_PERSONAL_GRID_LAYOUT.find((item) => item.id === id) ??
+      ({ id, columns: 12, rows: 6 } satisfies PersonalGridItem);
+    const constraints = PERSONAL_GRID_CONSTRAINTS[id];
+    const orientation = PERSONAL_GRID_SHELF_IDS.has(id)
+      ? raw.orientation === "vertical"
+        ? "vertical"
+        : "horizontal"
+      : undefined;
+    const requestedColumns = Number(raw.columns ?? raw.span ?? defaultItem.columns);
+    const requestedRows = Number(raw.rows ?? defaultItem.rows);
+    const minimumColumns =
+      id === "stats" && orientation !== "vertical"
+        ? Math.max(10, constraints.minColumns)
+        : PERSONAL_GRID_SHELF_IDS.has(id) && orientation !== "vertical"
+        ? Math.max(6, constraints.minColumns)
+        : constraints.minColumns;
+    const minimumRows =
+      PERSONAL_GRID_SHELF_IDS.has(id) && id !== "stats" && orientation === "vertical"
+        ? Math.max(7, constraints.minRows)
+        : constraints.minRows;
+    const maximumRows =
+      PERSONAL_GRID_SHELF_IDS.has(id) && orientation !== "vertical"
+        ? (PERSONAL_GRID_HORIZONTAL_ROWS[id] ?? constraints.maxRows)
+        : constraints.maxRows;
+    const columns = Math.max(
+      minimumColumns,
+      Math.min(
+        constraints.maxColumns,
+        Number.isFinite(requestedColumns)
+          ? Math.round(requestedColumns)
+          : defaultItem.columns
+      )
+    );
+    const rows = Math.max(
+      minimumRows,
+      Math.min(
+        maximumRows,
+        Number.isFinite(requestedRows) ? Math.round(requestedRows) : defaultItem.rows
+      )
+    );
+
+    items.push({ id, columns, rows, ...(orientation ? { orientation } : {}) });
+  }
+
+  for (const defaultItem of DEFAULT_PERSONAL_GRID_LAYOUT) {
+    if (!seen.has(defaultItem.id)) {
+      items.push({ ...defaultItem });
+    }
+  }
+
+  return items;
+}
+
 function persistDiscoverLayoutOrder(order: string[]) {
   window.localStorage.setItem(HOME_DISCOVER_LAYOUT_STORAGE_KEY, JSON.stringify(order));
   window.localStorage.removeItem(HOME_DISCOVER_LAYOUT_LEGACY_STORAGE_KEY);
+}
+
+function movePersonalGridWidget(
+  layout: PersonalGridItem[],
+  activeWidgetId: PersonalGridWidgetId,
+  targetWidgetId: PersonalGridWidgetId
+) {
+  const activeIndex = layout.findIndex((item) => item.id === activeWidgetId);
+  const targetIndex = layout.findIndex((item) => item.id === targetWidgetId);
+  if (activeIndex < 0 || targetIndex < 0 || activeIndex === targetIndex) return layout;
+
+  const next = [...layout];
+  const [activeItem] = next.splice(activeIndex, 1);
+  next.splice(targetIndex, 0, activeItem);
+  return next;
 }
 
 function normalizePersonalLayoutOrder(value: unknown): PersonalLayoutSectionId[] {
@@ -4235,35 +5684,15 @@ function normalizePersonalLayoutOrder(value: unknown): PersonalLayoutSectionId[]
         allowedSections.has(section as PersonalLayoutSectionId)
       )
     : [];
+  if (!savedSections.includes("activity")) {
+    const statsIndex = savedSections.indexOf("stats");
+    if (statsIndex >= 0) savedSections.splice(statsIndex + 1, 0, "activity");
+  }
   const missingSections = DEFAULT_PERSONAL_LAYOUT_ORDER.filter(
     (section) => !savedSections.includes(section)
   );
 
   return [...savedSections, ...missingSections];
-}
-
-function isPersonalLayoutSectionId(value: string): value is PersonalLayoutSectionId {
-  return DEFAULT_PERSONAL_LAYOUT_ORDER.includes(value as PersonalLayoutSectionId);
-}
-
-function movePersonalLayoutSection(
-  order: PersonalLayoutSectionId[],
-  activeSectionId: PersonalLayoutSectionId,
-  targetSectionId: PersonalLayoutSectionId
-) {
-  const currentOrder = normalizePersonalLayoutOrder(order);
-  const activeIndex = currentOrder.indexOf(activeSectionId);
-  const targetIndex = currentOrder.indexOf(targetSectionId);
-
-  if (activeIndex === -1 || targetIndex === -1 || activeIndex === targetIndex) {
-    return currentOrder;
-  }
-
-  const nextOrder = [...currentOrder];
-  const [activeSection] = nextOrder.splice(activeIndex, 1);
-  nextOrder.splice(targetIndex, 0, activeSection);
-
-  return nextOrder;
 }
 
 function readDiscoverLayoutOrder() {
@@ -4351,32 +5780,6 @@ function readSavedDiscoverState(): SavedDiscoverState | null {
   } catch {
     return null;
   }
-}
-
-function getRecentlyUpdatedLocally<
-  T extends { local_updated_at?: string | null; provider_updated_at?: string | null },
->(
-  entries: T[]
-) {
-  const recentActivityCutoff = Date.now() - RECENT_ACTIVITY_WINDOW_MS;
-
-  return entries
-    .filter((entry) => getEntryActivityTime(entry) >= recentActivityCutoff)
-    .sort(
-      (left, right) =>
-        getEntryActivityTime(right) - getEntryActivityTime(left)
-    )
-    .slice(0, 6);
-}
-
-function getEntryActivityTime(entry: {
-  local_updated_at?: string | null;
-  provider_updated_at?: string | null;
-}) {
-  return Math.max(
-    Date.parse(entry.local_updated_at ?? "") || 0,
-    Date.parse(entry.provider_updated_at ?? "") || 0
-  );
 }
 
 function mergeAnimeItems(currentItems: TrendingAnime[], nextItems: TrendingAnime[]) {

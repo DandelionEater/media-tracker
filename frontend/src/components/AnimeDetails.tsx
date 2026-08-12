@@ -37,6 +37,7 @@ import { ThemeMusicSection } from "./ThemeMusicSection";
 import { getPreferredTitle, type TitleLanguage } from "../utils/titlePreference";
 import { formatLocalDate } from "../utils/dateFormat";
 import { formatEnum, formatNumber, getListStatusLabel } from "../utils/mediaFormatting";
+import { recordRecentMedia } from "../utils/recentMediaHistory";
 import type {
   AnimeMedia,
   AnimeThemeMusicItem,
@@ -51,6 +52,7 @@ import type {
 } from "../types/domain";
 
 type AnimeDetailsProps = {
+  userId: number;
   mediaId: number;
   mediaType: MediaType;
   onBack: () => void;
@@ -119,6 +121,7 @@ type PeopleModalItem = {
 };
 
 export default function MediaDetails({
+  userId,
   mediaId,
   mediaType,
   onBack,
@@ -173,6 +176,7 @@ export default function MediaDetails({
 
         if (mounted) {
           setAnime(data);
+          recordRecentMedia(userId, mediaType, data);
           await loadListEntry(mediaId);
         }
       } catch (err) {
@@ -196,7 +200,7 @@ export default function MediaDetails({
     return () => {
       mounted = false;
     };
-  }, [loadListEntry, mediaId, mediaType, retryKey]);
+  }, [loadListEntry, mediaId, mediaType, retryKey, userId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1845,16 +1849,20 @@ function StoryAndTaxonomy({
       aria-label="Story, genres, and tags"
     >
       {description && (
-        <article className="relative overflow-hidden rounded-3xl border border-white/8 bg-white/[0.025] p-5 lg:min-h-[23rem]">
+        <article className="relative flex flex-col overflow-hidden rounded-3xl border border-white/8 bg-white/[0.025] p-5 lg:min-h-[23rem]">
           <div className="flex items-center gap-2 text-white/55">
             <BookmarkIcon className="h-4 w-4" />
             <h2 className="text-sm font-semibold uppercase tracking-[0.2em]">Description</h2>
           </div>
 
-          <div className="relative mt-5">
+          <div
+            className={`relative mt-5 ${
+              hasMore && !expanded ? "min-h-0 flex-1" : ""
+            }`}
+          >
             <div
               className={`overflow-hidden transition-[max-height] duration-700 ease-in-out ${
-                expanded ? "max-h-[100rem]" : "max-h-80"
+                expanded ? "max-h-[100rem]" : hasMore ? "h-full" : ""
               }`}
             >
               <div
@@ -1874,7 +1882,7 @@ function StoryAndTaxonomy({
               type="button"
               onClick={() => setExpanded((current) => !current)}
               aria-expanded={expanded}
-              className="relative mt-4 inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-semibold text-white/65 transition hover:border-white/20 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
+              className="relative mt-4 inline-flex shrink-0 items-center gap-2 self-start rounded-full border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-semibold text-white/65 transition hover:border-white/20 hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-(--app-accent)/55"
             >
               {expanded ? "Show less" : "Read full description"}
               <ChevronDownIcon

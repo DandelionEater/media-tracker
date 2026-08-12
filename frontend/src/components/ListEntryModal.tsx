@@ -322,7 +322,7 @@ export function ListEntryModal({
 
   return (
     <div className="absolute inset-0 z-80 flex items-center justify-center bg-black/82 px-6 py-4">
-      <div className="flex h-[calc(100vh-32px)] max-h-[900px] w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-[#111111]/95 p-5 shadow-2xl">
+      <div className="flex max-h-[calc(100vh-32px)] w-full max-w-3xl flex-col rounded-3xl border border-white/10 bg-[#111111]/95 p-5 shadow-2xl">
         <div className="mb-4 flex items-start justify-between gap-4">
           <div>
             <p className="text-xs uppercase tracking-[0.25em] text-white/35">
@@ -346,7 +346,7 @@ export function ListEntryModal({
           </Tooltip>
         </div>
 
-        <div className="scroll-container -mr-4 flex min-h-0 flex-1 flex-col space-y-4 overflow-y-auto pr-4">
+        <div className="scroll-container -mr-4 flex min-h-0 flex-1 flex-col space-y-4 overflow-x-hidden overflow-y-auto pr-4">
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
             <div className="flex items-center justify-between gap-4 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
               <div className="min-w-0">

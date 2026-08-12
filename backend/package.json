@@ -1,18 +1,23 @@
 {
   "name": "seenary",
-  "version": "0.1.8-beta",
+  "version": "0.1.9-beta",
   "description": "Anime and media tracking desktop app.",
   "desktopName": "seenary",
   "main": "main.js",
   "scripts": {
     "start": "node server.js",
     "desktop": "node scripts/start-electron.js",
+    "desktop:update-preview": "node scripts/start-electron.js --preview-update",
     "rebuild:node": "npm rebuild better-sqlite3 argon2",
-    "rebuild:electron": "electron-rebuild -f",
+    "rebuild:electron": "electron-rebuild -f --only better-sqlite3",
     "build:frontend": "npm --prefix ../frontend run build",
     "test:animethemes": "node scripts/animethemes-mapper-smoke.js",
     "test:details-cache": "node scripts/details-cache-smoke.js",
+    "test:updater": "node scripts/updater-config-smoke.js",
     "security:check": "node scripts/run-security-smoke.js",
+    "analytics:export": "node scripts/export-engagement-analytics.js",
+    "test:analytics": "node scripts/engagement-analytics-smoke.js",
+    "release:version": "node scripts/set-release-version.js",
     "release:check": "node scripts/release-readiness.js",
     "pack": "npm run build:frontend && electron-builder --dir",
     "pack:linux": "npm run build:frontend && electron-builder --linux dir --x64",
@@ -73,8 +78,11 @@
     ],
     "publish": [
       {
-        "provider": "generic",
-        "url": "https://api.seenary.app/desktop-updates"
+        "provider": "github",
+        "owner": "DandelionEater",
+        "repo": "Seenary",
+        "private": false,
+        "tagNamePrefix": "v"
       }
     ],
     "extraMetadata": {
@@ -86,6 +94,7 @@
     "win": {
       "icon": "build/icon.ico",
       "executableName": "Seenary",
+      "artifactName": "${productName}-Setup-${version}.${ext}",
       "target": [
         {
           "target": "nsis",

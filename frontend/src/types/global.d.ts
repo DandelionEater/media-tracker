@@ -72,6 +72,8 @@ type AppSettings = {
   homeDensity: "comfortable" | "balanced" | "compact";
   myListDensity: "comfortable" | "balanced" | "compact";
   startView: "home" | "list" | "search";
+  shareAnonymousUsageStatistics: boolean;
+  analyticsConsentDecided: boolean;
 };
 
 type SyncActivityItem = {
@@ -137,7 +139,8 @@ declare global {
     api: {
       searchMedia: (
         query: string,
-        hideAdultContent?: boolean
+        hideAdultContent?: boolean,
+        options?: { signal?: AbortSignal }
       ) => Promise<MediaSearchResults>;
       getDiscoverMedia: (hideAdultContent?: boolean) => Promise<DiscoverMediaResult>;
       getDiscoverShelfAnime: (
@@ -350,6 +353,17 @@ declare global {
       }>;
       getSettings: () => Promise<AppSettings>;
       updateSettings: (settings: Partial<AppSettings>) => Promise<AppSettings>;
+      recordEngagement: (payload: {
+        platform: string;
+        appVersion: string;
+      }) => Promise<{
+        ok: boolean;
+        recorded: boolean;
+        duplicate?: boolean;
+        disabled?: boolean;
+        activityDate?: string;
+        message?: string;
+      }>;
       getSyncStatus: () => Promise<{
         ok: boolean;
         message?: string;

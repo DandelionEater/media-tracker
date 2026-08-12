@@ -46,6 +46,14 @@ const {
   deleteUser,
 } = require('./db');
 const { startDatabaseBackups } = require('./databaseBackups');
+const {
+  deleteEngagementForUser,
+  recordEngagement,
+} = require('./engagementAnalytics');
+const {
+  getReportCredentials,
+  handleAnalyticsReportRequest,
+} = require('./analyticsReports');
 const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
 const {
   registerUser,
@@ -135,6 +143,8 @@ const DEFAULT_APP_SETTINGS = {
   homeDensity: 'balanced',
   myListDensity: 'balanced',
   startView: 'home',
+  shareAnonymousUsageStatistics: false,
+  analyticsConsentDecided: false,
 };
 
 const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
@@ -1938,6 +1948,15 @@ async function handleRpc(method, args, req, res) {
         ...DEFAULT_APP_SETTINGS,
         ...(args[0] && typeof args[0] === 'object' ? args[0] : {}),
       };
+    case 'recordEngagement':
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, recorded: false, message: 'You must be logged in.' };
+      }
+      return recordEngagement({
+        userId: currentSession.user.id,
+        platform: args[0]?.platform,
+        appVersion: args[0]?.appVersion,
+      });
     case 'getSyncStatus':
       return currentSession.authenticated
         ? getStatelessSyncStatus(currentSession.user.id, args[0], args[1])
@@ -2152,6 +2171,7 @@ async function handleRpc(method, args, req, res) {
         if (Number(flow.userId) === userId) pendingMalFlows.delete(flowId);
       }
       clearWebSession(req, res);
+      deleteEngagementForUser(userId);
       const deleted = deleteUser(userId);
       logoutUser();
       return deleted
@@ -2736,6 +2756,10 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (handleAnalyticsReportRequest(req, res)) {
+    return;
+  }
+
   if (req.method === 'GET' && req.url.startsWith('/desktop-updates-debug')) {
     sendDesktopUpdatesDebug(req, res);
     return;
@@ -2834,6 +2858,11 @@ function startServer(port = PORT, options = {}) {
     deleteExpiredWebSessions();
     if (options.startBackups !== false) {
       startDatabaseBackups(db, dbPath);
+    }
+    if (!getReportCredentials().configured) {
+      console.warn(
+        'Analytics reports are disabled until ANALYTICS_REPORT_USERNAME and a 16+ character ANALYTICS_REPORT_PASSWORD are configured.'
+      );
     }
     const address = server.address();
     const listeningPort =

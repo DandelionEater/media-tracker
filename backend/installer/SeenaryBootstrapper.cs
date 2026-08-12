@@ -22,6 +22,12 @@ namespace SeenaryInstaller
 {
     internal static class Program
     {
+        internal const int CancelledExitCode = -2;
+
+        private static readonly object InstallerProcessSync = new object();
+        private static Process activeInstallerProcess;
+        private static bool installerCancellationRequested;
+
         [DllImport("user32.dll")]
         private static extern bool SetProcessDPIAware();
 
@@ -121,13 +127,33 @@ namespace SeenaryInstaller
                         throw new InvalidOperationException("Windows could not start the installer.");
                     }
 
+                    lock (InstallerProcessSync)
+                    {
+                        activeInstallerProcess = process;
+                        if (installerCancellationRequested)
+                        {
+                            TryStopInstaller(process);
+                        }
+                    }
+
                     process.WaitForExit();
-                    return process.ExitCode;
+
+                    lock (InstallerProcessSync)
+                    {
+                        activeInstallerProcess = null;
+                        return installerCancellationRequested
+                            ? CancelledExitCode
+                            : process.ExitCode;
+                    }
                 }
             }
             catch
             {
-                return 1;
+                lock (InstallerProcessSync)
+                {
+                    activeInstallerProcess = null;
+                    return installerCancellationRequested ? CancelledExitCode : 1;
+                }
             }
             finally
             {
@@ -140,6 +166,44 @@ namespace SeenaryInstaller
                     // Windows can briefly retain the elevated payload. The temp folder
                     // is uniquely named and can be cleaned by normal system maintenance.
                 }
+            }
+        }
+
+        internal static void ResetEmbeddedInstallerCancellation()
+        {
+            lock (InstallerProcessSync)
+            {
+                installerCancellationRequested = false;
+            }
+        }
+
+        internal static void CancelEmbeddedInstaller()
+        {
+            lock (InstallerProcessSync)
+            {
+                installerCancellationRequested = true;
+                TryStopInstaller(activeInstallerProcess);
+            }
+        }
+
+        private static void TryStopInstaller(Process process)
+        {
+            if (process == null)
+            {
+                return;
+            }
+
+            try
+            {
+                if (!process.HasExited)
+                {
+                    process.Kill();
+                }
+            }
+            catch
+            {
+                // The async completion path still treats this as a user cancellation
+                // and will close cleanly if Windows finishes shutting down the child.
             }
         }
 
@@ -168,6 +232,7 @@ namespace SeenaryInstaller
         private static readonly Brush Violet = BrushFrom("#9D7CFF");
         private static readonly Brush VioletDark = BrushFrom("#7251DD");
 
+        private readonly Grid root;
         private readonly Grid contentHost;
         private readonly StackPanel optionsPanel;
         private readonly Button optionsButton;
@@ -176,8 +241,12 @@ namespace SeenaryInstaller
         private readonly Button allUsersButton;
         private readonly CheckBox desktopShortcutCheck;
         private readonly TextBox folderTextBox;
+        private readonly Border visualCard;
+        private readonly Grid cancelConfirmationOverlay;
         private bool installForAllUsers;
         private bool optionsVisible;
+        private bool isInstalling;
+        private bool isCancelling;
 
         internal InstallerWindow()
         {
@@ -191,6 +260,7 @@ namespace SeenaryInstaller
             ResizeMode = ResizeMode.NoResize;
             AllowsTransparency = true;
             Background = Brushes.Transparent;
+            Closing += HandleWindowClosing;
 
             var frame = new Border
             {
@@ -208,7 +278,7 @@ namespace SeenaryInstaller
                 ClipToBounds = true
             };
 
-            var root = new Grid();
+            root = new Grid();
             frame.Child = root;
             Content = frame;
 
@@ -232,6 +302,7 @@ namespace SeenaryInstaller
                     new Point(1, 0.5))
             };
             root.Children.Add(tint);
+            root.Children.Add(CreateWindowCloseButton());
 
             var shell = new Grid { Margin = new Thickness(67, 30, 67, 30) };
             shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -249,6 +320,9 @@ namespace SeenaryInstaller
             installView.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
             contentHost.Children.Add(installView);
 
+            var leftColumn = new Grid();
+            installView.Children.Add(leftColumn);
+
             var copy = new StackPanel
             {
                 Width = 450,
@@ -256,7 +330,7 @@ namespace SeenaryInstaller
                 VerticalAlignment = VerticalAlignment.Top,
                 Margin = new Thickness(0, 18, 0, 0)
             };
-            installView.Children.Add(copy);
+            leftColumn.Children.Add(copy);
 
             copy.Children.Add(new TextBlock
             {
@@ -355,9 +429,10 @@ namespace SeenaryInstaller
             var actionPanel = new StackPanel
             {
                 HorizontalAlignment = HorizontalAlignment.Left,
-                Margin = new Thickness(0, 24, 0, 0)
+                VerticalAlignment = VerticalAlignment.Bottom,
+                Margin = new Thickness(0, 0, 0, 10)
             };
-            copy.Children.Add(actionPanel);
+            leftColumn.Children.Add(actionPanel);
 
             primaryButton = CreatePrimaryButton("Install Seenary");
             primaryButton.Click += InstallSeenary;
@@ -371,20 +446,21 @@ namespace SeenaryInstaller
                 Margin = new Thickness(2, 10, 0, 0)
             });
 
-            var visualCard = CreateFeatureCard();
-            Grid.SetColumn(visualCard, 1);
-            installView.Children.Add(visualCard);
+            visualCard = CreateFeatureCard();
+            Grid.SetRowSpan(visualCard, 2);
+            shell.Children.Add(visualCard);
 
             var existingMachineInstall = File.Exists(
                 Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Seenary", "Seenary.exe"));
             SelectScope(existingMachineInstall);
+
+            cancelConfirmationOverlay = CreateCancelInstallationOverlay();
+            root.Children.Add(cancelConfirmationOverlay);
         }
 
         private Grid CreateTitleBar()
         {
             var titleBar = new Grid { Height = 48 };
-            titleBar.ColumnDefinitions.Add(new ColumnDefinition());
-            titleBar.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
 
             var identity = new StackPanel
             {
@@ -408,15 +484,136 @@ namespace SeenaryInstaller
                 VerticalAlignment = VerticalAlignment.Center
             });
 
+            return titleBar;
+        }
+
+        private Button CreateWindowCloseButton()
+        {
             var close = CreateTextButton("×");
             close.Width = 42;
             close.Height = 38;
             close.FontSize = 26;
             close.Foreground = TextMuted;
-            close.Click += delegate { Close(); };
-            Grid.SetColumn(close, 1);
-            titleBar.Children.Add(close);
-            return titleBar;
+            close.HorizontalAlignment = HorizontalAlignment.Right;
+            close.VerticalAlignment = VerticalAlignment.Top;
+            close.Margin = new Thickness(0, 18, 20, 0);
+            close.Click += HandleCloseRequested;
+            Panel.SetZIndex(close, 2);
+            return close;
+        }
+
+        private Grid CreateCancelInstallationOverlay()
+        {
+            var overlay = new Grid
+            {
+                Background = BrushFrom("#C4000000"),
+                Visibility = Visibility.Collapsed
+            };
+            Panel.SetZIndex(overlay, 10);
+
+            var dialog = new Border
+            {
+                Width = 500,
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Center,
+                Background = SurfaceRaised,
+                BorderBrush = BrushFrom("#4B4658"),
+                BorderThickness = new Thickness(1),
+                CornerRadius = new CornerRadius(22),
+                Padding = new Thickness(30),
+                Effect = new DropShadowEffect
+                {
+                    BlurRadius = 32,
+                    ShadowDepth = 10,
+                    Opacity = 0.55,
+                    Color = Colors.Black
+                }
+            };
+            overlay.Children.Add(dialog);
+
+            var content = new StackPanel();
+            dialog.Child = content;
+            content.Children.Add(new TextBlock
+            {
+                Text = "Cancel installation?",
+                Foreground = TextPrimary,
+                FontFamily = new FontFamily("Segoe UI Semibold"),
+                FontSize = 26
+            });
+            content.Children.Add(new TextBlock
+            {
+                Text = "Seenary is still being installed. Cancelling now will stop setup and may leave partial app files that Windows can safely replace the next time you install.",
+                Foreground = TextMuted,
+                FontSize = 14,
+                LineHeight = 21,
+                TextWrapping = TextWrapping.Wrap,
+                Margin = new Thickness(0, 12, 0, 26)
+            });
+
+            var actions = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                HorizontalAlignment = HorizontalAlignment.Right
+            };
+            content.Children.Add(actions);
+
+            var keepInstalling = CreateSecondaryButton("Keep installing");
+            keepInstalling.Height = 44;
+            keepInstalling.Click += delegate
+            {
+                cancelConfirmationOverlay.Visibility = Visibility.Collapsed;
+            };
+            actions.Children.Add(keepInstalling);
+
+            var cancelInstallation = CreatePrimaryButton("Cancel installation");
+            cancelInstallation.Height = 44;
+            cancelInstallation.MinWidth = 164;
+            cancelInstallation.Margin = new Thickness(12, 0, 0, 0);
+            cancelInstallation.Background = new LinearGradientBrush(
+                Color.FromRgb(190, 61, 82),
+                Color.FromRgb(135, 38, 57),
+                0);
+            cancelInstallation.BorderBrush = BrushFrom("#E57A8C");
+            cancelInstallation.Click += delegate
+            {
+                isCancelling = true;
+                cancelConfirmationOverlay.Visibility = Visibility.Collapsed;
+                ShowCancelling();
+                Program.CancelEmbeddedInstaller();
+            };
+            actions.Children.Add(cancelInstallation);
+
+            return overlay;
+        }
+
+        private void HandleCloseRequested(object sender, RoutedEventArgs eventArgs)
+        {
+            if (!isInstalling)
+            {
+                Close();
+                return;
+            }
+
+            if (!isCancelling)
+            {
+                cancelConfirmationOverlay.Visibility = Visibility.Visible;
+            }
+        }
+
+        private void HandleWindowClosing(
+            object sender,
+            System.ComponentModel.CancelEventArgs eventArgs)
+        {
+            if (!isInstalling)
+            {
+                return;
+            }
+
+            eventArgs.Cancel = true;
+            if (!isCancelling)
+            {
+                cancelConfirmationOverlay.Visibility = Visibility.Visible;
+            }
         }
 
         private Border CreateFeatureCard()
@@ -616,6 +813,9 @@ namespace SeenaryInstaller
                 return;
             }
 
+            Program.ResetEmbeddedInstallerCancellation();
+            isInstalling = true;
+            isCancelling = false;
             ShowProgress();
 
             var arguments = "/S "
@@ -631,6 +831,13 @@ namespace SeenaryInstaller
                 return Program.RunEmbeddedInstaller(new[] { arguments }, installForAllUsers);
             });
 
+            isInstalling = false;
+            if (isCancelling || exitCode == Program.CancelledExitCode)
+            {
+                Close();
+                return;
+            }
+
             if (exitCode == 0)
             {
                 ShowSuccess(destination);
@@ -639,6 +846,25 @@ namespace SeenaryInstaller
             {
                 ShowFailure(exitCode);
             }
+        }
+
+        private void ShowCancelling()
+        {
+            var view = CreateStateView(
+                "Cancelling installation",
+                "Stopping Seenary setup and closing the installer safely.");
+
+            view.Children.Add(new ProgressBar
+            {
+                IsIndeterminate = true,
+                Height = 12,
+                Width = 560,
+                HorizontalAlignment = HorizontalAlignment.Left,
+                Foreground = BrushFrom("#D86A7E"),
+                Background = BrushFrom("#2B2932"),
+                BorderThickness = new Thickness(0),
+                Margin = new Thickness(0, 36, 0, 0)
+            });
         }
 
         private void ShowProgress()
@@ -650,12 +876,13 @@ namespace SeenaryInstaller
             var progress = new ProgressBar
             {
                 IsIndeterminate = true,
-                Height = 8,
-                Width = 430,
+                Height = 12,
+                Width = 560,
+                HorizontalAlignment = HorizontalAlignment.Left,
                 Foreground = Violet,
                 Background = BrushFrom("#2B2932"),
                 BorderThickness = new Thickness(0),
-                Margin = new Thickness(0, 30, 0, 0)
+                Margin = new Thickness(0, 36, 0, 0)
             };
             view.Children.Add(progress);
 
@@ -727,6 +954,7 @@ namespace SeenaryInstaller
         private StackPanel CreateStateView(string title, string description)
         {
             contentHost.Children.Clear();
+            visualCard.Visibility = Visibility.Collapsed;
             var view = new StackPanel
             {
                 Width = 560,

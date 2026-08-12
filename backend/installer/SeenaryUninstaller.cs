@@ -340,6 +340,7 @@ namespace SeenaryUninstaller
         private readonly string[] originalArguments;
         private readonly Grid contentHost;
         private readonly CheckBox keepDataCheck;
+        private readonly Border dataCard;
         private bool canClose = true;
         private bool uninstallSucceeded;
 
@@ -407,6 +408,7 @@ namespace SeenaryUninstaller
                     new Point(0.2, 0.5),
                     new Point(1, 0.5))
             });
+            root.Children.Add(CreateWindowCloseButton());
 
             var shell = new Grid { Margin = new Thickness(67, 30, 67, 30) };
             shell.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
@@ -474,21 +476,20 @@ namespace SeenaryUninstaller
             actionRow.Children.Add(uninstallButton);
 
             var cancelButton = CreateSecondaryButton("Cancel");
-            cancelButton.Margin = new Thickness(12, 4, 0, 4);
+            cancelButton.Height = 48;
+            cancelButton.MinWidth = 96;
+            cancelButton.Margin = new Thickness(12, 0, 0, 0);
             cancelButton.Click += delegate { Close(); };
             actionRow.Children.Add(cancelButton);
 
-            var dataCard = CreateDataCard();
-            Grid.SetColumn(dataCard, 1);
-            initialView.Children.Add(dataCard);
+            dataCard = CreateDataCard();
+            Grid.SetRowSpan(dataCard, 2);
+            shell.Children.Add(dataCard);
         }
 
         private Grid CreateTitleBar()
         {
             var titleBar = new Grid { Height = 48 };
-            titleBar.ColumnDefinitions.Add(new ColumnDefinition());
-            titleBar.ColumnDefinitions.Add(
-                new ColumnDefinition { Width = GridLength.Auto });
 
             var identity = new StackPanel
             {
@@ -511,15 +512,22 @@ namespace SeenaryUninstaller
                 VerticalAlignment = VerticalAlignment.Center
             });
 
+            return titleBar;
+        }
+
+        private Button CreateWindowCloseButton()
+        {
             var close = CreateTextButton("\u00D7");
             close.Width = 42;
             close.Height = 38;
             close.FontSize = 26;
             close.Foreground = TextMuted;
+            close.HorizontalAlignment = HorizontalAlignment.Right;
+            close.VerticalAlignment = VerticalAlignment.Top;
+            close.Margin = new Thickness(0, 18, 20, 0);
             close.Click += delegate { Close(); };
-            Grid.SetColumn(close, 1);
-            titleBar.Children.Add(close);
-            return titleBar;
+            Panel.SetZIndex(close, 2);
+            return close;
         }
 
         private static StackPanel CreateKeepDataContent()
@@ -714,6 +722,7 @@ namespace SeenaryUninstaller
         private StackPanel CreateStateView(string title, string description)
         {
             contentHost.Children.Clear();
+            dataCard.Visibility = Visibility.Collapsed;
             var view = new StackPanel
             {
                 Width = 560,

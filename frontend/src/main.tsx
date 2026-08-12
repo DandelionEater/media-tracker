@@ -12,14 +12,7 @@ const isDesktopRuntime = Boolean(
 )
 
 if (isHostedDesktopRenderer && !isDesktopRuntime) {
-  ReactDOM.createRoot(document.getElementById('root')!).render(
-    <main className="flex min-h-screen items-center justify-center bg-[#0d0d0f] px-6 text-white">
-      <div className="text-center">
-        <p className="text-xs font-semibold uppercase tracking-[0.35em] text-white/35">404</p>
-        <h1 className="mt-3 text-2xl font-semibold">Not found</h1>
-      </div>
-    </main>,
-  )
+  window.location.replace('https://seenary.app')
 } else {
   installApiClient()
 
