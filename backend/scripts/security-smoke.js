@@ -4,6 +4,12 @@ const path = require('path');
 
 require('../env');
 
+// Keep this smoke test deterministic on clean CI runners without relying on a
+// developer or production .env file. The test database is temporary and this
+// key is used only to verify the encryption and migration paths below.
+process.env.TOKEN_ENCRYPTION_KEY =
+  '6ef46376b2180dd0336809f9dd58d285810dc871994d9a2465f4e872406a83f8';
+
 async function closeServer(server) {
   if (!server?.listening) return;
   await new Promise((resolve, reject) => {
