@@ -71,6 +71,8 @@ contextBridge.exposeInMainWorld('api', {
   restoreSyncExclusion: (payload) => ipcRenderer.invoke('sync:restore-exclusion', payload),
   excludeSyncEntry: (payload) => ipcRenderer.invoke('sync:exclude-entry', payload),
   getAnimeDetails: (id) => ipcRenderer.invoke('anime:get-details', id),
+  getAnimeFranchiseStartDate: (id) =>
+    ipcRenderer.invoke('anime:get-franchise-start-date', id),
   getMediaDetails: (mediaType, id) =>
     ipcRenderer.invoke('media:get-details', { mediaType, id }),
   getCharacterDetails: (id) => ipcRenderer.invoke('anime:get-character-details', id),

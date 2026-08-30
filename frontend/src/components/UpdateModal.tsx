@@ -1,6 +1,7 @@
 import {
   ArrowDownTrayIcon,
   ArrowPathIcon,
+  ArrowTopRightOnSquareIcon,
   CheckCircleIcon,
   ClockIcon,
 } from "@heroicons/react/24/outline";
@@ -11,6 +12,8 @@ type DesktopUpdateInfo = {
   releaseName?: string;
   releaseNotes?: string;
   releaseDate?: string | null;
+  manualDownload?: boolean;
+  manualDownloadUrl?: string | null;
 };
 
 type UpdateModalProps = {
@@ -34,6 +37,7 @@ export function UpdateModal({
 }: UpdateModalProps) {
   const isDownloading = status === "downloading";
   const isDownloaded = status === "downloaded";
+  const isManualDownload = info.manualDownload === true;
   const releaseNoteBlocks = parseReleaseNotes(info.releaseNotes);
 
   return (
@@ -44,6 +48,8 @@ export function UpdateModal({
             <div className="grid h-14 w-14 shrink-0 place-items-center rounded-2xl bg-[var(--app-accent-soft)] text-white/85">
               {isDownloaded ? (
                 <CheckCircleIcon className="h-8 w-8" />
+              ) : isManualDownload ? (
+                <ArrowTopRightOnSquareIcon className="h-8 w-8" />
               ) : (
                 <ArrowDownTrayIcon className="h-8 w-8" />
               )}
@@ -169,10 +175,16 @@ export function UpdateModal({
               >
                 {isDownloading ? (
                   <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                ) : isManualDownload ? (
+                  <ArrowTopRightOnSquareIcon className="h-4 w-4" />
                 ) : (
                   <ArrowDownTrayIcon className="h-4 w-4" />
                 )}
-                {isDownloading ? "Downloading..." : "Download update"}
+                {isDownloading
+                  ? "Downloading..."
+                  : isManualDownload
+                    ? "Manual download"
+                    : "Download update"}
               </button>
             )}
           </div>

@@ -40,7 +40,7 @@ for (const [label, source] of [
   );
 }
 
-function exerciseUpdater(version) {
+function exerciseUpdater(version, platform = 'win32') {
   const autoUpdater = {
     autoDownload: true,
     autoInstallOnAppQuit: true,
@@ -59,10 +59,15 @@ function exerciseUpdater(version) {
   };
   const module = { exports: {} };
   const timer = { unref() {} };
+  const handlers = new Map();
   const context = {
     require(id) {
       if (id === 'electron') {
-        return { app, ipcMain: { handle() {} } };
+        return {
+          app,
+          ipcMain: { handle(channel, handler) { handlers.set(channel, handler); } },
+          shell: { openExternal() { return Promise.resolve(); } },
+        };
       }
       if (id === 'electron-updater') {
         return { autoUpdater };
@@ -72,7 +77,7 @@ function exerciseUpdater(version) {
     module,
     exports: module.exports,
     console,
-    process: { platform: 'win32' },
+    process: { platform },
     setTimeout: () => timer,
     clearTimeout() {},
     setInterval: () => timer,
@@ -85,15 +90,22 @@ function exerciseUpdater(version) {
     webContents: { send() {} },
   });
 
-  return autoUpdater;
+  return { autoUpdater, handlers };
 }
 
-const betaUpdater = exerciseUpdater('0.1.9-beta');
+const { autoUpdater: betaUpdater } = exerciseUpdater('0.1.9-beta');
 assert.equal(betaUpdater.allowPrerelease, true);
 assert.equal(betaUpdater.autoDownload, false);
 assert.equal(betaUpdater.autoInstallOnAppQuit, false);
 
-const stableUpdater = exerciseUpdater('0.2.0');
+const { autoUpdater: stableUpdater } = exerciseUpdater('0.2.0');
 assert.equal(stableUpdater.allowPrerelease, false);
+
+const linuxUpdater = exerciseUpdater('0.1.9-beta', 'linux');
+const linuxState = linuxUpdater.handlers.get('updater:get-state')();
+assert.equal(linuxState.available, false);
+assert.equal(linuxState.manualDownload, true);
+assert.match(updaterSource, /api\.github\.com\/repos\/DandelionEater\/Seenary\/releases/);
+assert.match(updaterSource, /https:\/\/seenary\.app/);
 
 console.log('GitHub updater configuration checks passed.');

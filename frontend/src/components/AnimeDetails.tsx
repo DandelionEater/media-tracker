@@ -135,6 +135,9 @@ export default function MediaDetails({
   const [anime, setAnime] = useState<AnimeMedia | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [franchiseTimingStatus, setFranchiseTimingStatus] = useState<
+    "idle" | "calculating" | "ready" | "error"
+  >("idle");
   const [listEntry, setListEntry] = useState<ListEntry | null>(null);
   const [listBusy, setListBusy] = useState(false);
   const [listMessage, setListMessage] = useState<string | null>(null);
@@ -201,6 +204,45 @@ export default function MediaDetails({
       mounted = false;
     };
   }, [loadListEntry, mediaId, mediaType, retryKey, userId]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    if (loading || mediaType !== "ANIME" || !anime || anime.id !== mediaId) {
+      setFranchiseTimingStatus("idle");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    if (anime.franchiseStartDate?.year) {
+      setFranchiseTimingStatus("ready");
+      return () => {
+        cancelled = true;
+      };
+    }
+
+    setFranchiseTimingStatus("calculating");
+    void window.api
+      .getAnimeFranchiseStartDate(mediaId)
+      .then((result) => {
+        if (cancelled || !result.franchiseStartDate?.year) return;
+        setAnime((current) =>
+          current?.id === mediaId
+            ? { ...current, franchiseStartDate: result.franchiseStartDate }
+            : current
+        );
+        setFranchiseTimingStatus("ready");
+      })
+      .catch((franchiseError) => {
+        console.warn("Failed to calculate franchise age:", franchiseError);
+        if (!cancelled) setFranchiseTimingStatus("error");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [anime, loading, mediaId, mediaType]);
 
   useEffect(() => {
     let cancelled = false;
@@ -646,7 +688,8 @@ export default function MediaDetails({
                       episodes={anime.episodes ?? null}
                       duration={anime.duration ?? null}
                       animeStatus={anime.status ?? null}
-                      franchiseStartDate={anime.franchiseStartDate ?? anime.startDate ?? null}
+                      franchiseStartDate={anime.franchiseStartDate ?? null}
+                      franchiseTimingStatus={franchiseTimingStatus}
                       nextAiringEpisode={anime.nextAiringEpisode ?? null}
                       entry={listEntry}
                       relations={relationEdges}
@@ -1116,6 +1159,7 @@ function WatchOverview({
   duration,
   animeStatus,
   franchiseStartDate,
+  franchiseTimingStatus,
   nextAiringEpisode,
   entry,
   relations,
@@ -1128,6 +1172,7 @@ function WatchOverview({
     month?: number | null;
     day?: number | null;
   } | null;
+  franchiseTimingStatus: "idle" | "calculating" | "ready" | "error";
   nextAiringEpisode: { episode?: number | null; airingAt?: number | null } | null;
   entry: ListEntry | null;
   relations: RelatedAnimeEdge[];
@@ -1226,7 +1271,21 @@ function WatchOverview({
           context: seriesTiming.context,
           icon: CalendarDaysIcon,
         }
-      : null,
+      : franchiseTimingStatus === "calculating" || franchiseTimingStatus === "idle"
+        ? {
+            label: "Franchise age",
+            value: "Calculating…",
+            context: "Tracing the anime's prequel history",
+            icon: CalendarDaysIcon,
+          }
+        : franchiseTimingStatus === "error"
+          ? {
+              label: "Franchise age",
+              value: "Unavailable",
+              context: "The franchise history could not be calculated",
+              icon: CalendarDaysIcon,
+            }
+          : null,
     isAiring && airedEpisodes !== null
       ? {
           label: "Airing progress",

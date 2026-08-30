@@ -741,16 +741,21 @@ async function fetchDiscoverShelfPage(definition, { page, perPage, hideAdultCont
     }
   `;
 
-  return await anilistRequestWithRetry(query, {
-    page,
-    perPage,
-    isAdult: hideAdultContent ? false : undefined,
-    season: definition.season,
-    seasonYear: definition.seasonYear,
-    sort: definition.sort,
-    mediaType,
-    status: definition.status,
-  });
+  return await anilistRequestWithRetry(
+    query,
+    {
+      page,
+      perPage,
+      isAdult: hideAdultContent ? false : undefined,
+      season: definition.season,
+      seasonYear: definition.seasonYear,
+      sort: definition.sort,
+      mediaType,
+      status: definition.status,
+    },
+    null,
+    1
+  );
 }
 
 function getDiscoverShelfDefinition(shelfId, mediaType = 'ANIME') {
@@ -991,7 +996,7 @@ async function getViewer(accessToken) {
     }
   `;
 
-  const data = await anilistRequestWithRetry(query, {}, accessToken);
+  const data = await anilistRequestWithRetry(query, {}, accessToken, 2);
   return data.data.Viewer;
 }
 
@@ -1093,7 +1098,8 @@ async function getViewerMediaCollection(accessToken, userId, mediaType) {
   const data = await anilistRequestWithRetry(
     query,
     { userId, type: mediaType === 'MANGA' ? 'MANGA' : 'ANIME' },
-    accessToken
+    accessToken,
+    2
   );
 
   if (!data?.data?.MediaListCollection) {
@@ -1111,7 +1117,7 @@ async function getViewerMangaCollection(accessToken, userId) {
   return await getViewerMediaCollection(accessToken, userId, 'MANGA');
 }
 
-async function getAnimeDetails(id) {
+async function getAnimeDetails(id, options = {}) {
   const query = `
     query ($id: Int) {
       Media(id: $id, type: ANIME) {
@@ -1215,7 +1221,7 @@ async function getAnimeDetails(id) {
   const data = await anilistRequestWithRetry(query, { id });
   const media = data.data.Media;
 
-  if (media) {
+  if (media && options.includeFranchiseStartDate !== false) {
     media.franchiseStartDate = await findAnimeSeriesStartDate(media);
   }
 
@@ -1438,8 +1444,7 @@ async function findAnimeSeriesStartDate(media) {
 
     if (!ids.length) break;
 
-    try {
-      const query = `
+    const query = `
         query ($ids: [Int]) {
           Page(page: 1, perPage: 25) {
             media(id_in: $ids, type: ANIME) {
@@ -1458,21 +1463,18 @@ async function findAnimeSeriesStartDate(media) {
             }
           }
         }
-      `;
-      const data = await anilistRequestWithRetry(query, { ids });
-      const entries = data?.data?.Page?.media ?? [];
+    `;
+    const data = await anilistRequestWithRetry(query, { ids });
+    const entries = data?.data?.Page?.media ?? [];
 
-      frontier = [];
-      for (const entry of entries) {
-        earliestDate = getEarlierFuzzyDate(earliestDate, entry?.startDate);
-        frontier.push(
-          ...(entry?.relations?.edges ?? [])
-            .filter((edge) => edge?.relationType === 'PREQUEL' && edge?.node?.id)
-            .map((edge) => edge.node)
-        );
-      }
-    } catch {
-      break;
+    frontier = [];
+    for (const entry of entries) {
+      earliestDate = getEarlierFuzzyDate(earliestDate, entry?.startDate);
+      frontier.push(
+        ...(entry?.relations?.edges ?? [])
+          .filter((edge) => edge?.relationType === 'PREQUEL' && edge?.node?.id)
+          .map((edge) => edge.node)
+      );
     }
   }
 
@@ -1694,6 +1696,7 @@ module.exports = {
   getViewerAnimeCollection,
   getViewerMangaCollection,
   getAnimeDetails,
+  findAnimeSeriesStartDate,
   getMangaDetails,
   getMangaDetailsByMalId,
   getAnimeListMetadata,

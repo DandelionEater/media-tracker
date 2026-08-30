@@ -20,20 +20,23 @@ let activeSyncProvider: "anilist" | "mal" | null | undefined;
 let localAutoSyncTimer: number | null = null;
 const localAutoSyncListeners = new Set<(result: AutoSyncCompleteEvent) => void>();
 const LOCAL_AUTO_SYNC_DELAY_MS = 15_000;
+const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+const LONG_OPERATION_TIMEOUT_MS = 120_000;
 
 async function rpc(
   method: string,
   args: unknown[] = [],
   options: { signal?: AbortSignal; timeoutMs?: number } = {}
 ) {
-  const timeoutController = options.timeoutMs ? new AbortController() : null;
+  const timeoutMs = options.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS;
+  const timeoutController = timeoutMs > 0 ? new AbortController() : null;
   const forwardAbort = () => timeoutController?.abort(options.signal?.reason);
   let timedOut = false;
   const timeoutId = timeoutController
     ? window.setTimeout(() => {
         timedOut = true;
         timeoutController.abort();
-      }, options.timeoutMs)
+      }, timeoutMs)
     : null;
 
   if (timeoutController && options.signal) {
@@ -64,7 +67,7 @@ async function rpc(
     return payload;
   } catch (error) {
     if (timedOut) {
-      throw new Error("The search request timed out. Try again in a moment.", {
+      throw new Error("The request timed out. Try again in a moment.", {
         cause: error,
       });
     }
@@ -209,7 +212,9 @@ async function startAniListLogin() {
 }
 
 async function completeAniListLogin(username: string) {
-  const result = await rpc("completeAniListLogin", [username, pendingAniListLoginFlowId]);
+  const result = await rpc("completeAniListLogin", [username, pendingAniListLoginFlowId], {
+    timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+  });
 
   if (result.ok) {
     pendingAniListLoginFlowId = null;
@@ -284,7 +289,9 @@ async function startMalLogin() {
 }
 
 async function completeMalLogin(username: string) {
-  const result = await rpc("completeMalLogin", [username, pendingMalLoginFlowId]);
+  const result = await rpc("completeMalLogin", [username, pendingMalLoginFlowId], {
+    timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+  });
 
   if (result.ok) {
     pendingMalLoginFlowId = null;
@@ -517,16 +524,20 @@ export function installApiClient() {
         signal: options?.signal,
         timeoutMs: 30_000,
       }),
-    getDiscoverMedia: (hideAdultContent = true) => rpc("getDiscoverMedia", [hideAdultContent]),
+    getDiscoverMedia: (hideAdultContent = true) =>
+      rpc("getDiscoverMedia", [hideAdultContent], { timeoutMs: 20_000 }),
     getDiscoverShelfAnime: (shelfId, page = 1, hideAdultContent = true, mediaType = "ANIME") =>
-      rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent, mediaType]),
+      rpc("getDiscoverShelfAnime", [shelfId, page, hideAdultContent, mediaType], {
+        timeoutMs: 20_000,
+      }),
     getStudioMedia: (studioId, page = 1, hideAdultContent = true) =>
-      rpc("getStudioMedia", [studioId, page, hideAdultContent]),
+      rpc("getStudioMedia", [studioId, page, hideAdultContent], { timeoutMs: 20_000 }),
     getArtistMedia: (artistSlug, page = 1, hideAdultContent = true) =>
-      rpc("getArtistMedia", [artistSlug, page, hideAdultContent]),
+      rpc("getArtistMedia", [artistSlug, page, hideAdultContent], { timeoutMs: 20_000 }),
     getAnimeThemeMusic: (anilistId, titles = []) =>
-      rpc("getAnimeThemeMusic", [anilistId, titles]),
-    previewAniListImport: (username) => rpc("previewAniListImport", [username]),
+      rpc("getAnimeThemeMusic", [anilistId, titles], { timeoutMs: 20_000 }),
+    previewAniListImport: (username) =>
+      rpc("previewAniListImport", [username], { timeoutMs: 60_000 }),
     importAniList: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
@@ -534,6 +545,7 @@ export function installApiClient() {
         throwIfAborted(options?.signal);
         const result = await rpc("importAniList", [username, selectedStatuses, selectedMediaKeys], {
           signal: options?.signal,
+          timeoutMs: LONG_OPERATION_TIMEOUT_MS,
         });
         throwIfAborted(options?.signal);
         if (result?.localEntries || result?.localMangaEntries) {
@@ -556,7 +568,8 @@ export function installApiClient() {
         throw error;
       }
     },
-    previewMalImport: (username) => rpc("previewMalImport", [username]),
+    previewMalImport: (username) =>
+      rpc("previewMalImport", [username], { timeoutMs: LONG_OPERATION_TIMEOUT_MS }),
     importMal: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
@@ -564,6 +577,7 @@ export function installApiClient() {
         throwIfAborted(options?.signal);
         const result = await rpc("importMal", [username, selectedStatuses, selectedMediaKeys], {
           signal: options?.signal,
+          timeoutMs: LONG_OPERATION_TIMEOUT_MS,
         });
         throwIfAborted(options?.signal);
         if (result?.localEntries || result?.localMangaEntries) {
@@ -587,9 +601,15 @@ export function installApiClient() {
       }
     },
     previewTextImport: (text, hideAdultContent = true, mediaType = "ANIME", options?: ImportOptions) =>
-      rpc("previewTextImport", [text, hideAdultContent, mediaType], { signal: options?.signal }),
+      rpc("previewTextImport", [text, hideAdultContent, mediaType], {
+        signal: options?.signal,
+        timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+      }),
     previewPdfImport: (pdfBase64, hideAdultContent = true, mediaType = "ANIME", options?: ImportOptions) =>
-      rpc("previewPdfImport", [pdfBase64, hideAdultContent, mediaType], { signal: options?.signal }),
+      rpc("previewPdfImport", [pdfBase64, hideAdultContent, mediaType], {
+        signal: options?.signal,
+        timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+      }),
     importTextList: async (entries, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
@@ -651,7 +671,9 @@ export function installApiClient() {
     runSyncNow: async () => {
       const userId = await requireActiveUserId();
       const provider = await getActiveSyncProvider(userId, true);
-      const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId, provider)]);
+      const result = await rpc("runSyncNow", [await localStore.getSyncPayload(userId, provider)], {
+        timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+      });
       const syncState = await localStore.markSynced(userId, result);
       return {
         ...result,
@@ -666,7 +688,7 @@ export function installApiClient() {
     },
     pullFromAniList: async () => {
       const userId = await requireActiveUserId();
-      const result = await rpc("pullFromAniList");
+      const result = await rpc("pullFromAniList", [], { timeoutMs: LONG_OPERATION_TIMEOUT_MS });
       if (result.ok) {
         const summary = await localStore.replaceEntriesFromImport(userId, result);
         const message = `Updated local Anime and Manga from AniList. ${summary.created} created, ${summary.updated} updated.${
@@ -690,7 +712,7 @@ export function installApiClient() {
     },
     pullFromMal: async () => {
       const userId = await requireActiveUserId();
-      const result = await rpc("pullFromMal");
+      const result = await rpc("pullFromMal", [], { timeoutMs: LONG_OPERATION_TIMEOUT_MS });
       if (result.ok) {
         const summary = await localStore.replaceEntriesFromImport(userId, result);
         const message = `Updated local Anime and Manga from MyAnimeList. ${summary.created} created, ${summary.updated} updated.${
@@ -740,7 +762,7 @@ export function installApiClient() {
     getAnimeDetails: async (id) => {
       const userId = await getActiveUserId();
       try {
-        const media = await rpc("getAnimeDetails", [id]);
+        const media = await rpc("getAnimeDetails", [id], { timeoutMs: 45_000 });
         if (userId && media?.id) {
           await localStore.cacheAnime(userId, media);
         }
@@ -753,10 +775,24 @@ export function installApiClient() {
         throw error;
       }
     },
+    getAnimeFranchiseStartDate: async (id) => {
+      const result = await rpc("getAnimeFranchiseStartDate", [id], { timeoutMs: 45_000 });
+      const userId = await getActiveUserId();
+      if (userId && result?.franchiseStartDate?.year) {
+        const cached = await localStore.getCachedMediaDetails(userId, "ANIME", id);
+        if (cached) {
+          await localStore.cacheAnime(userId, {
+            ...cached,
+            franchiseStartDate: result.franchiseStartDate,
+          });
+        }
+      }
+      return result;
+    },
     getMediaDetails: async (mediaType, id) => {
       const userId = await getActiveUserId();
       try {
-        const media = await rpc("getMediaDetails", [mediaType, id]);
+        const media = await rpc("getMediaDetails", [mediaType, id], { timeoutMs: 45_000 });
         if (userId && media?.id && mediaType === "ANIME") {
           await localStore.cacheAnime(userId, media);
         } else if (userId && media?.id) {
@@ -771,8 +807,8 @@ export function installApiClient() {
         throw error;
       }
     },
-    getCharacterDetails: (id) => rpc("getCharacterDetails", [id]),
-    getStaffDetails: (id) => rpc("getStaffDetails", [id]),
+    getCharacterDetails: (id) => rpc("getCharacterDetails", [id], { timeoutMs: 20_000 }),
+    getStaffDetails: (id) => rpc("getStaffDetails", [id], { timeoutMs: 20_000 }),
     cacheMinimalAnime: async (media) => {
       const userId = await requireActiveUserId();
       return await localStore.cacheAnime(userId, media);
@@ -790,7 +826,9 @@ export function installApiClient() {
     getAniListLinkStatus: () => rpc("getAniListLinkStatus"),
     linkAniListAccount,
     resolveAniListLinkConflict: async (action) => {
-      const result = await rpc("resolveAniListLinkConflict", [action]);
+      const result = await rpc("resolveAniListLinkConflict", [action], {
+        timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+      });
       await saveAuthImportLocally(result);
       return result;
     },
@@ -798,7 +836,9 @@ export function installApiClient() {
     getMalLinkStatus: () => rpc("getMalLinkStatus"),
     linkMalAccount,
     resolveMalLinkConflict: async (action) => {
-      const result = await rpc("resolveMalLinkConflict", [action]);
+      const result = await rpc("resolveMalLinkConflict", [action], {
+        timeoutMs: LONG_OPERATION_TIMEOUT_MS,
+      });
       await saveAuthImportLocally(result);
       return result;
     },

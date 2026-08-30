@@ -118,6 +118,7 @@ const animeColumnMigrations = [
   ['country_of_origin', 'TEXT'],
   ['start_date', 'TEXT'],
   ['franchise_start_date', 'TEXT'],
+  ['franchise_start_resolved', 'INTEGER NOT NULL DEFAULT 0'],
   ['end_date', 'TEXT'],
   ['trailer_id', 'TEXT'],
   ['trailer_site', 'TEXT'],
@@ -613,7 +614,7 @@ const upsertAnimeStmt = db.prepare(`
     source = excluded.source,
     country_of_origin = excluded.country_of_origin,
     start_date = excluded.start_date,
-    franchise_start_date = excluded.franchise_start_date,
+    franchise_start_date = COALESCE(excluded.franchise_start_date, anime.franchise_start_date),
     end_date = excluded.end_date,
     trailer_id = excluded.trailer_id,
     trailer_site = excluded.trailer_site,
@@ -770,6 +771,15 @@ const updateAnimeListMetadataStmt = db.prepare(`
     is_adult = COALESCE(?, is_adult),
     episodes = COALESCE(?, episodes),
     duration = COALESCE(?, duration),
+    updated_at = CURRENT_TIMESTAMP
+  WHERE id = ?
+`);
+
+const updateAnimeFranchiseStartDateStmt = db.prepare(`
+  UPDATE anime
+  SET
+    franchise_start_date = ?,
+    franchise_start_resolved = 1,
     updated_at = CURRENT_TIMESTAMP
   WHERE id = ?
 `);
@@ -1700,6 +1710,18 @@ function updateAnimeListMetadata(media) {
   );
 }
 
+function updateAnimeFranchiseStartDate(animeId, franchiseStartDate) {
+  const normalizedAnimeId = Number(animeId);
+  if (!Number.isInteger(normalizedAnimeId) || normalizedAnimeId <= 0) return false;
+
+  const year = Number(franchiseStartDate?.year);
+  if (!Number.isInteger(year) || year <= 0) return false;
+
+  const month = String(Number(franchiseStartDate?.month) || 1).padStart(2, '0');
+  const day = String(Number(franchiseStartDate?.day) || 1).padStart(2, '0');
+  return updateAnimeFranchiseStartDateStmt.run(`${year}-${month}-${day}`, normalizedAnimeId).changes > 0;
+}
+
 function getAnimeById(id) {
   const anime = getAnimeByIdStmt.get(id);
 
@@ -2419,6 +2441,7 @@ module.exports = {
   saveAnimeSummary,
   updateAnimeAdultFlag,
   updateAnimeListMetadata,
+  updateAnimeFranchiseStartDate,
   getAnimeById,
   getMangaById,
   getPersonDetails,

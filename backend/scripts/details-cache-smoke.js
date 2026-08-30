@@ -59,8 +59,16 @@ async function main() {
     const anilist = require('../anilist');
     const freshAnime = animeDetails(101, 'Fresh anime');
     const freshManga = mangaDetails(202, 'Fresh manga');
+    let franchiseTraversalCalls = 0;
 
-    anilist.getAnimeDetails = async () => freshAnime;
+    anilist.getAnimeDetails = async (_id, options = {}) =>
+      options.includeFranchiseStartDate === false
+        ? { ...freshAnime, franchiseStartDate: undefined }
+        : freshAnime;
+    anilist.findAnimeSeriesStartDate = async () => {
+      franchiseTraversalCalls += 1;
+      return freshAnime.franchiseStartDate;
+    };
     anilist.getMangaDetails = async () => freshManga;
 
     dbModule = require('../db');
@@ -83,7 +91,28 @@ async function main() {
 
     const animeFreshResult = await requestDetails('ANIME', freshAnime.id);
     assert.equal(animeFreshResult.response.status, 200);
+    assert.equal(animeFreshResult.payload.franchiseStartDate, undefined);
+    assert.equal(franchiseTraversalCalls, 0);
     assert.equal(dbModule.getAnimeById(freshAnime.id).title_preferred, 'Fresh anime');
+
+    const franchiseResult = await fetch(`${apiOrigin}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'getAnimeFranchiseStartDate', args: [freshAnime.id] }),
+    });
+    const franchisePayload = await franchiseResult.json();
+    assert.equal(franchiseResult.status, 200);
+    assert.deepEqual(franchisePayload.franchiseStartDate, freshAnime.franchiseStartDate);
+    assert.equal(franchiseTraversalCalls, 1);
+    assert.equal(dbModule.getAnimeById(freshAnime.id).franchise_start_resolved, 1);
+
+    const cachedFranchiseResult = await fetch(`${apiOrigin}/rpc`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ method: 'getAnimeFranchiseStartDate', args: [freshAnime.id] }),
+    });
+    assert.equal(cachedFranchiseResult.status, 200);
+    assert.equal(franchiseTraversalCalls, 1);
 
     const mangaFreshResult = await requestDetails('MANGA', freshManga.id);
     assert.equal(mangaFreshResult.response.status, 200);

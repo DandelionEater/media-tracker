@@ -25,7 +25,7 @@ function mapAnimeForDb(media) {
     source: media.source ?? null,
     country_of_origin: media.countryOfOrigin ?? null,
     start_date: mapFuzzyDate(media.startDate),
-    franchise_start_date: mapFuzzyDate(media.franchiseStartDate ?? media.startDate),
+    franchise_start_date: mapFuzzyDate(media.franchiseStartDate),
     end_date: mapFuzzyDate(media.endDate),
     trailer_id: media.trailer?.id ?? null,
     trailer_site: media.trailer?.site ?? null,
@@ -93,7 +93,9 @@ function mapDbAnimeForFrontend(row) {
     source: row.source,
     countryOfOrigin: row.country_of_origin,
     startDate: parseStoredDate(row.start_date),
-    franchiseStartDate: parseStoredDate(row.franchise_start_date) ?? parseStoredDate(row.start_date),
+    franchiseStartDate: row.franchise_start_resolved
+      ? parseStoredDate(row.franchise_start_date)
+      : null,
     endDate: parseStoredDate(row.end_date),
     trailer:
       row.trailer_id || row.trailer_site || row.trailer_thumbnail
@@ -232,6 +234,7 @@ function mapRelatedMedia(media) {
     season: media.season ?? null,
     seasonYear: media.seasonYear ?? null,
     averageScore: media.averageScore ?? null,
+    startDate: media.startDate ?? null,
   };
 }
 

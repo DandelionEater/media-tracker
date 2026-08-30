@@ -43,6 +43,7 @@ const {
   saveAnime,
   saveManga,
   saveAnimeSummary,
+  updateAnimeFranchiseStartDate,
   getAnimeById,
   getMangaById,
   getPersonDetails,
@@ -109,6 +110,7 @@ const {
 
 const ANILIST_URL = 'https://graphql.anilist.co';
 const MEDIA_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const franchiseStartDateRequests = new Map();
 const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 let mainWindow = null;
 
@@ -1581,7 +1583,7 @@ ipcMain.handle('sync:pull-from-mal', async () => {
 
 async function fetchAnimeDetailsFromAniList(id) {
   if (typeof anilist.getAnimeDetails === 'function') {
-    return await anilist.getAnimeDetails(id);
+    return await anilist.getAnimeDetails(id, { includeFranchiseStartDate: false });
   }
 
   const query = `
@@ -1818,7 +1820,7 @@ function hasUsableAnimeDetailsCache(row) {
     Boolean(row.relations && row.relations !== '[]') ||
     Boolean(row.recommendations && row.recommendations !== '[]');
 
-  return hasFullDetails && Boolean(row.franchise_start_date);
+  return hasFullDetails;
 }
 
 function hasFreshAnimeDetailsCache(row) {
@@ -1865,13 +1867,50 @@ async function getAnimeDetails(id) {
     saveAnime(mapAnimeForDb(media));
     return media;
   } catch (error) {
-    if (hasUsableAnimeDetailsCache(cachedAnime)) {
+    if (cachedAnime) {
       console.warn(`AniList anime details unavailable for ${id}; serving stale cached data.`);
       return mapDbAnimeForFrontend(cachedAnime);
     }
 
     throw error;
   }
+}
+
+async function calculateAnimeFranchiseStartDate(id) {
+  const cachedAnime = getAnimeById(id);
+  if (cachedAnime?.franchise_start_resolved && cachedAnime.franchise_start_date) {
+    return mapDbAnimeForFrontend(cachedAnime).franchiseStartDate;
+  }
+
+  let media = cachedAnime ? mapDbAnimeForFrontend(cachedAnime) : null;
+  if (!media) {
+    media = await fetchAnimeDetailsFromAniList(id);
+    if (media?.id) saveAnime(mapAnimeForDb(media));
+  }
+
+  const franchiseStartDate = await anilist.findAnimeSeriesStartDate(media);
+  if (!franchiseStartDate?.year) {
+    throw new Error('AniList did not provide enough dates to calculate the franchise age.');
+  }
+
+  updateAnimeFranchiseStartDate(id, franchiseStartDate);
+  return franchiseStartDate;
+}
+
+function getAnimeFranchiseStartDate(id) {
+  const animeId = Number(id);
+  if (!Number.isInteger(animeId) || animeId <= 0) {
+    throw new Error('A valid anime ID is required.');
+  }
+
+  const existingRequest = franchiseStartDateRequests.get(animeId);
+  if (existingRequest) return existingRequest;
+
+  const request = calculateAnimeFranchiseStartDate(animeId).finally(() => {
+    franchiseStartDateRequests.delete(animeId);
+  });
+  franchiseStartDateRequests.set(animeId, request);
+  return request;
 }
 
 async function getMangaDetails(id) {
@@ -1928,6 +1967,10 @@ ipcMain.handle('anime:get-details', async (_event, id) => {
     console.error('Failed to fetch anime details:', error);
     throw error;
   }
+});
+
+ipcMain.handle('anime:get-franchise-start-date', async (_event, id) => {
+  return { franchiseStartDate: await getAnimeFranchiseStartDate(id) };
 });
 
 ipcMain.handle('media:get-details', async (_event, payload) => {

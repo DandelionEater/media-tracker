@@ -20,6 +20,7 @@ const REDIRECT_URI = `http://127.0.0.1:${CALLBACK_PORT}/auth/anilist/callback`;
 const AUTHORIZE_URL = 'https://anilist.co/api/v2/oauth/authorize';
 const TOKEN_URL = 'https://anilist.co/api/v2/oauth/token';
 const FLOW_TIMEOUT_MS = 2 * 60 * 1000;
+const TOKEN_TIMEOUT_MS = 15 * 1000;
 
 let activeServer = null;
 
@@ -168,22 +169,36 @@ function waitForAuthorizationCode(state) {
 }
 
 async function exchangeCodeForToken(code) {
-  const response = await fetch(TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      grant_type: 'authorization_code',
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      redirect_uri: REDIRECT_URI,
-      code,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TOKEN_TIMEOUT_MS);
+  let response;
+  let data;
 
-  const data = await response.json().catch(() => null);
+  try {
+    response = await fetch(TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: CLIENT_ID,
+        client_secret: CLIENT_SECRET,
+        redirect_uri: REDIRECT_URI,
+        code,
+      }),
+      signal: controller.signal,
+    });
+    data = await response.json().catch(() => null);
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('AniList token exchange timed out. Try logging in again.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok || !data?.access_token) {
     throw new Error(data?.message || 'Failed to exchange AniList authorization code.');

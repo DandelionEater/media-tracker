@@ -202,6 +202,8 @@ type DesktopUpdateInfo = {
   releaseName?: string;
   releaseNotes?: string;
   releaseDate?: string | null;
+  manualDownload?: boolean;
+  manualDownloadUrl?: string | null;
 };
 
 type DesktopUpdateState = {
@@ -618,14 +620,13 @@ function App() {
   useEffect(() => {
     const loadSession = async () => {
       try {
-        const appSettings = await window.api.getSettings();
-        const normalizedSettings = normalizeAppSettings(appSettings);
-        setSettings(normalizedSettings);
-        setCurrentView(normalizedSettings.startView === "list" ? "list" : "home");
-
         const session = await window.api.getSession();
 
         if (session.authenticated && session.user) {
+          const appSettings = await window.api.getSettings();
+          const normalizedSettings = normalizeAppSettings(appSettings);
+          setSettings(normalizedSettings);
+          setCurrentView(normalizedSettings.startView === "list" ? "list" : "home");
           setAuthUser({
             id: session.user.id,
             username: session.user.username,
@@ -634,8 +635,12 @@ function App() {
 
           setShowTutorial(!session.user.tutorial_dismissed);
           notifyIfSessionIsExpiring(session.expiresAt);
-          await loadTrackedEntries();
+          // The shell and navigation do not depend on complete list hydration.
+          // Metadata repair can involve AniList, so keep it out of the startup gate.
+          void loadTrackedEntries();
         }
+      } catch (error) {
+        console.error("Failed to restore the Seenary session:", error);
       } finally {
         setCheckingSession(false);
       }
@@ -1392,10 +1397,6 @@ function App() {
     void runResolvedSearch(queries, searchQuery);
   };
 
-  const handleDismissSearchResults = () => {
-    setSearchResultsVisible(false);
-  };
-
   const handleRestoreSearchResults = () => {
     const queries = [...resolvedSearchTerms.map((term) => term.query), searchQuery];
     if (!queries.some((query) => query.trim())) return;
@@ -1465,6 +1466,11 @@ function App() {
 
   const handleDownloadDesktopUpdate = async () => {
     const result = await window.desktopUpdater?.downloadUpdate();
+
+    if (result?.ok && result.manual) {
+      setDesktopUpdate((current) => ({ ...current, visible: false }));
+      return;
+    }
 
     if (result && !result.ok) {
       setDesktopUpdate((current) => ({
@@ -1775,7 +1781,6 @@ function App() {
                     setSelectedAnimeId(null);
                   }
                 }}
-                onDismissSearchResults={handleDismissSearchResults}
                 onRestoreSearchResults={handleRestoreSearchResults}
                 username={authUser.username}
                 notifications={notifications}

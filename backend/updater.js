@@ -1,9 +1,11 @@
-const { app, ipcMain } = require('electron');
+const { app, ipcMain, shell } = require('electron');
 const { autoUpdater } = require('electron-updater');
 
 const UPDATE_CHECK_INTERVAL_MS = 3 * 60 * 60 * 1000;
 const STARTUP_CHECK_DELAY_MS = 10 * 1000;
 const UPDATE_DIALOG_PREVIEW = process.env?.SEENARY_PREVIEW_UPDATE_DIALOG === '1';
+const GITHUB_RELEASES_API = 'https://api.github.com/repos/DandelionEater/Seenary/releases?per_page=20';
+const MANUAL_DOWNLOAD_URL = 'https://seenary.app';
 
 let checkTimer = null;
 let startupCheckTimer = null;
@@ -17,6 +19,10 @@ let updaterEventsRegistered = false;
 
 function isAutoUpdateAvailable() {
   return process.platform !== 'linux';
+}
+
+function isManualUpdatePlatform() {
+  return process.platform === 'linux';
 }
 
 function setupAutoUpdates(win) {
@@ -38,7 +44,13 @@ function setupAutoUpdates(win) {
     return;
   }
 
-  if (!app.isPackaged || !isAutoUpdateAvailable()) {
+  if (!app.isPackaged) {
+    return;
+  }
+
+  if (isManualUpdatePlatform()) {
+    scheduleStartupCheck();
+    scheduleRecurringChecks();
     return;
   }
 
@@ -121,11 +133,18 @@ function scheduleRecurringChecks() {
 }
 
 function checkForUpdates(win = null) {
-  if (!app.isPackaged || !isAutoUpdateAvailable() || isChecking || isDownloading) {
+  if (!app.isPackaged || isChecking || isDownloading) {
     return;
   }
 
   activeWindow = win || activeWindow;
+
+  if (isManualUpdatePlatform()) {
+    checkGitHubForManualUpdate().catch((error) => {
+      handleUpdateError(error);
+    });
+    return;
+  }
 
   autoUpdater.checkForUpdates().catch((error) => {
     handleUpdateError(error);
@@ -145,6 +164,11 @@ function registerUpdaterIpc() {
         ok: false,
         message: 'This is an update-dialog preview; no update will be downloaded.',
       };
+    }
+
+    if (isManualUpdatePlatform()) {
+      await shell.openExternal(MANUAL_DOWNLOAD_URL);
+      return { ok: true, manual: true };
     }
 
     if (!app.isPackaged || !isAutoUpdateAvailable() || isDownloading) {
@@ -203,7 +227,99 @@ function normalizeUpdateInfo(info = {}) {
     releaseName: info.releaseName || `Seenary ${info.version || ''}`.trim(),
     releaseNotes: normalizeReleaseNotes(info.releaseNotes),
     releaseDate: info.releaseDate || null,
+    manualDownload: info.manualDownload === true,
+    manualDownloadUrl: info.manualDownloadUrl || null,
   };
+}
+
+async function checkGitHubForManualUpdate() {
+  isChecking = true;
+
+  try {
+    const response = await fetch(GITHUB_RELEASES_API, {
+      headers: {
+        Accept: 'application/vnd.github+json',
+        'User-Agent': `Seenary/${app.getVersion()}`,
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok) {
+      throw new Error(`GitHub update check failed with status ${response.status}.`);
+    }
+
+    const releases = await response.json();
+    const release = selectNewerRelease(releases, app.getVersion());
+    isChecking = false;
+
+    if (!release) return;
+
+    latestUpdateInfo = normalizeUpdateInfo({
+      version: normalizeVersion(release.tag_name),
+      releaseName: release.name || `Seenary ${normalizeVersion(release.tag_name)}`,
+      releaseNotes: release.body || '',
+      releaseDate: release.published_at || release.created_at || null,
+      manualDownload: true,
+      manualDownloadUrl: MANUAL_DOWNLOAD_URL,
+    });
+    sendToRenderer('updater:update-available', latestUpdateInfo);
+  } catch (error) {
+    isChecking = false;
+    throw error;
+  }
+}
+
+function selectNewerRelease(releases, currentVersion) {
+  const allowPrerelease = String(currentVersion).includes('-');
+  return (Array.isArray(releases) ? releases : [])
+    .filter((release) => release && !release.draft && (allowPrerelease || !release.prerelease))
+    .filter((release) => compareVersions(normalizeVersion(release.tag_name), currentVersion) > 0)
+    .sort((left, right) =>
+      compareVersions(normalizeVersion(right.tag_name), normalizeVersion(left.tag_name))
+    )[0] || null;
+}
+
+function normalizeVersion(value) {
+  return String(value || '').trim().replace(/^v/i, '');
+}
+
+function compareVersions(left, right) {
+  const parse = (value) => {
+    const match = normalizeVersion(value).match(/^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/);
+    if (!match) return null;
+    return {
+      core: match.slice(1, 4).map(Number),
+      prerelease: match[4] ? match[4].split('.') : [],
+    };
+  };
+  const leftVersion = parse(left);
+  const rightVersion = parse(right);
+  if (!leftVersion || !rightVersion) return 0;
+
+  for (let index = 0; index < 3; index += 1) {
+    if (leftVersion.core[index] !== rightVersion.core[index]) {
+      return leftVersion.core[index] > rightVersion.core[index] ? 1 : -1;
+    }
+  }
+  if (!leftVersion.prerelease.length || !rightVersion.prerelease.length) {
+    if (leftVersion.prerelease.length === rightVersion.prerelease.length) return 0;
+    return leftVersion.prerelease.length ? -1 : 1;
+  }
+
+  const length = Math.max(leftVersion.prerelease.length, rightVersion.prerelease.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftVersion.prerelease[index];
+    const rightPart = rightVersion.prerelease[index];
+    if (leftPart === rightPart) continue;
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    const leftNumber = /^\d+$/.test(leftPart) ? Number(leftPart) : null;
+    const rightNumber = /^\d+$/.test(rightPart) ? Number(rightPart) : null;
+    if (leftNumber !== null && rightNumber !== null) return leftNumber > rightNumber ? 1 : -1;
+    if (leftNumber !== null) return -1;
+    if (rightNumber !== null) return 1;
+    return leftPart.localeCompare(rightPart);
+  }
+  return 0;
 }
 
 function normalizeReleaseNotes(releaseNotes) {
@@ -248,6 +364,7 @@ function getUpdateState() {
   return {
     ok: true,
     available: isAutoUpdateAvailable(),
+    manualDownload: isManualUpdatePlatform(),
     checking: isChecking,
     downloading: isDownloading,
     intervalMs: UPDATE_CHECK_INTERVAL_MS,

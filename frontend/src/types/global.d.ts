@@ -130,6 +130,8 @@ type DesktopUpdateInfo = {
   releaseName?: string;
   releaseNotes?: string;
   releaseDate?: string | null;
+  manualDownload?: boolean;
+  manualDownloadUrl?: string | null;
 };
 
 declare global {
@@ -448,6 +450,9 @@ declare global {
         mediaId: number;
       }) => Promise<{ ok: boolean; message: string }>;
       getAnimeDetails: (id: number) => Promise<AnimeMedia>;
+      getAnimeFranchiseStartDate: (id: number) => Promise<{
+        franchiseStartDate: AnimeMedia["franchiseStartDate"];
+      }>;
       getMediaDetails: (mediaType: MediaType, id: number) => Promise<AnimeMedia>;
       getCharacterDetails: (id: number) => Promise<PersonDetails>;
       getStaffDetails: (id: number) => Promise<PersonDetails>;
@@ -735,12 +740,13 @@ declare global {
       ) => () => void;
       onUpdateDownloaded: (callback: (info: DesktopUpdateInfo) => void) => () => void;
       onUpdateError: (callback: (error: { message?: string }) => void) => () => void;
-      downloadUpdate: () => Promise<{ ok: boolean; message?: string }>;
+      downloadUpdate: () => Promise<{ ok: boolean; manual?: boolean; message?: string }>;
       installUpdate: () => Promise<{ ok: boolean; message?: string }>;
       remindLater: () => Promise<{ ok: boolean }>;
       getState: () => Promise<{
         ok: boolean;
         available?: boolean;
+        manualDownload?: boolean;
         checking: boolean;
         downloading: boolean;
         intervalMs: number;

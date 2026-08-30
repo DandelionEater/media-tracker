@@ -432,6 +432,7 @@ type DiscoverShelfPageState = {
   isLoadingMore: boolean;
   scrollTop: number;
   warning?: string | null;
+  loadMoreError?: string | null;
 };
 
 type SavedDiscoverState = {
@@ -1175,6 +1176,7 @@ export function HomePage({
         isLoadingMore: append,
         scrollTop,
         warning: current[stateKey]?.warning ?? null,
+        loadMoreError: null,
       },
     }));
 
@@ -1207,10 +1209,15 @@ export function HomePage({
           isLoadingMore: false,
           scrollTop,
           warning: typeof data.warning === "string" ? data.warning : null,
+          loadMoreError: null,
         },
       }));
     } catch (error) {
       console.error("Failed to load discover shelf page:", error);
+      const message =
+        error instanceof Error && error.message
+          ? error.message
+          : "AniList did not return the next page. Try again.";
       setDiscoverShelfPages((current) => ({
         ...current,
         [stateKey]: {
@@ -1224,6 +1231,8 @@ export function HomePage({
           }),
           isLoading: false,
           isLoadingMore: false,
+          warning: append ? current[stateKey]?.warning ?? null : message,
+          loadMoreError: append ? message : null,
         },
       }));
     }
@@ -2592,7 +2601,7 @@ function MangaAccountOverviewPanel({
           ["Favorites", formatNumber(favorites), formatExactCount(favorites, "favorite")],
           ["Rereads", formatNumber(rereads), formatExactCount(rereads, "reread")],
         ].map(([label, value, exactValue]) => (
-          <OverviewMetric key={label} label={label} value={value} exactValue={exactValue} compact={compact} centered={compact && !narrow} />
+          <OverviewMetric key={label} label={label} value={value} exactValue={exactValue} compact={compact} />
         ))}
       </div>
     </section>
@@ -3113,7 +3122,6 @@ function AccountOverviewPanel({
             key={metric.label}
             {...metric}
             compact={compact}
-            centered={compact && !narrow}
           />
         ))}
       </div>
@@ -3127,18 +3135,16 @@ function OverviewMetric({
   exactValue,
   secondaryExactValue,
   compact = false,
-  centered = false,
 }: {
   label: string;
   value: string;
   exactValue?: string;
   secondaryExactValue?: string;
   compact?: boolean;
-  centered?: boolean;
 }) {
   const metric = (
     <div
-      className={`h-full w-full rounded-2xl border border-white/10 bg-white/4 ${compact ? "p-3" : "p-4"} ${centered ? "flex flex-col justify-center" : ""}`}
+      className={`flex h-full w-full flex-col items-start justify-center rounded-2xl border border-white/10 bg-white/4 text-left ${compact ? "p-3" : "p-4"}`}
       aria-label={
         exactValue
           ? `${label}: ${exactValue}${secondaryExactValue ? `. ${secondaryExactValue}` : ""}`
@@ -3347,7 +3353,13 @@ function DiscoverShelfListPage({
   const pageInfo = state?.pageInfo;
   const hasNextPage = Boolean(pageInfo?.hasNextPage);
   useEffect(() => {
-    if (!shelf || !hasNextPage || state?.isLoading || state?.isLoadingMore) return;
+    if (
+      !shelf ||
+      !hasNextPage ||
+      state?.isLoading ||
+      state?.isLoadingMore ||
+      state?.loadMoreError
+    ) return;
 
     const target = loadMoreRef.current;
     if (!target) return;
@@ -3364,7 +3376,14 @@ function DiscoverShelfListPage({
     observer.observe(target);
 
     return () => observer.disconnect();
-  }, [hasNextPage, onLoadMore, shelf, state?.isLoading, state?.isLoadingMore]);
+  }, [
+    hasNextPage,
+    onLoadMore,
+    shelf,
+    state?.isLoading,
+    state?.isLoadingMore,
+    state?.loadMoreError,
+  ]);
 
   if (!shelf) {
     return (
@@ -3413,6 +3432,12 @@ function DiscoverShelfListPage({
         </div>
       )}
 
+      {state?.loadMoreError && (
+        <div className="rounded-2xl border border-rose-300/20 bg-rose-300/10 px-4 py-3 text-sm text-rose-100/80">
+          {state.loadMoreError}
+        </div>
+      )}
+
       {state?.isLoading && !items.length ? (
         <DiscoverGridSkeleton density={density} />
       ) : (
@@ -3445,7 +3470,11 @@ function DiscoverShelfListPage({
             onClick={() => onLoadMore(shelf)}
             className="rounded-full border border-white/10 bg-white/4 px-4 py-2 text-xs font-semibold text-white/70 transition hover:bg-white/10 hover:text-white focus:outline-none focus:ring-2 focus:ring-white/55 disabled:cursor-not-allowed disabled:opacity-45"
           >
-            {state?.isLoadingMore ? "Loading more..." : "Load more"}
+            {state?.isLoadingMore
+              ? "Loading more..."
+              : state?.loadMoreError
+                ? "Retry loading more"
+                : "Load more"}
           </button>
         </div>
       )}

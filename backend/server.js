@@ -19,6 +19,7 @@ const {
   dbPath,
   saveAnime,
   saveManga,
+  updateAnimeFranchiseStartDate,
   getAnimeById,
   getMangaById,
   getPersonDetails,
@@ -75,6 +76,8 @@ const {
 } = require('./sync');
 
 const PORT = Number(process.env.PORT || 3000);
+const MEDIA_DETAILS_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const franchiseStartDateRequests = new Map();
 const PERSON_DETAILS_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const MAX_RPC_BODY_BYTES = Number(process.env.MAX_RPC_BODY_BYTES || 40 * 1024 * 1024);
 const RPC_RATE_LIMIT_WINDOW_MS = Number(process.env.RPC_RATE_LIMIT_WINDOW_MS || 60 * 1000);
@@ -121,6 +124,7 @@ const ANILIST_REDIRECT_URI =
 const MAL_AUTHORIZE_URL = 'https://myanimelist.net/v1/oauth2/authorize';
 const MAL_REDIRECT_URI = process.env.MAL_REDIRECT_URI || `${API_PUBLIC_ORIGIN}/auth/mal/callback`;
 const ANILIST_FLOW_TIMEOUT_MS = 10 * 60 * 1000;
+const ANILIST_TOKEN_TIMEOUT_MS = 15 * 1000;
 const DESKTOP_UPDATES_DIR =
   process.env.DESKTOP_UPDATES_DIR || path.join(path.dirname(dbPath), 'desktop-updates');
 
@@ -421,22 +425,36 @@ function sendAniListCallbackPage(res, title, body, returnTo) {
 }
 
 async function exchangeAniListCodeForToken(code) {
-  const response = await fetch(ANILIST_TOKEN_URL, {
-    method: 'POST',
-    headers: {
-      Accept: 'application/json',
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      grant_type: 'authorization_code',
-      client_id: ANILIST_CLIENT_ID,
-      client_secret: ANILIST_CLIENT_SECRET,
-      redirect_uri: ANILIST_REDIRECT_URI,
-      code,
-    }),
-  });
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), ANILIST_TOKEN_TIMEOUT_MS);
+  let response;
+  let data;
 
-  const data = await response.json().catch(() => null);
+  try {
+    response = await fetch(ANILIST_TOKEN_URL, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        grant_type: 'authorization_code',
+        client_id: ANILIST_CLIENT_ID,
+        client_secret: ANILIST_CLIENT_SECRET,
+        redirect_uri: ANILIST_REDIRECT_URI,
+        code,
+      }),
+      signal: controller.signal,
+    });
+    data = await response.json().catch(() => null);
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw new Error('AniList token exchange timed out. Try logging in again.');
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+  }
 
   if (!response.ok || !data?.access_token) {
     throw new Error(data?.message || 'Failed to exchange AniList authorization code.');
@@ -1540,73 +1558,136 @@ async function handleMalLinkCallback(flow, tokenData, viewer) {
 
 async function fetchAnimeDetailsFromAniList(id) {
   const media = await anilist.getAnimeDetails
-    ? await anilist.getAnimeDetails(id)
+    ? await anilist.getAnimeDetails(id, { includeFranchiseStartDate: false })
     : await fetchAnimeDetailsFallback(id);
   return media;
 }
 
+function hasCachedStudioIds(value) {
+  try {
+    const studios = JSON.parse(value || '[]');
+    return (
+      !studios.length ||
+      studios.every(
+        (studio) =>
+          studio &&
+          typeof studio === 'object' &&
+          Number.isInteger(Number(studio.id)) &&
+          Number(studio.id) > 0
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function hasUsableAnimeDetailsCache(row) {
+  if (!row || row.is_adult === null || row.is_adult === undefined) return false;
+  if (!hasCachedStudioIds(row.studios)) return false;
+
+  const hasFullDetails =
+    Boolean(row.site_url) ||
+    Boolean(row.description) ||
+    Boolean(row.trailer_id) ||
+    Boolean(row.external_links && row.external_links !== '[]') ||
+    Boolean(row.relations && row.relations !== '[]') ||
+    Boolean(row.recommendations && row.recommendations !== '[]');
+
+  return hasFullDetails;
+}
+
+function isFreshCacheDate(value, ttlMs) {
+  const cachedAt = Date.parse(value);
+  return Number.isFinite(cachedAt) && Date.now() - cachedAt < ttlMs;
+}
+
+function hasFreshAnimeDetailsCache(row) {
+  return hasUsableAnimeDetailsCache(row) && isFreshCacheDate(row.cached_at, MEDIA_DETAILS_CACHE_TTL_MS);
+}
+
+function hasFreshMangaDetailsCache(row) {
+  return Boolean(row?.details) && isFreshCacheDate(row.cached_at, MEDIA_DETAILS_CACHE_TTL_MS);
+}
+
 async function getAnimeDetails(id) {
-  let media;
+  const cachedAnime = getAnimeById(id);
+
+  if (hasFreshAnimeDetailsCache(cachedAnime)) {
+    return mapDbAnimeForFrontend(cachedAnime);
+  }
 
   try {
-    media = await fetchAnimeDetailsFromAniList(id);
+    const media = await fetchAnimeDetailsFromAniList(id);
+    if (media?.id) saveAnime(mapAnimeForDb(media));
+    return media;
   } catch (error) {
-    let cachedAnime = null;
-    try {
-      cachedAnime = getAnimeById(id);
-    } catch (cacheError) {
-      console.error(`Failed to read cached anime details for ${id}:`, cacheError);
-    }
     if (cachedAnime) {
-      console.warn(`AniList anime details unavailable for ${id}; serving cached data.`);
+      console.warn(`AniList anime details unavailable for ${id}; serving stale cached data.`);
       return mapDbAnimeForFrontend(cachedAnime);
     }
     error.statusCode = Number(error.statusCode || error.status) || 503;
     error.publicMessage = 'AniList is unavailable and no cached anime details are available.';
     throw error;
   }
+}
 
-  if (media?.id) {
-    try {
-      saveAnime(mapAnimeForDb(media));
-    } catch (error) {
-      console.error(`Failed to cache AniList anime details for ${id}:`, error);
-    }
+async function calculateAnimeFranchiseStartDate(id) {
+  const cachedAnime = getAnimeById(id);
+  if (cachedAnime?.franchise_start_resolved && cachedAnime.franchise_start_date) {
+    return mapDbAnimeForFrontend(cachedAnime).franchiseStartDate;
   }
 
-  return media;
+  let media = cachedAnime ? mapDbAnimeForFrontend(cachedAnime) : null;
+  if (!media) {
+    media = await fetchAnimeDetailsFromAniList(id);
+    if (media?.id) saveAnime(mapAnimeForDb(media));
+  }
+
+  const franchiseStartDate = await anilist.findAnimeSeriesStartDate(media);
+  if (!franchiseStartDate?.year) {
+    throw new Error('AniList did not provide enough dates to calculate the franchise age.');
+  }
+
+  updateAnimeFranchiseStartDate(id, franchiseStartDate);
+  return franchiseStartDate;
+}
+
+function getAnimeFranchiseStartDate(id) {
+  const animeId = Number(id);
+  if (!Number.isInteger(animeId) || animeId <= 0) {
+    throw new Error('A valid anime ID is required.');
+  }
+
+  const existingRequest = franchiseStartDateRequests.get(animeId);
+  if (existingRequest) return existingRequest;
+
+  const request = calculateAnimeFranchiseStartDate(animeId).finally(() => {
+    franchiseStartDateRequests.delete(animeId);
+  });
+  franchiseStartDateRequests.set(animeId, request);
+  return request;
 }
 
 async function getMangaDetails(id) {
-  let media;
+  const cachedManga = getMangaById(id);
+
+  if (hasFreshMangaDetailsCache(cachedManga)) {
+    return cachedManga.details;
+  }
 
   try {
-    media = await anilist.getMangaDetails(id);
+    const media = await anilist.getMangaDetails(id);
+    if (media?.id) saveManga(media);
+    return media;
   } catch (error) {
-    let cachedManga = null;
-    try {
-      cachedManga = getMangaById(id);
-    } catch (cacheError) {
-      console.error(`Failed to read cached manga details for ${id}:`, cacheError);
-    }
     if (cachedManga?.details) {
-      console.warn(`AniList manga details unavailable for ${id}; serving cached data.`);
+      console.warn(`AniList manga details unavailable for ${id}; serving stale cached data.`);
       return cachedManga.details;
     }
     error.statusCode = Number(error.statusCode || error.status) || 503;
     error.publicMessage = 'AniList is unavailable and no cached manga details are available.';
     throw error;
   }
-
-  if (media?.id) {
-    try {
-      saveManga(media);
-    } catch (error) {
-      console.error(`Failed to cache AniList manga details for ${id}:`, error);
-    }
-  }
-
-  return media;
 }
 
 function hasFreshPersonDetailsCache(row) {
@@ -1774,6 +1855,8 @@ async function handleRpc(method, args, req, res) {
       if (mediaType === 'MANGA') return await getMangaDetails(mediaId);
       throw new Error('Unsupported media type.');
     }
+    case 'getAnimeFranchiseStartDate':
+      return { franchiseStartDate: await getAnimeFranchiseStartDate(args[0]) };
     case 'searchMedia':
       return await searchOrchestrator.searchMedia(args[0], {
         hideAdultContent: args[1],

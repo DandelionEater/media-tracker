@@ -42,7 +42,6 @@ type TopNavbarProps = {
   onEditSearchTerm: (id: string) => void;
   onRemoveSearchTerm: (id: string) => void;
   onClear: () => void;
-  onDismissSearchResults: () => void;
   onRestoreSearchResults: () => void;
   username: string;
   notifications: NotificationItem[];
@@ -68,7 +67,6 @@ export function TopNavbar({
   onEditSearchTerm,
   onRemoveSearchTerm,
   onClear,
-  onDismissSearchResults,
   onRestoreSearchResults,
   username,
   notifications,
@@ -496,8 +494,10 @@ export function TopNavbar({
 
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  onDismissSearchResults();
-                  event.currentTarget.blur();
+                  // Search can already be focused by the configured startup view.
+                  // Treat Enter as an explicit search instead of turning that first
+                  // launch interaction into a blur/dismiss cycle.
+                  onRestoreSearchResults();
                 }
               }}
               onFocus={(event) => {
