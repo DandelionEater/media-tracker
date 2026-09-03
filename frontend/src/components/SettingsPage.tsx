@@ -599,6 +599,9 @@ const SHORTCUT_PRESETS = [
 
 const APP_VERSION = __APP_VERSION__;
 const GITHUB_ISSUES_URL = "https://github.com/DandelionEater/Seenary/issues";
+const GITHUB_RELEASES_API =
+  "https://api.github.com/repos/DandelionEater/Seenary/releases?per_page=20";
+const SEENARY_DOWNLOAD_URL = "https://seenary.app";
 const SETTINGS_OPEN_SECTION_KEY = "seenary.settings.open-section";
 const SETTINGS_OPEN_SECTION_LEGACY_KEY = "media-tracker.settings.open-section";
 const SETTINGS_SECTION_SCROLL_OFFSET = 88;
@@ -612,6 +615,71 @@ const SETTINGS_SECTION_IDS: SettingsSectionId[] = [
   "sync",
   "data",
 ];
+
+function compareReleaseVersions(left: string, right: string) {
+  const parse = (value: string) => {
+    const match = value.trim().replace(/^v/i, "").match(
+      /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?$/
+    );
+    return match
+      ? { core: match.slice(1, 4).map(Number), prerelease: match[4] || "" }
+      : null;
+  };
+  const a = parse(left);
+  const b = parse(right);
+  if (!a || !b) return 0;
+  for (let index = 0; index < 3; index += 1) {
+    if (a.core[index] !== b.core[index]) return a.core[index] - b.core[index];
+  }
+  if (!a.prerelease || !b.prerelease) {
+    return a.prerelease === b.prerelease ? 0 : a.prerelease ? -1 : 1;
+  }
+  return a.prerelease.localeCompare(b.prerelease, undefined, { numeric: true });
+}
+
+async function checkGitHubReleaseFromRenderer() {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 15_000);
+  try {
+    const response = await fetch(GITHUB_RELEASES_API, {
+      cache: "no-store",
+      headers: { Accept: "application/vnd.github+json" },
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new Error(`GitHub returned status ${response.status}.`);
+    const releases = (await response.json()) as Array<{
+      tag_name?: string;
+      name?: string;
+      body?: string;
+      html_url?: string;
+      draft?: boolean;
+      prerelease?: boolean;
+      published_at?: string;
+    }>;
+    const allowPrerelease = APP_VERSION.includes("-");
+    const release = releases
+      .filter((item) => item && !item.draft && (allowPrerelease || !item.prerelease))
+      .filter((item) => compareReleaseVersions(item.tag_name || "", APP_VERSION) > 0)
+      .sort((a, b) => compareReleaseVersions(b.tag_name || "", a.tag_name || ""))[0];
+
+    return {
+      ok: true,
+      updateAvailable: Boolean(release),
+      info: release
+        ? {
+            version: (release.tag_name || "").replace(/^v/i, ""),
+            releaseName: release.name || release.tag_name || "Seenary update",
+            releaseNotes: release.body || "",
+            releaseDate: release.published_at || null,
+            manualDownload: true,
+            manualDownloadUrl: release.html_url || SEENARY_DOWNLOAD_URL,
+          }
+        : null,
+    };
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
 
 function readStoredSettingsSection(): SettingsSectionId {
   if (typeof window === "undefined") {
@@ -694,6 +762,15 @@ export function SettingsPage({
   } | null>(null);
   const [isExportingBackup, setIsExportingBackup] = useState(false);
   const [isImportingBackup, setIsImportingBackup] = useState(false);
+  const [isCacheRepairConfirmOpen, setIsCacheRepairConfirmOpen] = useState(false);
+  const [isRepairingCache, setIsRepairingCache] = useState(false);
+  const [cacheRepairFeedback, setCacheRepairFeedback] = useState<{
+    kind: "success" | "error";
+    message: string;
+    removedDetails?: number;
+    removedMedia?: number;
+    restartRecommended?: boolean;
+  } | null>(null);
   const [backupPreview, setBackupPreview] = useState<{
     backup: unknown;
     inspection: BackupInspection;
@@ -749,6 +826,14 @@ export function SettingsPage({
   const [bugReportCopyState, setBugReportCopyState] = useState<
     "idle" | "copied" | "error"
   >("idle");
+  const [updateCheckState, setUpdateCheckState] = useState<{
+    checking: boolean;
+    feedback: {
+      kind: "success" | "error";
+      message: string;
+      downloadUrl?: string;
+    } | null;
+  }>({ checking: false, feedback: null });
   const bugReportCopyResetRef = useRef<number | null>(null);
   const [desktopWindow, setDesktopWindow] = useState<DesktopWindowState>({
     available: Boolean(window.desktopWindow),
@@ -1251,6 +1336,60 @@ export function SettingsPage({
       setBugReportCopyState("idle");
       bugReportCopyResetRef.current = null;
     }, 2400);
+  }
+
+  async function checkForDesktopUpdates() {
+    if (!window.desktopUpdater || updateCheckState.checking) return;
+
+    setUpdateCheckState({ checking: true, feedback: null });
+    const startedAt = Date.now();
+    try {
+      let result;
+      if (typeof window.desktopUpdater.checkForUpdates === "function") {
+        try {
+          result = await window.desktopUpdater.checkForUpdates();
+        } catch (nativeError) {
+          console.warn("Native update check unavailable; using GitHub fallback:", nativeError);
+          result = await checkGitHubReleaseFromRenderer();
+        }
+      } else {
+        result = await checkGitHubReleaseFromRenderer();
+      }
+      const remainingFeedbackDelay = 400 - (Date.now() - startedAt);
+      if (remainingFeedbackDelay > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, remainingFeedbackDelay));
+      }
+      setUpdateCheckState({
+        checking: false,
+        feedback: {
+          kind: result.ok ? "success" : "error",
+          message: result.ok
+            ? result.updateAvailable
+              ? `Seenary ${result.info?.version || "update"} is available.`
+              : "You're using the latest available version."
+            : ("message" in result ? result.message : null) ||
+              "Seenary could not check for updates.",
+          downloadUrl: result.updateAvailable
+            ? result.info?.manualDownloadUrl || SEENARY_DOWNLOAD_URL
+            : undefined,
+        },
+      });
+    } catch (error) {
+      const remainingFeedbackDelay = 400 - (Date.now() - startedAt);
+      if (remainingFeedbackDelay > 0) {
+        await new Promise((resolve) => window.setTimeout(resolve, remainingFeedbackDelay));
+      }
+      setUpdateCheckState({
+        checking: false,
+        feedback: {
+          kind: "error",
+          message:
+            error instanceof Error
+              ? `Seenary could not check for updates: ${error.message}`
+              : "Seenary could not check for updates.",
+        },
+      });
+    }
   }
 
   async function saveDesktopStartup(openAtLogin: boolean) {
@@ -1985,16 +2124,20 @@ export function SettingsPage({
     }
   }
 
+  const selectedImportKeySet = useMemo(
+    () => new Set(selectedImportKeys),
+    [selectedImportKeys]
+  );
   const selectedImportStatuses = useMemo(() => {
     if (!importPreview) {
       return [];
     }
 
     return importPreview.groups
-      .filter((group) => group.items.some((item) => selectedImportKeys.includes(getImportItemKey(item))))
+      .filter((group) => group.items.some((item) => selectedImportKeySet.has(getImportItemKey(item))))
       .map((group) => group.status)
       .filter((status, index, statuses) => statuses.indexOf(status) === index);
-  }, [importPreview, selectedImportKeys]);
+  }, [importPreview, selectedImportKeySet]);
 
   function resetActiveImportAttempt() {
     activePreviewAbortRef.current?.abort();
@@ -2064,6 +2207,10 @@ export function SettingsPage({
     const trimmedUsername = malImportUsername.trim();
     if (!trimmedUsername) return;
 
+    const controller = new AbortController();
+    activePreviewAbortRef.current?.abort();
+    activePreviewAbortRef.current = controller;
+
     try {
       setImportProvider("mal");
       setIsPreviewLoading(true);
@@ -2075,7 +2222,12 @@ export function SettingsPage({
       setOpenImportGroups({});
       setIsImportModalOpen(true);
 
-      const result = (await window.api.previewMalImport(trimmedUsername)) as ImportPreviewResponse;
+      const result = (await window.api.previewMalImport(trimmedUsername, {
+        signal: controller.signal,
+      })) as ImportPreviewResponse & { cancelled?: boolean };
+
+      if (activePreviewAbortRef.current !== controller || controller.signal.aborted) return;
+      if (result.cancelled) return;
 
       if (!result.ok || !result.preview) {
         setPreviewError(result.message || "Failed to preview MyAnimeList list.");
@@ -2096,7 +2248,10 @@ export function SettingsPage({
       console.error("Failed to preview MyAnimeList import:", error);
       setPreviewError(getErrorMessage(error, "Failed to preview MyAnimeList list."));
     } finally {
-      setIsPreviewLoading(false);
+      if (activePreviewAbortRef.current === controller) {
+        activePreviewAbortRef.current = null;
+        setIsPreviewLoading(false);
+      }
     }
   }
 
@@ -2301,6 +2456,38 @@ export function SettingsPage({
     }
   }
 
+  async function repairCachedData() {
+    if (isRepairingCache) return;
+    try {
+      setIsRepairingCache(true);
+      setCacheRepairFeedback(null);
+      const result = await window.api.repairCachedData();
+      setCacheRepairFeedback({
+        kind: result.ok ? "success" : "error",
+        message: result.message,
+        removedDetails: result.removedDetails,
+        removedMedia: result.removedMedia,
+        restartRecommended: result.restartRecommended,
+      });
+      if (result.ok) setIsCacheRepairConfirmOpen(false);
+    } catch (error) {
+      setCacheRepairFeedback({
+        kind: "error",
+        message: getErrorMessage(error, "Seenary could not repair cached data."),
+      });
+    } finally {
+      setIsRepairingCache(false);
+    }
+  }
+
+  function restartAfterCacheRepair() {
+    if (window.desktopMaintenance) {
+      window.desktopMaintenance.restartApp();
+      return;
+    }
+    window.location.reload();
+  }
+
   return (
     <div
       data-global-scroll-root
@@ -2400,6 +2587,59 @@ export function SettingsPage({
                     </>
                   )}
                 </div>
+
+                {window.desktopUpdater && (
+                  <div className="mt-4 rounded-3xl border border-white/10 bg-white/[0.025] p-4">
+                    <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <p className="text-sm font-semibold text-white/80">App updates</p>
+                        <p className="mt-1 text-xs leading-5 text-white/45">
+                          Check GitHub for a newer Seenary release without opening the tray menu.
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => void checkForDesktopUpdates()}
+                        disabled={updateCheckState.checking}
+                        className="inline-flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-[var(--app-accent)]/30 bg-[var(--app-accent-soft)] px-4 py-2.5 text-sm font-medium text-white/85 transition hover:border-[var(--app-accent)]/50 hover:bg-[var(--app-accent-soft)]/80 hover:text-white focus:outline-none focus:ring-2 focus:ring-[var(--app-accent)]/55 disabled:cursor-wait disabled:opacity-60"
+                      >
+                        <ArrowPathIcon
+                          className={`h-4 w-4 ${updateCheckState.checking ? "animate-spin" : ""}`}
+                        />
+                        {updateCheckState.checking ? "Checking..." : "Check for updates"}
+                      </button>
+                    </div>
+                    {updateCheckState.feedback && (
+                      <div className="mt-3 flex flex-wrap items-center gap-3">
+                        <p
+                          role="status"
+                          className={`text-xs ${
+                            updateCheckState.feedback.kind === "success"
+                              ? "text-emerald-200/75"
+                              : "text-rose-200/80"
+                          }`}
+                        >
+                          {updateCheckState.feedback.message}
+                        </p>
+                        {updateCheckState.feedback.downloadUrl && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              window.open(
+                                updateCheckState.feedback?.downloadUrl,
+                                "_blank",
+                                "noopener,noreferrer"
+                              )
+                            }
+                            className="text-xs font-semibold text-[var(--app-accent)] underline decoration-[var(--app-accent)]/40 underline-offset-4 hover:text-white"
+                          >
+                            Get update
+                          </button>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {desktopEnvironment.platform && (
                   <div className="mt-4 flex flex-col gap-3 rounded-3xl border border-white/10 bg-white/[0.025] p-4 sm:flex-row sm:items-center sm:justify-between">
@@ -4004,6 +4244,63 @@ export function SettingsPage({
                 )}
               </div>
 
+              <div className="rounded-3xl border border-white/10 bg-white/[0.03] p-5">
+                <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <p className="font-semibold text-white">Repair cached data</p>
+                    <p className="mt-2 max-w-3xl text-sm leading-6 text-white/65">
+                      Clears downloaded web resources, expired detail payloads, and unneeded media
+                      records. Your login, Anime and Manga lists, settings, sync queue, and history
+                      stay intact.
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={isRepairingCache}
+                    onClick={() => setIsCacheRepairConfirmOpen(true)}
+                    className="inline-flex shrink-0 items-center justify-center gap-2 rounded-2xl border border-white/10 bg-white/[0.05] px-5 py-3 text-sm font-semibold text-white/80 transition hover:bg-white/10 hover:text-white disabled:cursor-wait disabled:opacity-50"
+                  >
+                    <ArrowPathIcon className={`h-4 w-4 ${isRepairingCache ? "animate-spin" : ""}`} />
+                    {isRepairingCache ? "Repairing..." : "Repair cached data"}
+                  </button>
+                </div>
+
+                <p className="mt-4 text-xs leading-5 text-white/40">
+                  Seenary also removes detail payloads older than 30 days automatically. It never
+                  periodically clears account or library storage.
+                </p>
+
+                {cacheRepairFeedback && (
+                  <div
+                    role="status"
+                    className={`mt-4 rounded-2xl border p-4 ${
+                      cacheRepairFeedback.kind === "success"
+                        ? "border-emerald-400/20 bg-emerald-400/10"
+                        : "border-rose-400/20 bg-rose-400/10"
+                    }`}
+                  >
+                    <p className="text-sm font-semibold text-white">
+                      {cacheRepairFeedback.message}
+                    </p>
+                    {cacheRepairFeedback.kind === "success" && (
+                      <p className="mt-1 text-xs text-white/55">
+                        Removed {cacheRepairFeedback.removedDetails || 0} detail payloads and{" "}
+                        {cacheRepairFeedback.removedMedia || 0} unneeded media records.
+                      </p>
+                    )}
+                    {cacheRepairFeedback.restartRecommended && (
+                      <button
+                        type="button"
+                        onClick={restartAfterCacheRepair}
+                        className="mt-3 rounded-xl bg-white px-4 py-2 text-xs font-semibold text-black transition hover:opacity-90"
+                      >
+                        Restart Seenary
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+
               <div>
                 <SectionHeading
                   icon={CloudArrowDownIcon}
@@ -4434,6 +4731,48 @@ export function SettingsPage({
           </div>
         </div>
       </div>
+
+      <ModalShell
+        open={isCacheRepairConfirmOpen}
+        onClose={() => !isRepairingCache && setIsCacheRepairConfirmOpen(false)}
+        ariaLabel="Confirm cached data repair"
+        panelClassName="max-w-lg p-6"
+        closeOnBackdrop={!isRepairingCache}
+        showCloseButton
+      >
+        <div>
+          <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[var(--app-accent)]/25 bg-[var(--app-accent-soft)] text-white">
+            <ArrowPathIcon className={`h-6 w-6 ${isRepairingCache ? "animate-spin" : ""}`} />
+          </div>
+          <p className="mt-5 text-xs font-semibold uppercase tracking-[0.26em] text-white/40">
+            Safe maintenance
+          </p>
+          <h2 className="mt-2 text-2xl font-bold text-white">Repair cached data?</h2>
+          <p className="mt-3 text-sm leading-6 text-white/60">
+            Seenary will remove only data it can download or rebuild. Your account, linked-service
+            authorization, lists, preferences, sync queue, and activity history will be preserved.
+          </p>
+          <div className="mt-6 flex justify-end gap-3">
+            <button
+              type="button"
+              disabled={isRepairingCache}
+              onClick={() => setIsCacheRepairConfirmOpen(false)}
+              className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2.5 text-sm font-semibold text-white/70 transition hover:bg-white/8 disabled:opacity-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              disabled={isRepairingCache}
+              onClick={() => void repairCachedData()}
+              className="inline-flex items-center gap-2 rounded-2xl bg-white px-5 py-2.5 text-sm font-semibold text-black transition hover:opacity-90 disabled:cursor-wait disabled:opacity-50"
+            >
+              {isRepairingCache && <ArrowPathIcon className="h-4 w-4 animate-spin" />}
+              {isRepairingCache ? "Repairing..." : "Repair cache"}
+            </button>
+          </div>
+        </div>
+      </ModalShell>
 
       <ModalShell
         open={Boolean(clearTarget)}
@@ -5736,6 +6075,8 @@ function ImportSelectionModal({
 }) {
   const [loadingSeconds, setLoadingSeconds] = useState(0);
   const [isQuitImportConfirmOpen, setIsQuitImportConfirmOpen] = useState(false);
+  const [visibleGroupItems, setVisibleGroupItems] = useState<Record<string, number>>({});
+  const selectedKeySet = useMemo(() => new Set(selectedKeys), [selectedKeys]);
 
   const requestClose = useCallback(() => {
     if (isImporting || isPreviewLoading) {
@@ -5940,9 +6281,11 @@ function ImportSelectionModal({
                 const groupKey = getImportGroupKey(group);
                 const isManga = group.mediaType === "MANGA";
                 const groupSelectedCount = group.items.filter((item) =>
-                  selectedKeys.includes(getImportItemKey(item))
+                  selectedKeySet.has(getImportItemKey(item))
                 ).length;
                 const isOpen = openGroups[groupKey] ?? false;
+                const visibleCount = visibleGroupItems[groupKey] ?? 60;
+                const visibleItems = group.items.slice(0, visibleCount);
 
                 return (
                   <section
@@ -5994,11 +6337,12 @@ function ImportSelectionModal({
                     </div>
 
                     {isOpen && (
+                      <>
                       <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
-                        {group.items.map((item) => {
+                        {visibleItems.map((item) => {
                           const itemKey = getImportItemKey(item);
                           const itemIsManga = getImportItemMediaType(item) === "MANGA";
-                          const selected = selectedKeys.includes(itemKey);
+                          const selected = selectedKeySet.has(itemKey);
                           const title = getPreferredTitle(item.title, titleLanguage);
 
                           return (
@@ -6017,6 +6361,8 @@ function ImportSelectionModal({
                                   <img
                                     src={item.coverImage.large}
                                     alt={title}
+                                    loading="lazy"
+                                    decoding="async"
                                     className="h-full w-full object-cover"
                                   />
                                 ) : (
@@ -6088,6 +6434,23 @@ function ImportSelectionModal({
                           );
                         })}
                       </div>
+                      {visibleCount < group.items.length && (
+                        <div className="border-t border-white/10 p-4 text-center">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setVisibleGroupItems((current) => ({
+                                ...current,
+                                [groupKey]: Math.min(group.items.length, visibleCount + 60),
+                              }))
+                            }
+                            className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white/70 transition hover:bg-white/8 hover:text-white"
+                          >
+                            Show {Math.min(60, group.items.length - visibleCount)} more
+                          </button>
+                        </div>
+                      )}
+                      </>
                     )}
                   </section>
                 );
@@ -6466,9 +6829,10 @@ function ProgressActionButton({
   className?: string;
 }) {
   const hasTotal = Number(progress?.total) > 0;
+  const isIndeterminate = Boolean(active && !hasTotal);
   const percent = hasTotal
     ? Math.min(100, Math.max(0, (Number(progress?.current || 0) / Number(progress?.total)) * 100))
-    : active
+    : isIndeterminate
       ? 8
       : 0;
   const labelPercent = hasTotal ? Math.round(percent) : 0;
@@ -6489,12 +6853,25 @@ function ProgressActionButton({
         {active && (
           <span
             className={`absolute inset-y-0 left-0 bg-emerald-300/35 transition-all duration-300 ${
-              hasTotal ? "" : "animate-pulse"
+              isIndeterminate ? "animate-pulse" : ""
             }`}
             style={{ width: `${percent}%` }}
           />
         )}
-        <span className="relative z-10">{active ? `${labelPercent}%` : children}</span>
+        <span className="relative z-10 inline-flex items-center gap-2">
+          {active ? (
+            hasTotal ? (
+              `${labelPercent}%`
+            ) : (
+              <>
+                <ArrowPathIcon className="h-4 w-4 animate-spin" />
+                Working...
+              </>
+            )
+          ) : (
+            children
+          )}
+        </span>
       </button>
     </div>
   );

@@ -453,6 +453,21 @@ function createMalMappingCache() {
   };
 }
 
+async function forEachWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), Math.max(1, items.length)) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
 function scheduleAutoSync(userId) {
   if (!getAutoSyncEnabled(userId)) {
     return;
@@ -1292,7 +1307,7 @@ async function runStatelessSyncForUser(userId, payload = {}) {
         return malMangaId;
       }
 
-      for (const entry of entries) {
+      await forEachWithConcurrency(entries, 3, async (entry) => {
         try {
           const malAnimeId = await resolveMalAnimeIdForStatelessEntry(entry);
 
@@ -1325,9 +1340,9 @@ async function runStatelessSyncForUser(userId, payload = {}) {
             message: error.message || 'Failed to sync to MyAnimeList.',
           });
         }
-      }
+      });
 
-      for (const entry of deletedEntries) {
+      await forEachWithConcurrency(deletedEntries, 3, async (entry) => {
         try {
           const malAnimeId = await resolveMalAnimeIdForStatelessEntry(entry);
 
@@ -1356,10 +1371,10 @@ async function runStatelessSyncForUser(userId, payload = {}) {
             message: error.message || 'Failed to delete from MyAnimeList.',
           });
         }
-      }
+      });
 
 
-      for (const entry of mangaEntries) {
+      await forEachWithConcurrency(mangaEntries, 3, async (entry) => {
         try {
           const malMangaId = await resolveMalMangaIdForStatelessEntry(entry);
           if (!malMangaId) throw new Error('No MyAnimeList ID mapping exists for this Manga.');
@@ -1391,9 +1406,9 @@ async function runStatelessSyncForUser(userId, payload = {}) {
             message: error.message || 'Failed to sync Manga to MyAnimeList.',
           });
         }
-      }
+      });
 
-      for (const entry of deletedMangaEntries) {
+      await forEachWithConcurrency(deletedMangaEntries, 3, async (entry) => {
         try {
           const malMangaId = await resolveMalMangaIdForStatelessEntry(entry);
           if (!malMangaId) throw new Error('No MyAnimeList ID mapping exists for this Manga.');
@@ -1421,7 +1436,7 @@ async function runStatelessSyncForUser(userId, payload = {}) {
             message: error.message || 'Failed to delete Manga from MyAnimeList.',
           });
         }
-      }
+      });
     }
 
     const pending = failed;

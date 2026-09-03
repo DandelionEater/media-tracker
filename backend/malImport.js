@@ -4,6 +4,9 @@ const {
   getAnimeExternalId,
   saveAnimeSummary,
   upsertAnimeExternalId,
+  getProviderMappingMiss,
+  upsertProviderMappingMiss,
+  deleteProviderMappingMiss,
 } = require('./db');
 const { mapAnimeForDb, mapDbAnimeForFrontend } = require('./animeMapper');
 const { importAniListEntries } = require('./lists');
@@ -54,6 +57,33 @@ function getMalTitles(node) {
     .filter(Boolean);
 }
 
+function getMappingTitleSignature(node) {
+  return getMalTitles(node).map(normalizeTitle).sort().join('|');
+}
+
+function throwIfCancelled(options) {
+  if (typeof options?.isCancelled === 'function' && options.isCancelled()) {
+    const error = new Error('MyAnimeList operation cancelled.');
+    error.code = 'MAL_JOB_CANCELLED';
+    throw error;
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), Math.max(1, items.length)) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    }
+  );
+  await Promise.all(workers);
+}
+
 function scoreAniListCandidate(candidate, titles, malNode) {
   const normalizedTitles = new Set(titles.map(normalizeTitle));
   const candidateTitles = [
@@ -81,6 +111,11 @@ function scoreAniListCandidate(candidate, titles, malNode) {
 }
 
 async function resolveAniListMediaForMalNode(malNode, cache) {
+  const directCacheKey = `mal:${malNode?.id}`;
+  if (cache.has(directCacheKey)) {
+    return cache.get(directCacheKey);
+  }
+
   const titles = getMalTitles(malNode);
   const mapped = getAnimeExternalId('mal', malNode?.id);
 
@@ -136,17 +171,67 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
   let skippedNoMatch = 0;
   const mappingFailures = [];
 
-  for (const [index, item] of entries.entries()) {
-    const node = item?.node;
-    const listStatus = item?.list_status || node?.my_list_status || {};
-    const status = mapMalStatus(listStatus.status);
+  throwIfCancelled(options);
+  const validNodes = entries.map((item) => item?.node).filter((node) => node?.id);
+  const unresolvedMalIds = [];
+  for (const node of validNodes) {
+    const storedMapping = getAnimeExternalId('mal', node.id);
+    const cachedAnime = storedMapping?.anime_id ? getAnimeById(storedMapping.anime_id) : null;
+    if (cachedAnime) {
+      cache.set(`mal:${node.id}`, mapDbAnimeForFrontend(cachedAnime));
+    } else {
+      unresolvedMalIds.push(node.id);
+    }
+  }
+  const exactMatches = await anilist.getMediaByMalIds(
+    unresolvedMalIds,
+    'ANIME'
+  );
+  for (const media of exactMatches) {
+    if (!media?.id || !media?.idMal) continue;
+    cache.set(`mal:${media.idMal}`, media);
+    saveAnimeSummary(mapAnimeForDb(media));
+    upsertAnimeExternalId({
+      provider: 'mal',
+      externalId: media.idMal,
+      animeId: media.id,
+      submittedByUserId: options.submittedByUserId,
+    });
+    deleteProviderMappingMiss('mal', 'ANIME', media.idMal);
+  }
 
+  let resolvedCount = 0;
+  await mapWithConcurrency(entries, options.mappingConcurrency ?? 4, async (item, index) => {
+    throwIfCancelled(options);
+    const node = item?.node;
+    const titleSignature = getMappingTitleSignature(node);
+    let media = null;
+    if (node?.id && !getProviderMappingMiss('mal', 'ANIME', node.id, titleSignature)) {
+      media = await resolveAniListMediaForMalNode(node, cache);
+      cache.set(`mal:${node.id}`, media || null);
+      if (!media) {
+        upsertProviderMappingMiss({
+          provider: 'mal',
+          mediaType: 'ANIME',
+          externalId: node.id,
+          titleSignature,
+        });
+      }
+    }
+    resolvedCount += 1;
     emitProgress({
       stage: 'mapping',
-      current: index,
+      current: resolvedCount,
       total: entries.length,
       entryTitle: node?.title || `MAL anime #${node?.id || index + 1}`,
     });
+  });
+
+  for (const [index, item] of entries.entries()) {
+    throwIfCancelled(options);
+    const node = item?.node;
+    const listStatus = item?.list_status || node?.my_list_status || {};
+    const status = mapMalStatus(listStatus.status);
 
     if (!node?.id || !status) {
       skipped += 1;
@@ -156,12 +241,6 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
         title: node?.title || `MAL anime #${node?.id || index + 1}`,
         reason: 'missing_status',
         message: 'The MyAnimeList entry has no supported list status.',
-      });
-      emitProgress({
-        stage: 'mapping',
-        current: index + 1,
-        total: entries.length,
-        entryTitle: node?.title || `MAL anime #${node?.id || index + 1}`,
       });
       continue;
     }
@@ -177,12 +256,6 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
         reason: 'no_one_to_one_match',
         message:
           'No safe one-to-one AniList match was found. The providers may group this title differently.',
-      });
-      emitProgress({
-        stage: 'mapping',
-        current: index + 1,
-        total: entries.length,
-        entryTitle: node.title,
       });
       continue;
     }
@@ -222,12 +295,6 @@ async function buildAniListCollectionFromMalList(malList, options = {}) {
     });
     mapped += 1;
 
-    emitProgress({
-      stage: 'mapping',
-      current: index + 1,
-      total: entries.length,
-      entryTitle: node.title,
-    });
   }
 
   return {

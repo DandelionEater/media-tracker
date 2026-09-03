@@ -42,6 +42,7 @@ type TopNavbarProps = {
   onEditSearchTerm: (id: string) => void;
   onRemoveSearchTerm: (id: string) => void;
   onClear: () => void;
+  onSubmitSearch: (query: string) => void;
   onRestoreSearchResults: () => void;
   username: string;
   notifications: NotificationItem[];
@@ -67,6 +68,7 @@ export function TopNavbar({
   onEditSearchTerm,
   onRemoveSearchTerm,
   onClear,
+  onSubmitSearch,
   onRestoreSearchResults,
   username,
   notifications,
@@ -325,7 +327,11 @@ export function TopNavbar({
 
       event.preventDefault();
 
-      if (event.key !== "Enter") {
+      if (event.key === "Enter") {
+        if (input.value.trim() || resolvedSearchTerms.length) {
+          onSubmitSearch(input.value);
+        }
+      } else {
         onSearch(event.key);
       }
 
@@ -336,7 +342,7 @@ export function TopNavbar({
 
     document.addEventListener("keydown", handleGlobalSearchFocus);
     return () => document.removeEventListener("keydown", handleGlobalSearchFocus);
-  }, [focusSearchInput, hasSearch, onClear, onSearch]);
+  }, [focusSearchInput, hasSearch, onClear, onSearch, onSubmitSearch, resolvedSearchTerms.length]);
 
   return (
     <div
@@ -494,10 +500,7 @@ export function TopNavbar({
 
                 if (event.key === "Enter") {
                   event.preventDefault();
-                  // Search can already be focused by the configured startup view.
-                  // Treat Enter as an explicit search instead of turning that first
-                  // launch interaction into a blur/dismiss cycle.
-                  onRestoreSearchResults();
+                  onSubmitSearch(event.currentTarget.value);
                 }
               }}
               onFocus={(event) => {

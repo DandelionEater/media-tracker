@@ -1342,6 +1342,57 @@ async function getMangaDetailsByMalId(idMal) {
   return await fetchMangaDetails({ idMal });
 }
 
+async function getMediaByMalIds(malIds, mediaType = 'ANIME') {
+  const ids = [...new Set((malIds || []).map(Number))].filter(
+    (id) => Number.isInteger(id) && id > 0
+  );
+  const normalizedMediaType = mediaType === 'MANGA' ? 'MANGA' : 'ANIME';
+  const results = [];
+
+  for (let index = 0; index < ids.length; index += 50) {
+    const batch = ids.slice(index, index + 50);
+    const query = `
+      query ($ids: [Int]) {
+        Page(page: 1, perPage: 50) {
+          media(idMal_in: $ids, type: ${normalizedMediaType}) {
+            id
+            idMal
+            type
+            isAdult
+            title { romaji english native userPreferred }
+            coverImage { extraLarge large }
+            bannerImage
+            episodes
+            chapters
+            volumes
+            format
+            status(version: 2)
+            season
+            seasonYear
+            averageScore
+            meanScore
+            popularity
+            favourites
+            duration
+            source
+            countryOfOrigin
+            startDate { year month day }
+            endDate { year month day }
+            siteUrl
+            description
+            genres
+            synonyms
+          }
+        }
+      }
+    `;
+    const data = await anilistRequestWithRetry(query, { ids: batch });
+    results.push(...(data?.data?.Page?.media ?? []));
+  }
+
+  return results;
+}
+
 async function getAnimeListMetadata(animeIds) {
   const ids = [...new Set((animeIds || []).map(Number))].filter(
     (id) => Number.isInteger(id) && id > 0
@@ -1699,6 +1750,7 @@ module.exports = {
   findAnimeSeriesStartDate,
   getMangaDetails,
   getMangaDetailsByMalId,
+  getMediaByMalIds,
   getAnimeListMetadata,
   getAnimeSearchMediaByIds,
   getAnimeAdultFlags,

@@ -15,6 +15,12 @@ const { previewMalMangaPull } = require('./malMangaImport');
 const { previewTextImport, previewPdfImport } = require('./textImport');
 const { getMalTokenExpiry, withFreshMalAccount } = require('./malTokens');
 const {
+  createMalJob,
+  getMalJob,
+  cancelMalJob,
+  serializeMalJob,
+} = require('./malJobs');
+const {
   db,
   dbPath,
   saveAnime,
@@ -1171,7 +1177,7 @@ async function importAuthenticatedMalList(accessToken, viewer, userId) {
   return result;
 }
 
-async function finishAniListLogin({ accessToken, viewer, userId, res }) {
+async function finishAniListLogin({ accessToken, viewer, userId, res, deferImport = false }) {
   deleteAniListAccountByUserId(userId);
   deleteMalAccountByUserId(userId);
 
@@ -1191,6 +1197,15 @@ async function finishAniListLogin({ accessToken, viewer, userId, res }) {
 
   if (res) {
     createWebSession(res, userId);
+  }
+
+  if (deferImport) {
+    return {
+      ok: true,
+      message: 'Logged in with AniList. Your Anime and Manga lists are loading in the background.',
+      user: loginResult.user,
+      importPending: true,
+    };
   }
 
   let importResult;
@@ -1274,6 +1289,7 @@ async function handleAniListLoginCallback(flow, accessToken, viewer) {
       accessToken,
       viewer,
       userId: linkedAccount.user_id,
+      deferImport: true,
     });
   }
 
@@ -1357,7 +1373,7 @@ async function handleAniListLinkCallback(flow, accessToken, viewer) {
   });
 }
 
-async function finishMalLogin({ tokenData, viewer, userId, res }) {
+async function finishMalLogin({ tokenData, viewer, userId, res, deferImport = false }) {
   deleteAniListAccountByUserId(userId);
   deleteMalAccountByUserId(userId);
 
@@ -1379,6 +1395,15 @@ async function finishMalLogin({ tokenData, viewer, userId, res }) {
 
   if (res) {
     createWebSession(res, userId);
+  }
+
+  if (deferImport) {
+    return {
+      ok: true,
+      message: 'Logged in with MyAnimeList. Your Anime and Manga lists are loading in the background.',
+      user: loginResult.user,
+      importPending: true,
+    };
   }
 
   let importResult;
@@ -1407,7 +1432,7 @@ async function finishMalLogin({ tokenData, viewer, userId, res }) {
   };
 }
 
-async function linkMalToUser({ tokenData, viewer, userId }) {
+async function linkMalToUser({ tokenData, viewer, userId, deferImport = false }) {
   if (getAniListAccountByUserId(userId)) {
     return {
       ok: false,
@@ -1426,6 +1451,16 @@ async function linkMalToUser({ tokenData, viewer, userId }) {
     refreshToken: tokenData.refresh_token,
     tokenExpiresAt: getMalTokenExpiry(tokenData),
   });
+
+  if (deferImport) {
+    return {
+      ok: true,
+      linked: true,
+      importPending: true,
+      message: `Linked MyAnimeList account ${viewer.name}. Your Anime and Manga lists are loading in the background.`,
+      account: buildMalAccountPayload(getMalAccountByUserId(userId)),
+    };
+  }
 
   const importResult = await importAuthenticatedMalList(
     tokenData.access_token,
@@ -1473,6 +1508,7 @@ async function handleMalLoginCallback(flow, tokenData, viewer) {
       tokenData,
       viewer,
       userId: linkedAccount.user_id,
+      deferImport: true,
     });
   }
 
@@ -1553,6 +1589,7 @@ async function handleMalLinkCallback(flow, tokenData, viewer) {
     tokenData,
     viewer,
     userId: flow.userId,
+    deferImport: true,
   });
 }
 
@@ -1561,6 +1598,127 @@ async function fetchAnimeDetailsFromAniList(id) {
     ? await anilist.getAnimeDetails(id, { includeFranchiseStartDate: false })
     : await fetchAnimeDetailsFallback(id);
   return media;
+}
+
+async function prepareMalImportData({ username, userId, accessToken = null, job = null }) {
+  const isCancelled = () => Boolean(job?.isCancelled());
+  const report = (progress) => job?.report(progress);
+  report({ stage: 'fetching', current: 0, total: null, label: 'Fetching MyAnimeList lists...' });
+  const listOptions = {
+    accessToken,
+    isCancelled,
+    onProgress: ({ current, mediaType }) =>
+      report({
+        stage: 'fetching',
+        current,
+        total: null,
+        label: `Fetching MyAnimeList ${mediaType === 'MANGA' ? 'Manga' : 'Anime'}...`,
+      }),
+  };
+  const [animeList, mangaList] = await Promise.all([
+    mal.getUserAnimeList(username, listOptions),
+    mal.getUserMangaList(username, listOptions),
+  ]);
+  job?.throwIfCancelled();
+  const animeCount = animeList.data?.length || 0;
+  const mangaCount = mangaList.data?.length || 0;
+  const total = animeCount + mangaCount;
+  report({ stage: 'mapping', current: 0, total, label: 'Matching MyAnimeList entries...' });
+  const animeResult = await previewMalImport(animeList, {
+    submittedByUserId: userId,
+    isCancelled,
+    onProgress: ({ current, entryTitle }) =>
+      report({
+        stage: 'mapping',
+        current,
+        total,
+        label: `Matching Anime ${current} of ${animeCount}: ${entryTitle}`,
+      }),
+  });
+  job?.throwIfCancelled();
+  const mangaResult = await previewMalMangaPull(mangaList, {
+    isCancelled,
+    onProgress: ({ current, entryTitle }) =>
+      report({
+        stage: 'mapping',
+        current: animeCount + current,
+        total,
+        label: `Matching Manga ${current} of ${mangaCount}: ${entryTitle}`,
+      }),
+  });
+  job?.throwIfCancelled();
+  return { animeList, mangaList, animeResult, mangaResult, total };
+}
+
+function buildMalPullResponse(data, linkedAccount) {
+  const { animeResult, mangaResult } = data;
+  const importResult = buildLocalImportResult(
+    animeResult.preview,
+    IMPORT_STATUS_ORDER,
+    [],
+    animeResult.username || linkedAccount?.mal_username || 'MyAnimeList'
+  );
+  const pullSucceeded = importResult.ok || mangaResult.localMangaEntries.length > 0;
+  const mappingFailures = [
+    ...(animeResult.preview?.mappingFailures || []).map((failure) => ({
+      ...failure,
+      mediaType: 'ANIME',
+    })),
+    ...(mangaResult.mappingFailures || []).map((failure) => ({
+      ...failure,
+      mediaType: 'MANGA',
+    })),
+  ];
+  const unmappedCount = Number(animeResult.preview?.skipped || 0) + mangaResult.skipped;
+  const failedTitles = mappingFailures.map((failure) => failure?.title).filter(Boolean);
+  const failedTitleLabel = failedTitles.length
+    ? ` (${failedTitles.slice(0, 3).join(', ')}${failedTitles.length > 3 ? ', ...' : ''})`
+    : '';
+  if (pullSucceeded && linkedAccount?.mal_user_id) {
+    updateMalAccountImportTime(linkedAccount.mal_user_id);
+  }
+  return {
+    ...importResult,
+    ok: pullSucceeded,
+    partial: unmappedCount > 0,
+    message: pullSucceeded
+      ? `Updated Anime and Manga from MyAnimeList.${
+          unmappedCount > 0
+            ? ` ${unmappedCount} remote entr${unmappedCount === 1 ? 'y' : 'ies'}${
+                failedTitleLabel
+              } could not be mapped one-to-one and ${unmappedCount === 1 ? 'was' : 'were'} skipped.`
+            : ''
+        }`
+      : importResult.message,
+    localMangaEntries: mangaResult.localMangaEntries,
+    summary: {
+      ...(importResult.summary || {}),
+      totalFound:
+        (importResult.summary?.totalFound || 0) + mangaResult.localMangaEntries.length,
+      mangaFound: mangaResult.localMangaEntries.length,
+      mangaMapped: mangaResult.mapped,
+      mangaUnmapped: mangaResult.skipped,
+      animeUnmapped: Number(animeResult.preview?.skipped || 0),
+      mappingFailures,
+    },
+  };
+}
+
+async function pullFromMalForUser(userId, job = null) {
+  let linkedAccount = null;
+  const data = await withFreshMalAccount(userId, async (account) => {
+    if (!account?.access_token) {
+      throw new Error('Link a MyAnimeList account before updating from MyAnimeList.');
+    }
+    linkedAccount = account;
+    return await prepareMalImportData({
+      username: '@me',
+      userId,
+      accessToken: account.access_token,
+      job,
+    });
+  });
+  return buildMalPullResponse(data, linkedAccount);
 }
 
 function hasCachedStudioIds(value) {
@@ -1926,6 +2084,72 @@ async function handleRpc(method, args, req, res) {
           selectedMediaKeys: args[2],
         },
       };
+    }
+    case 'startMalPreviewJob': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+      const username = String(args[0] || '').trim();
+      if (!username) return { ok: false, message: 'Enter a MyAnimeList username first.' };
+      const job = createMalJob({
+        userId: currentSession.user.id,
+        key: `preview:${username.toLowerCase()}`,
+        run: async (context) => {
+          const data = await prepareMalImportData({
+            username,
+            userId: currentSession.user.id,
+            job: context,
+          });
+          const preview = combineMalImportPreviews(
+            data.animeResult.preview,
+            data.mangaResult.preview
+          );
+          if (!preview.totalFound) {
+            const remoteTotal =
+              (data.animeList.data?.length || 0) + (data.mangaList.data?.length || 0);
+            throw new Error(
+              remoteTotal
+                ? `MyAnimeList returned ${remoteTotal} entries for ${username}, but none could be safely matched to AniList.`
+                : `No public Anime or Manga list entries were found for ${username}.`
+            );
+          }
+          return {
+            ok: true,
+            message: `Found ${preview.totalFound} matched MyAnimeList Anime and Manga entries.`,
+            username,
+            preview,
+          };
+        },
+      });
+      return { ok: true, jobId: job.id };
+    }
+    case 'startMalPullJob': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+      const job = createMalJob({
+        userId: currentSession.user.id,
+        key: 'pull',
+        run: async (context) => await pullFromMalForUser(currentSession.user.id, context),
+      });
+      return { ok: true, jobId: job.id };
+    }
+    case 'getMalJob': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+      const job = getMalJob(args[0], currentSession.user.id);
+      return job
+        ? { ok: true, job: serializeMalJob(job) }
+        : { ok: false, message: 'MyAnimeList operation was not found or has expired.' };
+    }
+    case 'cancelMalJob': {
+      if (!currentSession.authenticated || !currentSession.user?.id) {
+        return { ok: false, message: 'You must be logged in.' };
+      }
+      return cancelMalJob(args[0], currentSession.user.id)
+        ? { ok: true, message: 'Cancellation requested.' }
+        : { ok: false, message: 'MyAnimeList operation was not found or has expired.' };
     }
     case 'previewMalImport': {
       if (!currentSession.authenticated || !currentSession.user?.id) {
@@ -2357,6 +2581,7 @@ async function handleRpc(method, args, req, res) {
         viewer: signup.viewer,
         userId: created.user.id,
         res,
+        deferImport: true,
       });
     }
     case 'startMalLogin': {
@@ -2433,6 +2658,7 @@ async function handleRpc(method, args, req, res) {
         viewer: signup.viewer,
         userId: created.user.id,
         res,
+        deferImport: true,
       });
     }
     case 'linkAniListAccount': {
@@ -2617,6 +2843,7 @@ async function handleRpc(method, args, req, res) {
         tokenData: conflict.tokenData,
         viewer: conflict.viewer,
         userId: conflict.targetUserId,
+        deferImport: true,
       });
 
       return {

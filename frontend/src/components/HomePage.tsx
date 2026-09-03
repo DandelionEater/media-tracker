@@ -47,6 +47,7 @@ import {
 
 const HOME_DISCOVER_STATE_STORAGE_KEY = "seenary.discover-state";
 const HOME_DISCOVER_STATE_LEGACY_STORAGE_KEY = "media-tracker.discover-state";
+const HOME_DISCOVER_STATE_VERSION = 2;
 const HOME_PERSONAL_LAYOUT_STORAGE_KEY = "seenary.personal-layout-order";
 const HOME_PERSONAL_LAYOUT_LEGACY_STORAGE_KEY = "media-tracker.personal-layout-order";
 const HOME_MANGA_PERSONAL_LAYOUT_STORAGE_KEY = "seenary.manga-personal-layout-order";
@@ -436,6 +437,8 @@ type DiscoverShelfPageState = {
 };
 
 type SavedDiscoverState = {
+  version: number;
+  savedAt: number;
   activeDiscoverShelfId: string | null;
   discoverShelfPages: Record<string, DiscoverShelfPageState>;
   overviewScrollTop: number;
@@ -1100,7 +1103,7 @@ export function HomePage({
     const activeStateKey = nextActiveDiscoverShelfId
       ? getDiscoverShelfStateKey(mediaType, nextActiveDiscoverShelfId)
       : null;
-    const pages =
+    const pagesWithScroll =
       activeStateKey && nextDiscoverShelfPages[activeStateKey]
         ? {
             ...nextDiscoverShelfPages,
@@ -1110,11 +1113,36 @@ export function HomePage({
             },
           }
         : nextDiscoverShelfPages;
+    const pages = Object.fromEntries(
+      Object.entries(pagesWithScroll).flatMap(([stateKey, state]) => {
+        if (state.isLoading) {
+          return [];
+        }
+
+        return [[
+          stateKey,
+          {
+            ...state,
+            page: state.pageInfo?.currentPage ?? state.page,
+            isLoading: false,
+            isLoadingMore: false,
+            loadMoreError: null,
+          },
+        ]];
+      })
+    );
+    const persistedActiveShelfId =
+      nextActiveDiscoverShelfId &&
+      Object.keys(pages).some((stateKey) => stateKey.endsWith(`:${nextActiveDiscoverShelfId}`))
+        ? nextActiveDiscoverShelfId
+        : null;
 
     window.localStorage.setItem(
       HOME_DISCOVER_STATE_STORAGE_KEY,
       JSON.stringify({
-        activeDiscoverShelfId: nextActiveDiscoverShelfId,
+        version: HOME_DISCOVER_STATE_VERSION,
+        savedAt: Date.now(),
+        activeDiscoverShelfId: persistedActiveShelfId,
         discoverShelfPages: pages,
         overviewScrollTop: discoverOverviewScrollTop.current,
         overviewRailScrolls: discoverOverviewRailScrolls.current,
@@ -5790,15 +5818,55 @@ function readSavedDiscoverState(): SavedDiscoverState | null {
       return null;
     }
 
+    if (
+      parsed.version !== HOME_DISCOVER_STATE_VERSION ||
+      !Number.isFinite(parsed.savedAt) ||
+      Date.now() - parsed.savedAt > HOME_DISCOVER_CACHE_TTL_MS
+    ) {
+      return null;
+    }
+
+    const discoverShelfPages = Object.fromEntries(
+      Object.entries(parsed.discoverShelfPages ?? {}).flatMap(([stateKey, candidate]) => {
+        if (
+          !candidate ||
+          typeof candidate !== "object" ||
+          candidate.isLoading ||
+          !candidate.shelf ||
+          typeof candidate.shelf.id !== "string" ||
+          !Array.isArray(candidate.shelf.items) ||
+          !Array.isArray(candidate.shelf.pills) ||
+          !Array.isArray(candidate.items)
+        ) {
+          return [];
+        }
+
+        return [[
+          stateKey,
+          {
+            ...candidate,
+            page: candidate.pageInfo?.currentPage ?? candidate.page ?? 1,
+            isLoading: false,
+            isLoadingMore: false,
+            scrollTop: Number.isFinite(candidate.scrollTop) ? candidate.scrollTop : 0,
+            loadMoreError: null,
+          },
+        ]];
+      })
+    ) as Record<string, DiscoverShelfPageState>;
+    const activeDiscoverShelfId =
+      typeof parsed.activeDiscoverShelfId === "string" &&
+      Object.keys(discoverShelfPages).some((stateKey) =>
+        stateKey.endsWith(`:${parsed.activeDiscoverShelfId}`)
+      )
+        ? parsed.activeDiscoverShelfId
+        : null;
+
     return {
-      activeDiscoverShelfId:
-        typeof parsed.activeDiscoverShelfId === "string"
-          ? parsed.activeDiscoverShelfId
-          : null,
-      discoverShelfPages:
-        parsed.discoverShelfPages && typeof parsed.discoverShelfPages === "object"
-          ? parsed.discoverShelfPages
-          : {},
+      version: HOME_DISCOVER_STATE_VERSION,
+      savedAt: parsed.savedAt,
+      activeDiscoverShelfId,
+      discoverShelfPages,
       overviewScrollTop:
         typeof parsed.overviewScrollTop === "number" ? parsed.overviewScrollTop : 0,
       overviewRailScrolls:

@@ -16,6 +16,7 @@ let latestUpdateInfo = null;
 let downloadedUpdateInfo = null;
 let handlersRegistered = false;
 let updaterEventsRegistered = false;
+let activeCheckPromise = null;
 
 function isAutoUpdateAvailable() {
   return process.platform !== 'linux';
@@ -133,22 +134,46 @@ function scheduleRecurringChecks() {
 }
 
 function checkForUpdates(win = null) {
-  if (!app.isPackaged || isChecking || isDownloading) {
-    return;
+  if (!app.isPackaged || isDownloading) {
+    return Promise.resolve({
+      ok: false,
+      message: !app.isPackaged
+        ? 'Update checks are available after installing the desktop app.'
+        : 'An update is already downloading.',
+    });
   }
 
   activeWindow = win || activeWindow;
+  if (activeCheckPromise) return activeCheckPromise;
 
   if (isManualUpdatePlatform()) {
-    checkGitHubForManualUpdate().catch((error) => {
-      handleUpdateError(error);
-    });
-    return;
+    activeCheckPromise = checkGitHubForManualUpdate()
+      .then((info) => ({ ok: true, updateAvailable: Boolean(info), info }))
+      .catch((error) => {
+        handleUpdateError(error);
+        return { ok: false, message: error.message || 'Seenary could not check for updates.' };
+      })
+      .finally(() => {
+        activeCheckPromise = null;
+      });
+    return activeCheckPromise;
   }
 
-  autoUpdater.checkForUpdates().catch((error) => {
-    handleUpdateError(error);
-  });
+  activeCheckPromise = autoUpdater
+    .checkForUpdates()
+    .then((result) => ({
+      ok: true,
+      updateAvailable: result?.isUpdateAvailable === true,
+      info: result?.updateInfo ? normalizeUpdateInfo(result.updateInfo) : null,
+    }))
+    .catch((error) => {
+      handleUpdateError(error);
+      return { ok: false, message: error.message || 'Seenary could not check for updates.' };
+    })
+    .finally(() => {
+      activeCheckPromise = null;
+    });
+  return activeCheckPromise;
 }
 
 function registerUpdaterIpc() {
@@ -157,6 +182,8 @@ function registerUpdaterIpc() {
   }
 
   handlersRegistered = true;
+
+  ipcMain.handle('updater:check', () => checkForUpdates(activeWindow));
 
   ipcMain.handle('updater:download', async () => {
     if (UPDATE_DIALOG_PREVIEW) {
@@ -251,7 +278,7 @@ async function checkGitHubForManualUpdate() {
     const release = selectNewerRelease(releases, app.getVersion());
     isChecking = false;
 
-    if (!release) return;
+    if (!release) return null;
 
     latestUpdateInfo = normalizeUpdateInfo({
       version: normalizeVersion(release.tag_name),
@@ -262,6 +289,7 @@ async function checkGitHubForManualUpdate() {
       manualDownloadUrl: MANUAL_DOWNLOAD_URL,
     });
     sendToRenderer('updater:update-available', latestUpdateInfo);
+    return latestUpdateInfo;
   } catch (error) {
     isChecking = false;
     throw error;

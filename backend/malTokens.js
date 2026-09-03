@@ -5,6 +5,7 @@ const {
 } = require('./db');
 
 const REFRESH_SKEW_MS = 2 * 60 * 1000;
+const refreshRequestsByUserId = new Map();
 
 function getMalTokenExpiry(tokenData) {
   const expiresIn = Number(tokenData?.expires_in);
@@ -53,17 +54,32 @@ async function getFreshMalAccountByUserId(userId) {
     return account;
   }
 
-  return await refreshMalAccount(account);
+  return await refreshMalAccountByUserId(userId);
 }
 
 async function refreshMalAccountByUserId(userId) {
-  const account = getMalAccountByUserId(userId);
+  const normalizedUserId = Number(userId);
+  const existingRequest = refreshRequestsByUserId.get(normalizedUserId);
+  if (existingRequest) return await existingRequest;
 
-  if (!account?.access_token) {
-    return account;
+  const request = (async () => {
+    const account = getMalAccountByUserId(normalizedUserId);
+
+    if (!account?.access_token) {
+      return account;
+    }
+
+    return await refreshMalAccount(account);
+  })();
+  refreshRequestsByUserId.set(normalizedUserId, request);
+
+  try {
+    return await request;
+  } finally {
+    if (refreshRequestsByUserId.get(normalizedUserId) === request) {
+      refreshRequestsByUserId.delete(normalizedUserId);
+    }
   }
-
-  return await refreshMalAccount(account);
 }
 
 async function withFreshMalAccount(userId, operation) {

@@ -778,12 +778,30 @@ function App() {
 
     window.addEventListener("focus", refreshLiveState);
     document.addEventListener("visibilitychange", refreshLiveState);
+    const refreshImportedLibrary = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        ok?: boolean;
+        provider?: string;
+        message?: string;
+      }>).detail;
+
+      void loadTrackedEntries();
+      showSyncToast(
+        detail?.ok ? "success" : "error",
+        detail?.ok
+          ? `${detail.provider || "External"} library ready`
+          : `${detail?.provider || "External"} import failed`,
+        detail?.message || "Your background library import finished."
+      );
+    };
+    window.addEventListener("seenary:local-library-updated", refreshImportedLibrary);
 
     return () => {
       window.removeEventListener("focus", refreshLiveState);
       document.removeEventListener("visibilitychange", refreshLiveState);
+      window.removeEventListener("seenary:local-library-updated", refreshImportedLibrary);
     };
-  }, [authUser, loadTrackedEntries]);
+  }, [authUser, loadTrackedEntries, showSyncToast]);
 
   const handleUpdateSettings = async (nextSettings: Partial<AppSettings>) => {
     const optimisticSettings = normalizeAppSettings({
@@ -1322,6 +1340,20 @@ function App() {
     }, SEARCH_DEBOUNCE_MS);
   };
 
+  const handleSubmitSearch = (rawQuery: string) => {
+    const query = rawQuery.trim();
+    const queries = [...resolvedSearchTerms.map((term) => term.query), query];
+    if (!queries.some((candidate) => candidate.trim())) return;
+
+    if (searchDebounceTimerRef.current !== null) {
+      window.clearTimeout(searchDebounceTimerRef.current);
+      searchDebounceTimerRef.current = null;
+    }
+    if (query !== searchQuery) setSearchQuery(query);
+    setActiveSearchResolution(null);
+    void runResolvedSearch(queries, query, resolvedSearchTerms, true);
+  };
+
   const handleCommitSearchTerm = (selectedMatchTypes: SearchMatchType[]) => {
     const query = searchQuery.trim();
     if (
@@ -1762,6 +1794,7 @@ function App() {
                 onCommitSearchTerm={handleCommitSearchTerm}
                 onEditSearchTerm={handleEditSearchTerm}
                 onRemoveSearchTerm={handleRemoveSearchTerm}
+                onSubmitSearch={handleSubmitSearch}
                 onClear={() => {
                   if (searchDebounceTimerRef.current !== null) {
                     window.clearTimeout(searchDebounceTimerRef.current);

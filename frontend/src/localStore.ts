@@ -118,6 +118,7 @@ const LEGACY_MIGRATED_PREFIX = "seenary.indexeddb-migrated.";
 const FALLBACK_STATE_PREFIX = "seenary.local-fallback.";
 const BACKUP_FORMAT = "seenary.local-backup";
 const BACKUP_VERSION = 4;
+const DETAILS_CACHE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
 type ValidSeenaryBackup = SeenaryBackup & {
   format: string;
@@ -625,6 +626,7 @@ function normalizeAnime(media: AnimeMedia): StoredAnime | null {
           : null,
     },
     details: media,
+    details_cached_at: new Date().toISOString(),
   };
 }
 
@@ -662,6 +664,7 @@ function normalizeManga(media: AnimeMedia): StoredManga | null {
       mal: media.idMal ? String(media.idMal) : null,
     },
     details: media,
+    details_cached_at: new Date().toISOString(),
   };
 }
 
@@ -697,6 +700,7 @@ function normalizePreviewAnime(item: ImportPreviewItem): StoredAnime | null {
       mal: item.source?.provider === "mal" ? String(item.source.animeId) : null,
     },
     details: item.media ?? null,
+    details_cached_at: item.media ? new Date().toISOString() : null,
   };
 }
 
@@ -866,6 +870,65 @@ function mangaEntriesMatch(left: LocalMangaListEntry | null, right: LocalMangaLi
 }
 
 export const localStore = {
+  async pruneExpiredCachedDetails(
+    userId: number,
+    maxAgeMs = DETAILS_CACHE_MAX_AGE_MS
+  ) {
+    const state = await readState(userId);
+    const cutoff = Date.now() - Math.max(0, maxAgeMs);
+    let removedDetails = 0;
+
+    for (const media of [...Object.values(state.anime), ...Object.values(state.manga)]) {
+      if (!media.details || !media.details_cached_at) continue;
+      const cachedAt = new Date(media.details_cached_at).getTime();
+      if (!Number.isFinite(cachedAt) || cachedAt >= cutoff) continue;
+      media.details = null;
+      media.details_cached_at = null;
+      media.tags = [];
+      media.recommendations = [];
+      removedDetails += 1;
+    }
+
+    if (removedDetails > 0) await writeState(userId, state);
+    return { ok: true, removedDetails };
+  },
+
+  async repairCachedData(userId: number) {
+    const state = await readState(userId);
+    const trackedAnimeIds = new Set(Object.keys(state.entries));
+    const trackedMangaIds = new Set(Object.keys(state.mangaEntries));
+    let removedDetails = 0;
+    let removedMedia = 0;
+
+    for (const [key, media] of Object.entries(state.anime)) {
+      if (!trackedAnimeIds.has(key)) {
+        delete state.anime[key];
+        removedMedia += 1;
+        continue;
+      }
+      if (media.details) removedDetails += 1;
+      media.details = null;
+      media.details_cached_at = null;
+      media.tags = [];
+      media.recommendations = [];
+    }
+    for (const [key, media] of Object.entries(state.manga)) {
+      if (!trackedMangaIds.has(key)) {
+        delete state.manga[key];
+        removedMedia += 1;
+        continue;
+      }
+      if (media.details) removedDetails += 1;
+      media.details = null;
+      media.details_cached_at = null;
+      media.tags = [];
+      media.recommendations = [];
+    }
+
+    await writeState(userId, state);
+    return { ok: true, removedDetails, removedMedia };
+  },
+
   async getSettings(userId: number) {
     const state = await readState(userId);
     return normalizeSettings(state.settings);

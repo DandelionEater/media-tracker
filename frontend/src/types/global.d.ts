@@ -206,8 +206,9 @@ declare global {
           }>;
         };
       }>;
-      previewMalImport: (username: string) => Promise<{
+      previewMalImport: (username: string, options?: { signal?: AbortSignal }) => Promise<{
         ok: boolean;
+        cancelled?: boolean;
         message?: string;
         username?: string;
         preview?: {
@@ -464,6 +465,7 @@ declare global {
       startAniListLogin: () => Promise<
         AuthResponse & {
           needsProfile?: boolean;
+          importPending?: boolean;
           anilist?: {
             id: number;
             username: string;
@@ -477,6 +479,7 @@ declare global {
       >;
       completeAniListLogin: (username: string) => Promise<
         AuthResponse & {
+          importPending?: boolean;
           import?: {
             ok: boolean;
             message: string;
@@ -486,6 +489,7 @@ declare global {
       startMalLogin: () => Promise<
         AuthResponse & {
           needsProfile?: boolean;
+          importPending?: boolean;
           mal?: {
             id: number;
             username: string;
@@ -499,6 +503,7 @@ declare global {
       >;
       completeMalLogin: (username: string) => Promise<
         AuthResponse & {
+          importPending?: boolean;
           import?: {
             ok: boolean;
             message: string;
@@ -727,8 +732,22 @@ declare global {
         syncFailuresRestored?: number;
         pendingDeletionsRestored?: number;
       }>;
+      repairCachedData: () => Promise<{
+        ok: boolean;
+        message: string;
+        removedDetails?: number;
+        removedMedia?: number;
+        clearedWebCache?: boolean;
+        restartRecommended?: boolean;
+      }>;
     };
     desktopUpdater?: {
+      checkForUpdates?: () => Promise<{
+        ok: boolean;
+        updateAvailable?: boolean;
+        info?: DesktopUpdateInfo | null;
+        message?: string;
+      }>;
       onUpdateAvailable: (callback: (info: DesktopUpdateInfo) => void) => () => void;
       onUpdateDownloading: (
         callback: (progress: {
@@ -753,6 +772,14 @@ declare global {
         availableUpdate?: DesktopUpdateInfo | null;
         downloadedUpdate?: DesktopUpdateInfo | null;
       }>;
+    };
+    desktopMaintenance?: {
+      repairCaches: () => Promise<{
+        ok: boolean;
+        clearedWebCache: boolean;
+        message?: string;
+      }>;
+      restartApp: () => void;
     };
     desktopShortcuts?: {
       getHideShowShortcut: () => Promise<{

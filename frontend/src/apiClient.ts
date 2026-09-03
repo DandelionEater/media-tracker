@@ -2,6 +2,7 @@ import { DEFAULT_LOCAL_SETTINGS, localStore } from "./localStore";
 import type { AuthImportResult } from "./types/domain";
 
 type ApiClient = typeof window.api;
+type SyncProgressPayload = Parameters<Parameters<ApiClient["onSyncProgress"]>[0]>[0];
 
 type ImportOptions = {
   signal?: AbortSignal;
@@ -19,9 +20,72 @@ let activeUserId: number | null = null;
 let activeSyncProvider: "anilist" | "mal" | null | undefined;
 let localAutoSyncTimer: number | null = null;
 const localAutoSyncListeners = new Set<(result: AutoSyncCompleteEvent) => void>();
+const localSyncProgressListeners = new Set<(progress: SyncProgressPayload) => void>();
+const malPreviewCache = new Map<string, AuthImportResult>();
+const cachePrunedUserIds = new Set<number>();
 const LOCAL_AUTO_SYNC_DELAY_MS = 15_000;
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 const LONG_OPERATION_TIMEOUT_MS = 120_000;
+const LOCAL_LIBRARY_UPDATED_EVENT = "seenary:local-library-updated";
+
+function emitLocalSyncProgress(progress: SyncProgressPayload) {
+  localSyncProgressListeners.forEach((listener) => listener(progress));
+}
+
+async function runMalJob(
+  startMethod: "startMalPreviewJob" | "startMalPullJob",
+  args: unknown[] = [],
+  options: { signal?: AbortSignal; operation?: "pull-mal" } = {}
+) {
+  throwIfAborted(options.signal);
+  const start = await rpc(startMethod, args, { signal: options.signal });
+  if (!start.ok || !start.jobId) {
+    throw new Error(start.message || "Failed to start MyAnimeList operation.");
+  }
+
+  try {
+    while (true) {
+      if (options.signal?.aborted) {
+        await rpc("cancelMalJob", [start.jobId]).catch(() => undefined);
+        throwIfAborted(options.signal);
+      }
+
+      const status = await rpc("getMalJob", [start.jobId], { signal: options.signal });
+      if (!status.ok || !status.job) {
+        throw new Error(status.message || "MyAnimeList operation was lost.");
+      }
+
+      if (options.operation && status.job.progress) {
+        emitLocalSyncProgress({
+          operation: options.operation,
+          stage:
+            status.job.progress.stage === "queued"
+              ? "fetching"
+              : status.job.progress.stage,
+          label: status.job.progress.label || "Working with MyAnimeList...",
+          current: status.job.progress.current ?? null,
+          total: status.job.progress.total ?? null,
+          updatedAt: new Date(status.job.updatedAt || Date.now()).toISOString(),
+        });
+      }
+
+      if (status.job.status === "complete") return status.job.result;
+      if (status.job.status === "failed") {
+        throw new Error(status.job.error || "MyAnimeList operation failed.");
+      }
+      if (status.job.status === "cancelled") {
+        throw new DOMException("MyAnimeList operation cancelled.", "AbortError");
+      }
+
+      await new Promise((resolve) => window.setTimeout(resolve, 500));
+    }
+  } catch (error) {
+    if (options.signal?.aborted) {
+      await rpc("cancelMalJob", [start.jobId]).catch(() => undefined);
+    }
+    throw error;
+  }
+}
 
 async function rpc(
   method: string,
@@ -207,6 +271,7 @@ async function startAniListLogin() {
   }
 
   await saveAuthImportLocally(result);
+  startDeferredProviderImport(result, "AniList");
 
   return result;
 }
@@ -225,8 +290,53 @@ async function completeAniListLogin(username: string) {
   }
 
   await saveAuthImportLocally(result);
+  startDeferredProviderImport(result, "AniList");
 
   return result;
+}
+
+function startDeferredProviderImport(
+  result: AuthImportResult,
+  provider: "AniList" | "MyAnimeList"
+) {
+  const userId = Number(result?.user?.id ?? activeUserId);
+
+  if (!result?.importPending || !Number.isInteger(userId) || userId <= 0) {
+    return;
+  }
+
+  void (async () => {
+    try {
+      const pullResult = provider === "AniList"
+        ? await rpc("pullFromAniList", [], { timeoutMs: LONG_OPERATION_TIMEOUT_MS })
+        : await runMalJob("startMalPullJob");
+
+      if (!pullResult.ok) {
+        throw new Error(pullResult.message || `Failed to load your ${provider} library.`);
+      }
+
+      const summary = await localStore.replaceEntriesFromImport(userId, pullResult);
+      window.dispatchEvent(new CustomEvent(LOCAL_LIBRARY_UPDATED_EVENT, {
+        detail: {
+          ok: true,
+          provider,
+          message: `Your ${provider} library is ready. ${summary.created} created, ${summary.updated} updated.`,
+        },
+      }));
+    } catch (error) {
+      console.error(`Deferred ${provider} import failed:`, error);
+      window.dispatchEvent(new CustomEvent(LOCAL_LIBRARY_UPDATED_EVENT, {
+        detail: {
+          ok: false,
+          provider,
+          message:
+            error instanceof Error
+              ? error.message
+              : `Failed to load your ${provider} library in the background.`,
+        },
+      }));
+    }
+  })();
 }
 
 async function linkAniListAccount() {
@@ -284,6 +394,7 @@ async function startMalLogin() {
   }
 
   await saveAuthImportLocally(result);
+  startDeferredProviderImport(result, "MyAnimeList");
 
   return result;
 }
@@ -302,6 +413,7 @@ async function completeMalLogin(username: string) {
   }
 
   await saveAuthImportLocally(result);
+  startDeferredProviderImport(result, "MyAnimeList");
 
   return result;
 }
@@ -317,6 +429,7 @@ async function linkMalAccount() {
   const popup = openPopup(start.authUrl, "seenary-mal-oauth");
   const result = await waitForMalFlow("pollMalLink", start.flowId, popup);
   await saveAuthImportLocally(result);
+  startDeferredProviderImport(result, "MyAnimeList");
   return result;
 }
 
@@ -362,6 +475,14 @@ async function requireActiveUserId() {
 async function getSession() {
   const session = await rpc("getSession");
   activeUserId = session?.user?.id ?? null;
+  const sessionUserId = activeUserId;
+  if (sessionUserId && !cachePrunedUserIds.has(sessionUserId)) {
+    cachePrunedUserIds.add(sessionUserId);
+    void localStore.pruneExpiredCachedDetails(sessionUserId).catch((error) => {
+      cachePrunedUserIds.delete(sessionUserId);
+      console.warn("Failed to prune expired media details cache:", error);
+    });
+  }
   return session;
 }
 
@@ -568,30 +689,44 @@ export function installApiClient() {
         throw error;
       }
     },
-    previewMalImport: (username) =>
-      rpc("previewMalImport", [username], { timeoutMs: LONG_OPERATION_TIMEOUT_MS }),
+    previewMalImport: async (username, options?: ImportOptions) => {
+      try {
+        const result = await runMalJob("startMalPreviewJob", [username], {
+          signal: options?.signal,
+        });
+        malPreviewCache.set(username.trim().toLowerCase(), result);
+        return result;
+      } catch (error) {
+        if (isAbortError(error)) return buildCancelledImportResult();
+        throw error;
+      }
+    },
     importMal: async (username, selectedStatuses, selectedMediaKeys, options?: ImportOptions) => {
       try {
         throwIfAborted(options?.signal);
         const userId = await requireActiveUserId();
         throwIfAborted(options?.signal);
-        const result = await rpc("importMal", [username, selectedStatuses, selectedMediaKeys], {
-          signal: options?.signal,
-          timeoutMs: LONG_OPERATION_TIMEOUT_MS,
-        });
-        throwIfAborted(options?.signal);
-        if (result?.localEntries || result?.localMangaEntries) {
-          const summary = await localStore.replaceEntriesFromImport(userId, result);
-          return {
-            ...result,
-            summary: {
-              ...(result.summary ?? {}),
-              ...summary,
-              selectedMediaKeys,
-            },
-          };
-        }
-        return result;
+        const cacheKey = username.trim().toLowerCase();
+        const previewResult =
+          malPreviewCache.get(cacheKey) ??
+          await runMalJob("startMalPreviewJob", [username], { signal: options?.signal });
+        const result = await importLocalEntries(
+          userId,
+          previewResult,
+          selectedMediaKeys,
+          "MyAnimeList",
+          options?.signal
+        );
+        malPreviewCache.delete(cacheKey);
+        return {
+          ...result,
+          summary: {
+            ...(previewResult.summary ?? {}),
+            ...(result.summary ?? {}),
+            selectedStatuses,
+            selectedMediaKeys,
+          },
+        };
       } catch (error) {
         if (isAbortError(error)) {
           return buildCancelledImportResult();
@@ -712,7 +847,7 @@ export function installApiClient() {
     },
     pullFromMal: async () => {
       const userId = await requireActiveUserId();
-      const result = await rpc("pullFromMal", [], { timeoutMs: LONG_OPERATION_TIMEOUT_MS });
+      const result = await runMalJob("startMalPullJob", [], { operation: "pull-mal" });
       if (result.ok) {
         const summary = await localStore.replaceEntriesFromImport(userId, result);
         const message = `Updated local Anime and Manga from MyAnimeList. ${summary.created} created, ${summary.updated} updated.${
@@ -840,6 +975,7 @@ export function installApiClient() {
         timeoutMs: LONG_OPERATION_TIMEOUT_MS,
       });
       await saveAuthImportLocally(result);
+      startDeferredProviderImport(result, "MyAnimeList");
       return result;
     },
     unlinkMalAccount: (password) => rpc("unlinkMalAccount", [password]),
@@ -986,7 +1122,34 @@ export function installApiClient() {
       }
       return result;
     },
-    onSyncProgress: () => () => undefined,
+    repairCachedData: async () => {
+      const userId = await requireActiveUserId();
+      const localResult = await localStore.repairCachedData(userId);
+      const desktopResult = window.desktopMaintenance
+        ? await window.desktopMaintenance.repairCaches()
+        : { ok: true, clearedWebCache: false };
+      if (!desktopResult.ok) {
+        return {
+          ...localResult,
+          ok: false,
+          message: desktopResult.message || "Seenary could not clear the desktop web cache.",
+        };
+      }
+      return {
+        ok: true,
+        message: desktopResult.clearedWebCache
+          ? "Cached data was repaired. Your account, lists, settings, and sync data were preserved."
+          : "Cached library data was repaired. This desktop version cannot clear its web cache, so that part was safely skipped. Your account, lists, settings, and sync data were preserved.",
+        removedDetails: localResult.removedDetails,
+        removedMedia: localResult.removedMedia,
+        clearedWebCache: desktopResult.clearedWebCache,
+        restartRecommended: true,
+      };
+    },
+    onSyncProgress: (callback) => {
+      localSyncProgressListeners.add(callback);
+      return () => localSyncProgressListeners.delete(callback);
+    },
     onAutoSyncComplete: (callback) => {
       localAutoSyncListeners.add(callback);
       return () => localAutoSyncListeners.delete(callback);

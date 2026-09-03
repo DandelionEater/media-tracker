@@ -103,6 +103,7 @@ assert.equal(stableUpdater.allowPrerelease, false);
 
 const linuxUpdater = exerciseUpdater('0.1.9-beta', 'linux');
 const linuxState = linuxUpdater.handlers.get('updater:get-state')();
+assert.equal(typeof linuxUpdater.handlers.get('updater:check'), 'function');
 assert.equal(linuxState.available, false);
 assert.equal(linuxState.manualDownload, true);
 assert.match(updaterSource, /api\.github\.com\/repos\/DandelionEater\/Seenary\/releases/);

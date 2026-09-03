@@ -9,6 +9,7 @@ function getSystemLocaleInfo() {
 }
 
 contextBridge.exposeInMainWorld('desktopUpdater', {
+  checkForUpdates: () => ipcRenderer.invoke('updater:check'),
   onUpdateAvailable: (callback) => {
     const handler = (_event, payload) => callback(payload);
     ipcRenderer.on('updater:update-available', handler);
@@ -66,6 +67,11 @@ contextBridge.exposeInMainWorld('desktopWindow', {
     ipcRenderer.on('window-state:changed', handler);
     return () => ipcRenderer.removeListener('window-state:changed', handler);
   },
+});
+
+contextBridge.exposeInMainWorld('desktopMaintenance', {
+  repairCaches: () => ipcRenderer.invoke('app:repair-caches'),
+  restartApp: () => ipcRenderer.send('app:restart'),
 });
 
 contextBridge.exposeInMainWorld('desktopConfig', {

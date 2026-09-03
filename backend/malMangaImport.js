@@ -1,10 +1,55 @@
 const anilist = require('./anilist');
 const { importAniListMangaEntries } = require('./lists');
+const {
+  saveManga,
+  getMangaById,
+  getMangaExternalId,
+  upsertMangaExternalId,
+  getProviderMappingMiss,
+  upsertProviderMappingMiss,
+  deleteProviderMappingMiss,
+} = require('./db');
 
 const IMPORT_STATUS_ORDER = ['watching', 'planned', 'completed', 'paused', 'dropped'];
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeTitle(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+}
+
+function getMappingTitleSignature(node) {
+  return [
+    node?.title,
+    node?.alternative_titles?.en,
+    node?.alternative_titles?.ja,
+    ...(node?.alternative_titles?.synonyms || []),
+  ].map(normalizeTitle).filter(Boolean).sort().join('|');
+}
+
+function throwIfCancelled(options) {
+  if (typeof options?.isCancelled === 'function' && options.isCancelled()) {
+    const error = new Error('MyAnimeList operation cancelled.');
+    error.code = 'MAL_JOB_CANCELLED';
+    throw error;
+  }
+}
+
+async function mapWithConcurrency(items, concurrency, worker) {
+  let nextIndex = 0;
+  const workers = Array.from(
+    { length: Math.min(Math.max(1, concurrency), Math.max(1, items.length)) },
+    async () => {
+      while (nextIndex < items.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        await worker(items[index], index);
+      }
+    }
+  );
+  await Promise.all(workers);
 }
 
 async function resolveAniListMangaByMalId(malMangaId) {
@@ -49,7 +94,81 @@ async function buildAniListMangaCollectionFromMalList(malList, options = {}) {
   let skipped = 0;
   const mappingFailures = [];
 
+  throwIfCancelled(options);
+  const mediaByMalId = new Map();
+  const validNodes = entries.map((item) => item?.node).filter((node) => node?.id);
+  const unresolvedMalIds = [];
+  for (const node of validNodes) {
+    const storedMapping = getMangaExternalId('mal', node.id);
+    const cachedManga = storedMapping?.manga_id ? getMangaById(storedMapping.manga_id) : null;
+    if (cachedManga?.details) {
+      mediaByMalId.set(String(node.id), cachedManga.details);
+    } else {
+      unresolvedMalIds.push(node.id);
+    }
+  }
+  const exactMatches = await anilist.getMediaByMalIds(
+    unresolvedMalIds,
+    'MANGA'
+  );
+  for (const media of exactMatches) {
+    if (!media?.id || !media?.idMal) continue;
+    mediaByMalId.set(String(media.idMal), media);
+    saveManga(media);
+    upsertMangaExternalId({ provider: 'mal', externalId: media.idMal, mangaId: media.id });
+    deleteProviderMappingMiss('mal', 'MANGA', media.idMal);
+  }
+
+  let resolvedCount = 0;
+  await mapWithConcurrency(entries, options.mappingConcurrency ?? 4, async (item, index) => {
+    throwIfCancelled(options);
+    const node = item?.node;
+    const malMangaId = node?.id;
+    let media = malMangaId ? mediaByMalId.get(String(malMangaId)) : null;
+    const storedMapping = malMangaId ? getMangaExternalId('mal', malMangaId) : null;
+    if (!media && storedMapping?.manga_id) {
+      media = getMangaById(storedMapping.manga_id)?.details || null;
+    }
+    const titleSignature = getMappingTitleSignature(node);
+    if (
+      !media &&
+      malMangaId &&
+      !getProviderMappingMiss('mal', 'MANGA', malMangaId, titleSignature)
+    ) {
+      try {
+        media = await resolveAniListMangaByMalId(malMangaId);
+      } catch (error) {
+        mappingFailures.push({
+          malMangaId,
+          title: node?.title || `MAL Manga #${malMangaId}`,
+          message: error?.message || 'AniList mapping failed.',
+        });
+      }
+      if (media?.id) {
+        saveManga(media);
+        upsertMangaExternalId({ provider: 'mal', externalId: malMangaId, mangaId: media.id });
+        deleteProviderMappingMiss('mal', 'MANGA', malMangaId);
+      } else {
+        upsertProviderMappingMiss({
+          provider: 'mal',
+          mediaType: 'MANGA',
+          externalId: malMangaId,
+          titleSignature,
+        });
+      }
+    }
+    if (malMangaId) mediaByMalId.set(String(malMangaId), media || null);
+    resolvedCount += 1;
+    emitProgress({
+      stage: 'mapping',
+      current: resolvedCount,
+      total: entries.length,
+      entryTitle: node?.title || `MAL Manga #${malMangaId || index + 1}`,
+    });
+  });
+
   for (const [index, item] of entries.entries()) {
+    throwIfCancelled(options);
     const node = item?.node;
     const listStatus = item?.list_status || node?.my_list_status || {};
     const remoteStatus = mapMalMangaStatus(listStatus.status, listStatus.is_rereading);
@@ -67,32 +186,14 @@ async function buildAniListMangaCollectionFromMalList(malList, options = {}) {
                 : null;
     const entryTitle = node?.title || `MAL Manga #${node?.id || index + 1}`;
 
-    emitProgress({
-      stage: 'mapping',
-      current: index,
-      total: entries.length,
-      entryTitle,
-    });
-
     if (!node?.id || !remoteStatus || !localStatus) {
       skipped += 1;
-      emitProgress({ stage: 'mapping', current: index + 1, total: entries.length, entryTitle });
       continue;
     }
 
-    let media = null;
-    try {
-      media = await resolveAniListMangaByMalId(node.id);
-    } catch (error) {
-      mappingFailures.push({
-        malMangaId: node.id,
-        title: entryTitle,
-        message: error?.message || 'AniList mapping failed.',
-      });
-    }
+    const media = mediaByMalId.get(String(node.id)) || null;
     if (!media?.id) {
       skipped += 1;
-      emitProgress({ stage: 'mapping', current: index + 1, total: entries.length, entryTitle });
       continue;
     }
 
@@ -111,7 +212,6 @@ async function buildAniListMangaCollectionFromMalList(malList, options = {}) {
       malTitle: node.title,
     });
     mapped += 1;
-    emitProgress({ stage: 'mapping', current: index + 1, total: entries.length, entryTitle });
   }
 
   return {

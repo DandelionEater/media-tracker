@@ -422,6 +422,7 @@ export type TrackedMediaEntry = TrackedAnimeEntry | TrackedMangaEntry;
 export type StoredManga = Omit<TrackedMangaEntry, keyof LocalMangaListEntry> & {
   manga_id: number;
   external_ids?: { anilist?: string | null; mal?: string | null };
+  details_cached_at?: string | null;
 };
 
 export type StoredAnime = Omit<
@@ -437,6 +438,7 @@ export type StoredAnime = Omit<
   end_date?: PersonDate | null;
   external_ids?: { anilist?: string | null; mal?: string | null };
   details?: AnimeMedia | null;
+  details_cached_at?: string | null;
 };
 
 export type DeletedListEntry = {
@@ -526,6 +528,7 @@ export type ImportPayload = {
 
 export type AuthImportResult = {
   user?: { id?: number } | null;
+  importPending?: boolean;
   import?: ImportPayload | null;
   localEntries?: ImportPreviewItem[];
   preview?: { groups?: Array<{ status: string; items: ImportPreviewItem[] }> };

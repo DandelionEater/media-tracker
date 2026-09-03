@@ -302,6 +302,18 @@ function main() {
     { cwd: backendDir, shell: false }
   );
   runCommand(
+    'MyAnimeList pipeline smoke test',
+    process.execPath,
+    [path.join(__dirname, 'mal-pipeline-smoke.js')],
+    { cwd: backendDir, shell: false }
+  );
+  runCommand(
+    'Cache maintenance smoke test',
+    process.execPath,
+    [path.join(__dirname, 'cache-maintenance-smoke.js')],
+    { cwd: backendDir, shell: false }
+  );
+  runCommand(
     'Details cache fallback smoke test',
     require('electron'),
     [path.join(__dirname, 'details-cache-smoke.js')],

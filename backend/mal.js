@@ -273,6 +273,11 @@ async function getUserMangaList(username, options = {}) {
   let offset = 0;
 
   do {
+    if (options.isCancelled?.()) {
+      const error = new Error('MyAnimeList operation cancelled.');
+      error.code = 'MAL_JOB_CANCELLED';
+      throw error;
+    }
     const page = nextUrl
       ? await fetchNextPage(nextUrl, options.accessToken)
       : await malRequestWithRetry(`/users/${encodeURIComponent(username)}/mangalist`, {
@@ -283,6 +288,7 @@ async function getUserMangaList(username, options = {}) {
     data.push(...(page?.data || []));
     nextUrl = page?.paging?.next || null;
     offset += limit;
+    options.onProgress?.({ stage: 'fetching', current: data.length, total: null, mediaType: 'MANGA' });
   } while (nextUrl && data.length < (options.maxEntries || 5000));
 
   return { userName: username, data };
@@ -312,6 +318,11 @@ async function getUserAnimeList(username, options = {}) {
   let offset = 0;
 
   do {
+    if (options.isCancelled?.()) {
+      const error = new Error('MyAnimeList operation cancelled.');
+      error.code = 'MAL_JOB_CANCELLED';
+      throw error;
+    }
     const page = nextUrl
       ? await fetchNextPage(nextUrl, options.accessToken)
       : await malRequestWithRetry(`/users/${encodeURIComponent(username)}/animelist`, {
@@ -327,6 +338,7 @@ async function getUserAnimeList(username, options = {}) {
     data.push(...(page?.data || []));
     nextUrl = page?.paging?.next || null;
     offset += limit;
+    options.onProgress?.({ stage: 'fetching', current: data.length, total: null, mediaType: 'ANIME' });
   } while (nextUrl && data.length < (options.maxEntries || 5000));
 
   return {

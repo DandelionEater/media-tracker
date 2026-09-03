@@ -267,6 +267,37 @@ db.prepare(
 `
 ).run();
 
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS manga_external_ids (
+    provider TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    manga_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (provider, external_id),
+    UNIQUE(provider, manga_id),
+    FOREIGN KEY (manga_id) REFERENCES manga(id) ON DELETE CASCADE
+  )
+`
+).run();
+
+db.prepare(
+  `
+  CREATE TABLE IF NOT EXISTS provider_mapping_misses (
+    provider TEXT NOT NULL,
+    media_type TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    title_signature TEXT NOT NULL,
+    expires_at INTEGER NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (provider, media_type, external_id)
+  )
+`
+).run();
+
+db.prepare(`DELETE FROM provider_mapping_misses WHERE expires_at <= ?`).run(Date.now());
+
 addColumnIfMissing('user_anime_lists', 'is_favorite', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'repeat_count', 'INTEGER NOT NULL DEFAULT 0');
 addColumnIfMissing('user_anime_lists', 'is_rewatching', 'INTEGER NOT NULL DEFAULT 0');
@@ -1376,6 +1407,42 @@ const getAnimeExternalIdByAnimeIdStmt = db.prepare(`
   WHERE provider = ? AND anime_id = ?
 `);
 
+const upsertMangaExternalIdStmt = db.prepare(`
+  INSERT INTO manga_external_ids (provider, external_id, manga_id, updated_at)
+  VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+  ON CONFLICT(provider, external_id) DO UPDATE SET
+    manga_id = excluded.manga_id,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
+const getMangaExternalIdStmt = db.prepare(`
+  SELECT * FROM manga_external_ids WHERE provider = ? AND external_id = ?
+`);
+
+const getMangaExternalIdByMangaIdStmt = db.prepare(`
+  SELECT * FROM manga_external_ids WHERE provider = ? AND manga_id = ?
+`);
+
+const getProviderMappingMissStmt = db.prepare(`
+  SELECT * FROM provider_mapping_misses
+  WHERE provider = ? AND media_type = ? AND external_id = ?
+`);
+
+const upsertProviderMappingMissStmt = db.prepare(`
+  INSERT INTO provider_mapping_misses (
+    provider, media_type, external_id, title_signature, expires_at, updated_at
+  ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+  ON CONFLICT(provider, media_type, external_id) DO UPDATE SET
+    title_signature = excluded.title_signature,
+    expires_at = excluded.expires_at,
+    updated_at = CURRENT_TIMESTAMP
+`);
+
+const deleteProviderMappingMissStmt = db.prepare(`
+  DELETE FROM provider_mapping_misses
+  WHERE provider = ? AND media_type = ? AND external_id = ?
+`);
+
 const addUserAnimeEntryStmt = db.prepare(`
   INSERT INTO user_anime_lists (
     user_id,
@@ -2028,6 +2095,58 @@ function getAnimeExternalIdByAnimeId(provider, animeId) {
   );
 }
 
+function upsertMangaExternalId({ provider, externalId, mangaId }) {
+  const normalizedProvider = String(provider || '').trim().toLowerCase();
+  const normalizedExternalId = String(externalId || '').trim();
+  const numericMangaId = Number(mangaId);
+  if (!normalizedProvider || !normalizedExternalId || !Number.isInteger(numericMangaId)) return;
+  upsertMangaExternalIdStmt.run(normalizedProvider, normalizedExternalId, numericMangaId);
+}
+
+function getMangaExternalId(provider, externalId) {
+  return getMangaExternalIdStmt.get(
+    String(provider || '').trim().toLowerCase(),
+    String(externalId || '').trim()
+  );
+}
+
+function getMangaExternalIdByMangaId(provider, mangaId) {
+  return getMangaExternalIdByMangaIdStmt.get(
+    String(provider || '').trim().toLowerCase(),
+    Number(mangaId)
+  );
+}
+
+function getProviderMappingMiss(provider, mediaType, externalId, titleSignature) {
+  const row = getProviderMappingMissStmt.get(
+    String(provider || '').trim().toLowerCase(),
+    mediaType === 'MANGA' ? 'MANGA' : 'ANIME',
+    String(externalId || '').trim()
+  );
+  if (!row || Number(row.expires_at) <= Date.now() || row.title_signature !== titleSignature) {
+    return null;
+  }
+  return row;
+}
+
+function upsertProviderMappingMiss({ provider, mediaType, externalId, titleSignature, ttlMs }) {
+  upsertProviderMappingMissStmt.run(
+    String(provider || '').trim().toLowerCase(),
+    mediaType === 'MANGA' ? 'MANGA' : 'ANIME',
+    String(externalId || '').trim(),
+    String(titleSignature || ''),
+    Date.now() + Math.max(60_000, Number(ttlMs) || 24 * 60 * 60 * 1000)
+  );
+}
+
+function deleteProviderMappingMiss(provider, mediaType, externalId) {
+  deleteProviderMappingMissStmt.run(
+    String(provider || '').trim().toLowerCase(),
+    mediaType === 'MANGA' ? 'MANGA' : 'ANIME',
+    String(externalId || '').trim()
+  );
+}
+
 function addUserAnimeEntry({
   userId,
   animeId,
@@ -2457,6 +2576,12 @@ module.exports = {
   upsertAnimeExternalId,
   getAnimeExternalId,
   getAnimeExternalIdByAnimeId,
+  upsertMangaExternalId,
+  getMangaExternalId,
+  getMangaExternalIdByMangaId,
+  getProviderMappingMiss,
+  upsertProviderMappingMiss,
+  deleteProviderMappingMiss,
   addUserAnimeEntry,
   updateUserAnimeEntry,
   removeUserAnimeEntry,
